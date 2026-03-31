@@ -1,0 +1,51 @@
+[project]
+name = "axio-tui-rag"
+version = "0.2.3"
+description = "RAG plugin for Axio TUI"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+keywords = ["llm", "agent", "ai", "tui", "rag", "lancedb", "terminal"]
+dependencies = ["axio", "axio-tui", "aiosqlite>=0.20", "lancedb>=0.20"]
+
+[project.entry-points."axio.tools"]
+index_files = "axio_tui_rag:IndexFiles"
+semantic_search = "axio_tui_rag:SemanticSearch"
+
+
+[project.urls]
+Homepage = "https://github.com/axio-agent/axio-tui-rag"
+Repository = "https://github.com/axio-agent/axio-tui-rag"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/axio_tui_rag"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 119
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.14",
+    "ruff>=0.9",
+    "pytest-cov>=7.1.0",
+]
+
+[[tool.mypy.overrides]]
+module = ["axio_tui", "axio_tui.*"]
+ignore_missing_imports = true
