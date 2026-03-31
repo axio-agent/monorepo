@@ -10,13 +10,11 @@ linter:
 	@uv run ruff check $(PACKAGES)
 	@uv run ruff format --check $(PACKAGES)
 
-typing: $(PACKAGES)
+typing pytest: $(PACKAGES)
 
 $(PACKAGES):
 	@uv run --directory $@ mypy .
-
-pytest:
-	pytest -vv $(PACKAGES)
+	@uv run --directory $@ pytest -vv
 
 test: pytest
 tests: pytest
