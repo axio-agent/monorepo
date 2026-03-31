@@ -1,0 +1,52 @@
+[project]
+name = "axio-tools-local"
+version = "0.2.3"
+description = "Core filesystem and execution tools for Axio"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+keywords = ["llm", "agent", "ai", "tools", "filesystem", "shell"]
+dependencies = ["axio"]
+
+[project.entry-points."axio.tools"]
+shell = "axio_tools_local.shell:Shell"
+run_python = "axio_tools_local.run_python:RunPython"
+write_file = "axio_tools_local.write_file:WriteFile"
+patch_file = "axio_tools_local.patch_file:PatchFile"
+read_file = "axio_tools_local.read_file:ReadFile"
+list_files = "axio_tools_local.list_files:ListFiles"
+
+
+[project.urls]
+Homepage = "https://github.com/axio-agent/axio-tools-local"
+Repository = "https://github.com/axio-agent/axio-tools-local"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/axio_tools_local"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 119
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.14",
+    "ruff>=0.9",
+    "pytest-cov>=7.1.0",
+]
+
