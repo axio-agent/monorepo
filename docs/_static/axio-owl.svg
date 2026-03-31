@@ -1,0 +1,19 @@
+<svg width="160" height="200" viewBox="0 0 160 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <clipPath id="lc"><rect x="0" y="0" width="160" height="185"/></clipPath>
+  </defs>
+  <polygon points="52,76 44,20 72,64" fill="#2d2248"/>
+  <polygon points="108,76 116,20 88,64" fill="#2d2248"/>
+  <ellipse cx="80" cy="155" rx="46" ry="46" fill="#2d2248"/>
+  <ellipse cx="80" cy="90"  rx="46" ry="44" fill="#2d2248"/>
+  <ellipse cx="80" cy="162" rx="26" ry="30" fill="#ede8df"/>
+  <circle cx="62" cy="88" r="15" fill="#ede8df"/>
+  <circle cx="98" cy="88" r="15" fill="#ede8df"/>
+  <circle cx="62" cy="88" r="9"  fill="#2d2248"/>
+  <circle cx="98" cy="88" r="9"  fill="#2d2248"/>
+  <circle cx="58" cy="84" r="3"  fill="white"/>
+  <circle cx="94" cy="84" r="3"  fill="white"/>
+  <polygon points="74,103 86,103 80,113" fill="#d4a017"/>
+  <ellipse cx="67" cy="184" rx="12" ry="16" fill="#d4a017" clip-path="url(#lc)"/>
+  <ellipse cx="93" cy="184" rx="12" ry="16" fill="#d4a017" clip-path="url(#lc)"/>
+</svg>

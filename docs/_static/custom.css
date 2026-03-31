@@ -1,0 +1,13 @@
+.owl-row {
+  align-items: center;
+}
+
+.owl-caption {
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .owl-caption {
+    width: 100%;
+  }
+}
