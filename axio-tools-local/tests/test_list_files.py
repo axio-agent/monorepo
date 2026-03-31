@@ -37,8 +37,8 @@ class TestListFilesBasic:
         (tmp_cwd / "a_dir").mkdir()
         result = await ls()
         lines = result.splitlines()
-        dir_idx = next(i for i, l in enumerate(lines) if "a_dir/" in l)
-        file_idx = next(i for i, l in enumerate(lines) if "z_file.txt" in l)
+        dir_idx = next(i for i, line in enumerate(lines) if "a_dir/" in line)
+        file_idx = next(i for i, line in enumerate(lines) if "z_file.txt" in line)
         assert dir_idx < file_idx
 
     async def test_empty_directory(self, tmp_cwd: Path) -> None:
