@@ -1,0 +1,26 @@
+[tool.uv.workspace]
+members = [
+    "axio",
+    "axio-tools-docker",
+    "axio-tools-local",
+    "axio-tools-mcp",
+    "axio-transport-codex",
+    "axio-transport-nebius",
+    "axio-transport-openai",
+    "axio-tui",
+    "axio-tui-guards",
+    "axio-tui-rag",
+    "docs",
+]
+
+[tool.uv.sources]
+axio                  = { workspace = true }
+axio-tools-docker     = { workspace = true }
+axio-tools-local      = { workspace = true }
+axio-tools-mcp        = { workspace = true }
+axio-transport-codex  = { workspace = true }
+axio-transport-nebius = { workspace = true }
+axio-transport-openai = { workspace = true }
+axio-tui              = { workspace = true }
+axio-tui-guards       = { workspace = true }
+axio-tui-rag          = { workspace = true }
