@@ -8,7 +8,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 
 import aiohttp
 from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
@@ -17,6 +17,7 @@ from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec, TransportMeta
 from axio.tool import Tool
+from axio.transport import CompletionTransport, EmbeddingTransport
 from axio.types import StopReason, Usage
 
 logger = logging.getLogger(__name__)
@@ -307,7 +308,7 @@ class ThinkTagParser:
 
 
 @dataclass(slots=True)
-class OpenAITransport:
+class OpenAITransport(CompletionTransport, EmbeddingTransport):
     META: ClassVar[TransportMeta] = TransportMeta(
         label="OpenAI",
         api_key_env="OPENAI_API_KEY",
@@ -321,6 +322,7 @@ class OpenAITransport:
         },
     )
 
+    name: str = "OpenAI"
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     model: ModelSpec = field(default_factory=lambda: OPENAI_MODELS["gpt-4.1-mini"])
@@ -473,7 +475,7 @@ class OpenAITransport:
 
     async def _do_stream(self, messages: list[Message], tools: list[Tool], system: str) -> AsyncIterator[StreamEvent]:
         assert self.session is not None, "session is required for streaming"
-        url = f"{self.base_url}/chat/completions"
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         payload = self.build_payload(messages, tools, system)
 
@@ -529,7 +531,7 @@ class OpenAITransport:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Call the OpenAI-compatible /v1/embeddings endpoint."""
         assert self.session is not None, "session is required for embedding"
-        url = f"{self.base_url}/embeddings"
+        url = f"{self.base_url.rstrip('/')}/embeddings"
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         payload: dict[str, Any] = {"model": self.model.id, "input": texts}
 
@@ -570,70 +572,47 @@ class OpenAITransport:
     async def fetch_models(self) -> None:
         self.models = OPENAI_MODELS
 
-
-try:
-    from textual.app import ComposeResult
-    from textual.binding import Binding
-    from textual.containers import Container, Horizontal
-    from textual.screen import ModalScreen
-    from textual.widgets import Button, Input, Static
-
-    class OpenAISettingsScreen(ModalScreen[dict[str, str] | None]):
-        """Editable settings form for OpenAI transport: base_url and api_key."""
-
-        BINDINGS = [Binding("escape", "cancel", "Cancel")]
-        CSS = """
-        OpenAISettingsScreen { align: center middle; }
-        #openai-settings {
-            width: 70; height: auto; border: heavy $accent;
-            background: $panel; padding: 1 2;
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "models": [
+                {
+                    "id": m.id,
+                    "context_window": m.context_window,
+                    "max_output_tokens": m.max_output_tokens,
+                    "capabilities": sorted(c.value for c in m.capabilities),
+                    "input_cost": m.input_cost,
+                    "output_cost": m.output_cost,
+                }
+                for m in self.models.values()
+            ],
         }
-        .field-label { margin-top: 1; }
-        .settings-buttons { height: auto; margin-top: 1; }
-        .settings-buttons Button { margin: 0 1; }
-        """
-        DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
-        def __init__(self, settings: dict[str, str]) -> None:
-            super().__init__()
-            self._settings = settings
-
-        def compose(self) -> ComposeResult:
-            with Container(id="openai-settings"):
-                yield Static("[bold]OpenAI Settings[/]")
-                yield Static("Base URL:", classes="field-label")
-                yield Input(
-                    value=self._settings.get("base_url", self.DEFAULT_BASE_URL),
-                    id="base-url",
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], *, session: aiohttp.ClientSession | None = None) -> Self:
+        models = ModelRegistry(
+            [
+                ModelSpec(
+                    id=str(m["id"]),
+                    context_window=int(m.get("context_window", 128_000)),
+                    max_output_tokens=int(m.get("max_output_tokens", 8_000)),
+                    capabilities=frozenset(
+                        Capability(c) for c in m.get("capabilities", []) if c in Capability.__members__
+                    ),
+                    input_cost=float(m.get("input_cost", 0.0)),
+                    output_cost=float(m.get("output_cost", 0.0)),
                 )
-                yield Static("API Key (leave blank to use env var):", classes="field-label")
-                yield Input(
-                    value=self._settings.get("api_key", ""),
-                    id="api-key",
-                    password=True,
-                )
-                with Horizontal(classes="settings-buttons"):
-                    yield Button("Save", id="btn-save", variant="primary")
-                    yield Button("Cancel", id="btn-cancel")
+                for m in data.get("models", [])
+            ]
+        )
+        return cls(
+            name=str(data.get("name", "")),
+            base_url=str(data["base_url"]),
+            api_key=str(data.get("api_key", "")),
+            models=models,
+            session=session,
+        )
 
-        def on_mount(self) -> None:
-            self.query_one("#base-url", Input).focus()
 
-        def on_button_pressed(self, event: Button.Pressed) -> None:
-            if event.button.id == "btn-save":
-                result: dict[str, str] = {}
-                base_url = self.query_one("#base-url", Input).value.strip()
-                api_key = self.query_one("#api-key", Input).value.strip()
-                if base_url:
-                    result["base_url"] = base_url
-                if api_key:
-                    result["api_key"] = api_key
-                self.dismiss(result)
-            else:
-                self.dismiss(None)
-
-        def action_cancel(self) -> None:
-            self.dismiss(None)
-
-except ImportError:
-    pass

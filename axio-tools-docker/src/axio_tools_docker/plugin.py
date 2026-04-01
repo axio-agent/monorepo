@@ -79,7 +79,7 @@ class DockerPlugin:
         return self._tools
 
     def settings_screen(self) -> Any:
-        from .settings import DockerSettingsScreen
+        from .tui import DockerSettingsScreen
 
         return DockerSettingsScreen(self._manager, config=self._config, global_config=self._global_config)
 

@@ -15,7 +15,7 @@ from axio.exceptions import StreamError
 from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.types import StopReason, Usage
 
-from axio_transport_nebius import NebiusTransport
+from axio_transport_openai.nebius import NebiusTransport
 
 # ---------------------------------------------------------------------------
 # SSE helpers
@@ -166,7 +166,7 @@ async def test_fetch_models_populates_registry(
         ],
     }
 
-    with caplog.at_level(logging.INFO, logger="axio_transport_nebius"):
+    with caplog.at_level(logging.INFO, logger="axio_transport_openai.nebius"):
         await transport.fetch_models()
 
     assert isinstance(transport.models, ModelRegistry)

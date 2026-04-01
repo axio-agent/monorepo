@@ -28,13 +28,13 @@ def test_parse_headers_multiple() -> None:
 
 def test_import_hub_screen() -> None:
     """MCPHubScreen can be imported."""
-    from axio_tools_mcp.settings import MCPHubScreen
+    from axio_tools_mcp.tui import MCPHubScreen
 
     assert MCPHubScreen is not None
 
 
 def test_import_edit_screen() -> None:
     """MCPServerEditScreen can be imported."""
-    from axio_tools_mcp.settings import MCPServerEditScreen
+    from axio_tools_mcp.tui import MCPServerEditScreen
 
     assert MCPServerEditScreen is not None

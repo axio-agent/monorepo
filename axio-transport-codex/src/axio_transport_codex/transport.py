@@ -19,6 +19,7 @@ from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec, TransportMeta
 from axio.tool import Tool
+from axio.transport import CompletionTransport
 from axio.types import StopReason, Usage
 
 from .oauth import CLIENT_ID, ORIGINATOR, TOKEN_URL, _decode_jwt_payload
@@ -158,7 +159,7 @@ def _convert_messages(messages: list[Message], system: str) -> tuple[str, list[d
 
 
 @dataclass(slots=True)
-class CodexTransport:
+class CodexTransport(CompletionTransport):
     META: ClassVar[TransportMeta] = TransportMeta(
         label="ChatGPT (Codex)",
         api_key_env="",

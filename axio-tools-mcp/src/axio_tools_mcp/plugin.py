@@ -35,7 +35,7 @@ class MCPPlugin:
         return self._registry.all_tools
 
     def settings_screen(self) -> Any:
-        from .settings import MCPHubScreen
+        from .tui import MCPHubScreen
 
         return MCPHubScreen(self._registry, config=self._config, global_config=self._global_config)
 

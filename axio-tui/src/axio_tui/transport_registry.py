@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -67,7 +68,7 @@ class TransportRegistry:
             # Determine API key: saved settings first, env second
             env_key = os.environ.get(meta.api_key_env, "") if meta.api_key_env else ""
             api_key = saved.get("api_key", "") or env_key
-            if not api_key:
+            if not api_key and meta.api_key_env:
                 logger.info("Transport %r: no API key (env %s), skipping", name, meta.api_key_env)
                 continue
 
@@ -83,6 +84,19 @@ class TransportRegistry:
             except Exception:
                 logger.warning("Transport %r: fetch_models failed", name, exc_info=True)
             self._transports[name] = transport
+
+        # Bulk-load providers from hub screens that expose load_config()
+        # (e.g. CustomHubScreen for openai-custom.* providers)
+        for screen_name, screen_cls in self._screens.items():
+            load = getattr(screen_cls, "load_config", None)
+            if not callable(load):
+                continue
+            try:
+                providers = await asyncio.to_thread(load, session)
+                for t in providers:
+                    self.register_dynamic(f"{screen_name}.{t.name}", t)
+            except Exception:
+                logger.warning("Failed to bulk-load providers from %r", screen_name, exc_info=True)
 
     @staticmethod
     async def _load_settings(config: ProjectConfig, name: str) -> dict[str, str]:
@@ -114,7 +128,7 @@ class TransportRegistry:
             meta = self._metas[name]
             env_key = os.environ.get(meta.api_key_env, "") if meta.api_key_env else ""
             api_key = settings.get("api_key", "") or env_key
-            if api_key:
+            if api_key or not meta.api_key_env:
                 kwargs: dict[str, Any] = {"api_key": api_key, "session": self._session}
                 for k, v in settings.items():
                     if k != "api_key" and v:
@@ -161,15 +175,31 @@ class TransportRegistry:
         cls = self._classes[name]
         kwargs: dict[str, Any] = {
             "api_key": src.api_key,
+            "base_url": src.base_url,
             "model": model,
             "models": src.models,
             "session": src.session,
         }
-        # Apply saved settings (e.g. base_url) that aren't already set
+        # Apply saved settings that aren't already set
         for k, v in self._saved.get(name, {}).items():
             if k not in kwargs and v:
                 kwargs[k] = v
         return cls(**kwargs)
+
+    def register_dynamic(self, name: str, instance: Any) -> None:
+        """Register a dynamically-created transport instance (e.g. custom providers)."""
+        self._transports[name] = instance
+        self._classes[name] = type(instance)
+        self._metas[name] = type(instance).META
+
+    def unregister_by_prefix(self, prefix: str) -> None:
+        """Remove all transports whose names start with *prefix*."""
+        names = [n for n in list(self._transports) if n.startswith(prefix)]
+        for n in names:
+            del self._transports[n]
+            self._classes.pop(n, None)
+            self._metas.pop(n, None)
+            self._saved.pop(n, None)
 
     def resolve(self, config_value: str) -> RoleBinding | None:
         """Parse a config value like ``"nebius:model_id"`` into a RoleBinding.

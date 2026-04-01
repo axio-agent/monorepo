@@ -19,7 +19,7 @@ def _cache_key(model_id: str, text: str) -> str:
     return hashlib.sha256(f"{model_id}\0{text}".encode()).hexdigest()
 
 
-class CachedEmbeddingTransport:
+class CachedEmbeddingTransport(EmbeddingTransport):
     """Transparent caching wrapper around an EmbeddingTransport.
 
     Computes ``sha256(model_id + '\\0' + text)`` as the cache key and stores

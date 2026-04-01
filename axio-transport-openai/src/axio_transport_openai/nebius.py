@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 
 from axio.exceptions import StreamError
 from axio.models import Capability, ModelSpec, TransportMeta
+
 from axio_transport_openai import OpenAITransport
 
 logger = logging.getLogger(__name__)
@@ -19,11 +20,11 @@ class NebiusTransport(OpenAITransport):
         label="Nebius AI Studio",
         api_key_env="NEBIUS_API_KEY",
         role_defaults={
-            "chat": "moonshotai/Kimi-K2.5",
+            "chat": "MiniMaxAI/MiniMax-M2.5",
             "compact": "openai/gpt-oss-120b",
             "subagent": "openai/gpt-oss-120b",
             "guard": "openai/gpt-oss-20b",
-            "vision": "nvidia/Nemotron-Nano-V2-12b",
+            "vision": "Qwen/Qwen2.5-VL-72B-Instruct",
             "embedding": "Qwen/Qwen3-Embedding-8B",
             "reasoning": "deepseek-ai/DeepSeek-R1-0528",
         },
@@ -83,69 +84,3 @@ class NebiusTransport(OpenAITransport):
         )
 
 
-try:
-    from textual.app import ComposeResult
-    from textual.binding import Binding
-    from textual.containers import Container, Horizontal
-    from textual.screen import ModalScreen
-    from textual.widgets import Button, Input, Static
-
-    class NebiusSettingsScreen(ModalScreen[dict[str, str] | None]):
-        """Editable settings form for Nebius transport: base_url and api_key."""
-
-        BINDINGS = [Binding("escape", "cancel", "Cancel")]
-        CSS = """
-        NebiusSettingsScreen { align: center middle; }
-        #nebius-settings {
-            width: 70; height: auto; border: heavy $accent;
-            background: $panel; padding: 1 2;
-        }
-        .field-label { margin-top: 1; }
-        .settings-buttons { height: auto; margin-top: 1; }
-        .settings-buttons Button { margin: 0 1; }
-        """
-        DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
-
-        def __init__(self, settings: dict[str, str]) -> None:
-            super().__init__()
-            self._settings = settings
-
-        def compose(self) -> ComposeResult:
-            with Container(id="nebius-settings"):
-                yield Static("[bold]Nebius AI Studio Settings[/]")
-                yield Static("Base URL:", classes="field-label")
-                yield Input(
-                    value=self._settings.get("base_url", self.DEFAULT_BASE_URL),
-                    id="base-url",
-                )
-                yield Static("API Key (leave blank to use env var):", classes="field-label")
-                yield Input(
-                    value=self._settings.get("api_key", ""),
-                    id="api-key",
-                    password=True,
-                )
-                with Horizontal(classes="settings-buttons"):
-                    yield Button("Save", id="btn-save", variant="primary")
-                    yield Button("Cancel", id="btn-cancel")
-
-        def on_mount(self) -> None:
-            self.query_one("#base-url", Input).focus()
-
-        def on_button_pressed(self, event: Button.Pressed) -> None:
-            if event.button.id == "btn-save":
-                result: dict[str, str] = {}
-                base_url = self.query_one("#base-url", Input).value.strip()
-                api_key = self.query_one("#api-key", Input).value.strip()
-                if base_url:
-                    result["base_url"] = base_url
-                if api_key:
-                    result["api_key"] = api_key
-                self.dismiss(result)
-            else:
-                self.dismiss(None)
-
-        def action_cancel(self) -> None:
-            self.dismiss(None)
-
-except ImportError:
-    pass

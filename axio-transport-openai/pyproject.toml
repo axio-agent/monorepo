@@ -13,9 +13,15 @@ tui = ["textual>=2.1.0"]
 
 [project.entry-points."axio.transport"]
 openai = "axio_transport_openai:OpenAITransport"
+nebius = "axio_transport_openai.nebius:NebiusTransport"
+openrouter = "axio_transport_openai.openrouter:OpenRouterTransport"
+openai-custom = "axio_transport_openai.custom:OpenAICompatibleTransport"
 
 [project.entry-points."axio.transport.settings"]
-openai = "axio_transport_openai:OpenAISettingsScreen"
+openai = "axio_transport_openai.tui:OpenAISettingsScreen"
+nebius = "axio_transport_openai.tui:NebiusSettingsScreen"
+openrouter = "axio_transport_openai.tui:OpenRouterSettingsScreen"
+openai-custom = "axio_transport_openai.tui:CustomHubScreen"
 
 
 [project.urls]
