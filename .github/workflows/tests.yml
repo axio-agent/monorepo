@@ -45,7 +45,6 @@ jobs:
           - axio-tools-local
           - axio-tools-mcp
           - axio-transport-codex
-          - axio-transport-nebius
           - axio-transport-openai
           - axio-tui
           - axio-tui-guards
@@ -69,7 +68,6 @@ jobs:
           - { name: axio-tools-local,       cov: axio_tools_local }
           - { name: axio-tools-mcp,         cov: axio_tools_mcp }
           - { name: axio-transport-codex,   cov: axio_transport_codex }
-          - { name: axio-transport-nebius,  cov: axio_transport_nebius }
           - { name: axio-transport-openai,  cov: axio_transport_openai }
           - { name: axio-tui,               cov: axio_tui }
           - { name: axio-tui-guards,        cov: axio_tui_guards }

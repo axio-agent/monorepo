@@ -56,7 +56,6 @@ jobs:
           - axio-tools-local
           - axio-tools-mcp
           - axio-transport-codex
-          - axio-transport-nebius
           - axio-transport-openai
           - axio-tui
           - axio-tui-guards
