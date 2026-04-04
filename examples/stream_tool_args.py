@@ -5,7 +5,7 @@ Auto-detects transport from available API keys (OPENAI_API_KEY, NEBIUS_API_KEY,
 OPENROUTER_API_KEY), or use --transport to pick explicitly.
 
 Run:
-    uv run --extra examples python examples/stream_tool_args.py "your prompt here"
+    uv run examples/stream_tool_args.py "your prompt here"
 """
 
 from __future__ import annotations

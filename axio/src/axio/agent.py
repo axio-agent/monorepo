@@ -144,11 +144,11 @@ class Agent:
                             case TextDelta(delta=delta):
                                 yield event
                                 self._accumulate_text(content, delta)
-                            case ToolUseStart(tool_use_id=tid, name=name):
+                            case ToolUseStart(index=idx, tool_use_id=tid, name=name):
                                 yield event
                                 info: dict[str, Any] = {"name": name, "json_parts": []}
                                 if self.parse_tool_args:
-                                    info["arg_stream"] = ToolArgStream(tid)
+                                    info["arg_stream"] = ToolArgStream(tid, idx)
                                 pending[tid] = info
                             case ToolInputDelta(tool_use_id=tid, partial_json=pj):
                                 if tid in pending:
@@ -156,7 +156,7 @@ class Agent:
                                 if self.parse_tool_args and tid in pending:
                                     for fe in pending[tid]["arg_stream"].feed(pj):
                                         yield fe
-                                else:
+                                elif not self.parse_tool_args:
                                     yield event
                             case IterationEnd(usage=usage, stop_reason=sr):
                                 yield event

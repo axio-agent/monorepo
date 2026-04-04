@@ -36,12 +36,14 @@ class ToolInputDelta:
 
 @dataclass(frozen=True, slots=True)
 class ToolFieldStart:
+    index: int
     tool_use_id: ToolCallID
     key: str
 
 
 @dataclass(frozen=True, slots=True)
 class ToolFieldDelta:
+    index: int
     tool_use_id: ToolCallID
     key: str
     text: str
@@ -49,6 +51,7 @@ class ToolFieldDelta:
 
 @dataclass(frozen=True, slots=True)
 class ToolFieldEnd:
+    index: int
     tool_use_id: ToolCallID
     key: str
 

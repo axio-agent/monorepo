@@ -30,8 +30,9 @@ class ToolArgStream:
 
     _ESC = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f"}
 
-    def __init__(self, tool_use_id: str) -> None:
+    def __init__(self, tool_use_id: str, index: int = 0) -> None:
         self._tool_use_id = tool_use_id
+        self._index = index
         self._st = "INIT"
         self._stack: list[str] = []  # "o" (object) / "a" (array)
         self._key_buf: list[str] = []
@@ -65,6 +66,7 @@ class ToolArgStream:
         if self._text_buf and self._current_key:
             self._events.append(
                 ToolFieldDelta(
+                    index=self._index,
                     tool_use_id=self._tool_use_id,
                     key=self._current_key,
                     text="".join(self._text_buf),
@@ -82,6 +84,7 @@ class ToolArgStream:
             if self._current_key:
                 self._events.append(
                     ToolFieldEnd(
+                        index=self._index,
                         tool_use_id=self._tool_use_id,
                         key=self._current_key,
                     )
@@ -95,7 +98,7 @@ class ToolArgStream:
 
     def _flush_high(self) -> None:
         if self._mode == "str":
-            self._text_buf.append(chr(self._high))
+            self._text_buf.append("\ufffd")
         elif self._mode == "raw":
             self._text_buf.append(f"\\u{self._high:04x}")
         self._high = 0
@@ -183,9 +186,22 @@ class ToolArgStream:
                 self._out(ch)
 
         elif st == "KESC":
-            self._key_buf.append(ch)
+            if ch == 'u':
+                self._out(ch)
+                self._u_buf.clear()
+                self._st = "KUESC"
+            else:
+                self._key_buf.append(self._ESC.get(ch, ch))
+                self._out(ch)
+                self._st = "KEY"
+
+        elif st == "KUESC":
+            self._u_buf.append(ch)
             self._out(ch)
-            self._st = "KEY"
+            if len(self._u_buf) == 4:
+                code = int("".join(self._u_buf), 16)
+                self._key_buf.append(chr(code))
+                self._st = "KEY"
 
         elif st == "COL":
             if ch == ":":
@@ -193,6 +209,7 @@ class ToolArgStream:
                     self._flush_text()
                     self._events.append(
                         ToolFieldStart(
+                            index=self._index,
                             tool_use_id=self._tool_use_id,
                             key=self._current_key,
                         )

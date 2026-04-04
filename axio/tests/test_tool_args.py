@@ -27,21 +27,21 @@ class TestToolArgStreamBasic:
         s = ToolArgStream("c1")
         events = s.feed('{"path": "/tmp/foo.py"}')
         assert events == [
-            ToolFieldStart(tool_use_id="c1", key="path"),
-            ToolFieldDelta(tool_use_id="c1", key="path", text="/tmp/foo.py"),
-            ToolFieldEnd(tool_use_id="c1", key="path"),
+            ToolFieldStart(0, tool_use_id="c1", key="path"),
+            ToolFieldDelta(0, tool_use_id="c1", key="path", text="/tmp/foo.py"),
+            ToolFieldEnd(0, tool_use_id="c1", key="path"),
         ]
 
     def test_two_fields(self) -> None:
         s = ToolArgStream("c1")
         events = s.feed('{"path": "/a", "content": "hello"}')
         assert events == [
-            ToolFieldStart(tool_use_id="c1", key="path"),
-            ToolFieldDelta(tool_use_id="c1", key="path", text="/a"),
-            ToolFieldEnd(tool_use_id="c1", key="path"),
-            ToolFieldStart(tool_use_id="c1", key="content"),
-            ToolFieldDelta(tool_use_id="c1", key="content", text="hello"),
-            ToolFieldEnd(tool_use_id="c1", key="content"),
+            ToolFieldStart(0, tool_use_id="c1", key="path"),
+            ToolFieldDelta(0, tool_use_id="c1", key="path", text="/a"),
+            ToolFieldEnd(0, tool_use_id="c1", key="path"),
+            ToolFieldStart(0, tool_use_id="c1", key="content"),
+            ToolFieldDelta(0, tool_use_id="c1", key="content", text="hello"),
+            ToolFieldEnd(0, tool_use_id="c1", key="content"),
         ]
 
     def test_empty_object(self) -> None:
@@ -62,12 +62,12 @@ class TestToolArgStreamChunked:
         e1 = s.feed('{"path":"/tmp/f')
         e2 = s.feed('oo.py"}')
         assert e1 == [
-            ToolFieldStart(tool_use_id="c1", key="path"),
-            ToolFieldDelta(tool_use_id="c1", key="path", text="/tmp/f"),
+            ToolFieldStart(0, tool_use_id="c1", key="path"),
+            ToolFieldDelta(0, tool_use_id="c1", key="path", text="/tmp/f"),
         ]
         assert e2 == [
-            ToolFieldDelta(tool_use_id="c1", key="path", text="oo.py"),
-            ToolFieldEnd(tool_use_id="c1", key="path"),
+            ToolFieldDelta(0, tool_use_id="c1", key="path", text="oo.py"),
+            ToolFieldEnd(0, tool_use_id="c1", key="path"),
         ]
 
     def test_key_split_across_chunks(self) -> None:
@@ -76,9 +76,9 @@ class TestToolArgStreamChunked:
         e2 = s.feed('th": "v"}')
         assert e1 == []
         assert e2 == [
-            ToolFieldStart(tool_use_id="c1", key="path"),
-            ToolFieldDelta(tool_use_id="c1", key="path", text="v"),
-            ToolFieldEnd(tool_use_id="c1", key="path"),
+            ToolFieldStart(0, tool_use_id="c1", key="path"),
+            ToolFieldDelta(0, tool_use_id="c1", key="path", text="v"),
+            ToolFieldEnd(0, tool_use_id="c1", key="path"),
         ]
 
     def test_char_by_char(self) -> None:

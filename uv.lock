@@ -441,7 +441,7 @@ requires-dist = [
     { name = "axio", editable = "axio" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=2.1.0" },
 ]
-provides-extras = ["tui", "examples"]
+provides-extras = ["tui"]
 
 [package.metadata.requires-dev]
 dev = [
