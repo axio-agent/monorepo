@@ -21,6 +21,7 @@ from axio.events import (
     ToolResult,
     ToolUseStart,
 )
+from axio.tool_args import ToolArgStream
 from axio.messages import Message
 from axio.stream import AgentStream
 from axio.tool import Tool
@@ -36,6 +37,7 @@ class Agent:
     tools: list[Tool]
     transport: CompletionTransport
     max_iterations: int = field(default=50)
+    parse_tool_args: bool = field(default=False)
 
     def run_stream(self, user_message: str, context: ContextStore) -> AgentStream:
         return AgentStream(self._run_loop(user_message, context))
@@ -138,22 +140,34 @@ class Agent:
 
                 try:
                     async for event in self.transport.stream(history, active_tools, self.system):
-                        yield event
                         match event:
                             case TextDelta(delta=delta):
+                                yield event
                                 self._accumulate_text(content, delta)
                             case ToolUseStart(tool_use_id=tid, name=name):
-                                pending[tid] = {"name": name, "json_parts": []}
+                                yield event
+                                info: dict[str, Any] = {"name": name, "json_parts": []}
+                                if self.parse_tool_args:
+                                    info["arg_stream"] = ToolArgStream(tid)
+                                pending[tid] = info
                             case ToolInputDelta(tool_use_id=tid, partial_json=pj):
                                 if tid in pending:
                                     pending[tid]["json_parts"].append(pj)
+                                if self.parse_tool_args and tid in pending:
+                                    for fe in pending[tid]["arg_stream"].feed(pj):
+                                        yield fe
+                                else:
+                                    yield event
                             case IterationEnd(usage=usage, stop_reason=sr):
+                                yield event
                                 blocks, malformed = self._finalize_pending_tools(pending, usage)
                                 content.extend(blocks)
                                 pending.clear()
                                 total_usage = total_usage + usage
                                 await context.add_context_tokens(usage.input_tokens, usage.output_tokens)
                                 stop_reason = sr
+                            case _:
+                                yield event
                 except Exception as exc:
                     logger.error("Transport error: %s", exc, exc_info=True)
                     yield Error(exception=exc)
