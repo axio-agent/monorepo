@@ -35,6 +35,28 @@ class ToolInputDelta:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolFieldStart:
+    index: int
+    tool_use_id: ToolCallID
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFieldDelta:
+    index: int
+    tool_use_id: ToolCallID
+    key: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFieldEnd:
+    index: int
+    tool_use_id: ToolCallID
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
 class ToolResult:
     tool_use_id: ToolCallID
     name: ToolName
@@ -62,5 +84,15 @@ class SessionEndEvent:
 
 
 type StreamEvent = (
-    ReasoningDelta | TextDelta | ToolUseStart | ToolInputDelta | ToolResult | IterationEnd | Error | SessionEndEvent
+    ReasoningDelta
+    | TextDelta
+    | ToolUseStart
+    | ToolInputDelta
+    | ToolFieldStart
+    | ToolFieldDelta
+    | ToolFieldEnd
+    | ToolResult
+    | IterationEnd
+    | Error
+    | SessionEndEvent
 )
