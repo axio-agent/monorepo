@@ -19,22 +19,30 @@ type ToolFieldEvent = ToolFieldStart | ToolFieldDelta | ToolFieldEnd
 
 
 class State(IntEnum):
-    INIT  = 0
-    OBJ   = 1
-    KEY   = 2
+    INIT = 0
+    OBJ = 1
+    KEY = 2
     COLON = 3
-    VAL   = 4
-    STR   = 5
-    RAW   = 6
+    VAL = 4
+    STR = 5
+    RAW = 6
     AFTER = 7
-    ESC   = 8
-    UESC  = 9
+    ESC = 8
+    UESC = 9
 
 
-ESCAPES: Mapping[str, str] = MappingProxyType({
-    "n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f",
-    '"': '"', "\\": "\\", "/": "/",
-})
+ESCAPES: Mapping[str, str] = MappingProxyType(
+    {
+        "n": "\n",
+        "t": "\t",
+        "r": "\r",
+        "b": "\b",
+        "f": "\f",
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+    }
+)
 
 
 class ToolArgStream:
@@ -50,11 +58,19 @@ class ToolArgStream:
     """
 
     __slots__ = (
-        "_id", "_idx", "_st",
-        "_key_chars", "_key",
-        "_buf", "_u", "_high",
-        "_depth", "_raw_str", "_raw_esc",
-        "_esc_key", "_esc_ret",
+        "_id",
+        "_idx",
+        "_st",
+        "_key_chars",
+        "_key",
+        "_buf",
+        "_u",
+        "_high",
+        "_depth",
+        "_raw_str",
+        "_raw_esc",
+        "_esc_key",
+        "_esc_ret",
         "_events",
     )
 

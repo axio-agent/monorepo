@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import cProfile
 import json
 import time
 
 import pytest
 
 from axio.events import ToolFieldDelta, ToolFieldEnd, ToolFieldStart
-from axio.tool_args import ToolArgStream
+from axio.tool_args import ToolArgStream, ToolFieldEvent
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -16,7 +17,7 @@ from axio.tool_args import ToolArgStream
 def collect(payload: str, chunk_size: int | None = None) -> dict[str, str]:
     """Feed payload through a fresh stream, return {key: decoded_text}."""
     s = ToolArgStream("c")
-    events: list = []
+    events: list[ToolFieldEvent] = []
     if chunk_size:
         for i in range(0, len(payload), chunk_size):
             events.extend(s.feed(payload[i : i + chunk_size]))
@@ -43,7 +44,7 @@ def E(key: str, idx: int = 0, tid: str = "c1") -> ToolFieldEnd:
     return ToolFieldEnd(idx, tid, key)
 
 
-def feed(json: str, tid: str = "c1") -> list:
+def feed(json: str, tid: str = "c1") -> list[ToolFieldEvent]:
     return ToolArgStream(tid).feed(json)
 
 
@@ -53,13 +54,19 @@ def feed(json: str, tid: str = "c1") -> list:
 class TestBasic:
     def test_single_string(self) -> None:
         assert feed('{"path": "/tmp/foo.py"}') == [
-            S("path"), D("path", "/tmp/foo.py"), E("path"),
+            S("path"),
+            D("path", "/tmp/foo.py"),
+            E("path"),
         ]
 
     def test_two_fields(self) -> None:
         assert feed('{"a": "x", "b": "y"}') == [
-            S("a"), D("a", "x"), E("a"),
-            S("b"), D("b", "y"), E("b"),
+            S("a"),
+            D("a", "x"),
+            E("a"),
+            S("b"),
+            D("b", "y"),
+            E("b"),
         ]
 
     def test_empty_object(self) -> None:
@@ -96,7 +103,7 @@ class TestChunked:
     def test_one_char_at_a_time(self) -> None:
         """Char-by-char and batch produce same semantic output (Delta batching may differ)."""
 
-        def summarise(events: list) -> dict:
+        def summarise(events: list[ToolFieldEvent]) -> dict[str, object]:
             starts = {e.key for e in events if isinstance(e, ToolFieldStart)}
             ends = {e.key for e in events if isinstance(e, ToolFieldEnd)}
             text = {
@@ -107,7 +114,7 @@ class TestChunked:
 
         full = ToolArgStream("c1").feed('{"k":"hello"}')
         char = ToolArgStream("c1")
-        events: list = []
+        events: list[ToolFieldEvent] = []
         for ch in '{"k":"hello"}':
             events.extend(char.feed(ch))
         assert summarise(events) == summarise(full)
@@ -183,9 +190,7 @@ class TestEscapes:
         s = ToolArgStream("c1")
         e1 = s.feed('{"s": "\\')
         e2 = s.feed('n"}')
-        combined = "".join(
-            ev.text for ev in e1 + e2 if isinstance(ev, ToolFieldDelta)
-        )
+        combined = "".join(ev.text for ev in e1 + e2 if isinstance(ev, ToolFieldDelta))
         assert combined == "\n"
 
 
@@ -195,29 +200,32 @@ class TestEscapes:
 class TestBroken:
     """Parser must never raise; partial output for truncated input is acceptable."""
 
-    @pytest.mark.parametrize("payload", [
-        "",
-        "{",
-        '{"',
-        '{"k',
-        '{"key"',
-        '{"key":',
-        '{"key": ',
-        '{"key": "',
-        '{"key": "val',          # truncated mid-string (no closing " or })
-        '{"key": "val"',         # missing closing }
-        '{"key": 42',            # truncated mid-raw-number
-        '{"key": tru',           # truncated mid-literal
-        '{"key": nul',
-        '{"a": 1, "b":',         # second field truncated after colon
-        '{"a": "x", "b": "y',   # second field string truncated
-        '[1, 2, 3]',             # not an object
-        '"string"',              # not an object
-        '42',                    # not an object
-        'null',
-        '{{{{',
-        '{"k": "v"} extra',     # trailing garbage — first field already complete
-    ])
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "",
+            "{",
+            '{"',
+            '{"k',
+            '{"key"',
+            '{"key":',
+            '{"key": ',
+            '{"key": "',
+            '{"key": "val',  # truncated mid-string (no closing " or })
+            '{"key": "val"',  # missing closing }
+            '{"key": 42',  # truncated mid-raw-number
+            '{"key": tru',  # truncated mid-literal
+            '{"key": nul',
+            '{"a": 1, "b":',  # second field truncated after colon
+            '{"a": "x", "b": "y',  # second field string truncated
+            "[1, 2, 3]",  # not an object
+            '"string"',  # not an object
+            "42",  # not an object
+            "null",
+            "{{{{",
+            '{"k": "v"} extra',  # trailing garbage — first field already complete
+        ],
+    )
     def test_no_exception(self, payload: str) -> None:
         s = ToolArgStream("c")
         try:
@@ -289,68 +297,80 @@ class TestBroken:
 class TestRoundTrip:
     """The ground truth: whatever json.dumps produces, our parser must decode correctly."""
 
-    @pytest.mark.parametrize("s", [
-        "",
-        "hello",
-        "with spaces",
-        'has "quotes"',
-        "newline\nand\ttab",
-        "backslash\\here",
-        "unicode 😀 and 日本語",
-        "all escapes \n\t\r\b\f",
-        "braces { } [ ] inside string",
-        "colon : comma , inside string",
-        "null bytes \x00 inside",
-        "a" * 10_000,
-    ])
+    @pytest.mark.parametrize(
+        "s",
+        [
+            "",
+            "hello",
+            "with spaces",
+            'has "quotes"',
+            "newline\nand\ttab",
+            "backslash\\here",
+            "unicode 😀 and 日本語",
+            "all escapes \n\t\r\b\f",
+            "braces { } [ ] inside string",
+            "colon : comma , inside string",
+            "null bytes \x00 inside",
+            "a" * 10_000,
+        ],
+    )
     def test_string_field(self, s: str) -> None:
         payload = json.dumps({"v": s})
         assert collect(payload)["v"] == s
 
-    @pytest.mark.parametrize("s", [
-        "",
-        "hello",
-        'has "quotes"',
-        "newline\nand\ttab",
-        "a" * 1_000,
-    ])
+    @pytest.mark.parametrize(
+        "s",
+        [
+            "",
+            "hello",
+            'has "quotes"',
+            "newline\nand\ttab",
+            "a" * 1_000,
+        ],
+    )
     def test_string_field_chunked(self, s: str) -> None:
         payload = json.dumps({"v": s})
         for chunk_size in (1, 3, 7, 64):
             assert collect(payload, chunk_size)["v"] == s, f"chunk_size={chunk_size}"
 
-    @pytest.mark.parametrize("obj", [
-        {"n": 0},
-        {"n": -1},
-        {"n": 42},
-        {"n": 1_000_000},
-        {"f": 3.14},
-        {"f": -2.718},
-        {"f": 1e10},
-        {"f": 1.5e-3},
-        {"b": True},
-        {"b": False},
-        {"z": None},
-    ])
-    def test_scalar_raw(self, obj: dict) -> None:
+    @pytest.mark.parametrize(
+        "obj",
+        [
+            {"n": 0},
+            {"n": -1},
+            {"n": 42},
+            {"n": 1_000_000},
+            {"f": 3.14},
+            {"f": -2.718},
+            {"f": 1e10},
+            {"f": 1.5e-3},
+            {"b": True},
+            {"b": False},
+            {"z": None},
+        ],
+    )
+    def test_scalar_raw(self, obj: dict[str, object]) -> None:
         payload = json.dumps(obj)
         key = next(iter(obj))
         raw = collect(payload)[key]
         assert json.loads(raw) == obj[key]
 
-    @pytest.mark.parametrize("obj", [
-        {"a": []},
-        {"a": [1]},
-        {"a": [1, 2, 3]},
-        {"a": ["x", "y"]},
-        {"a": [{"b": 1}, {"c": 2}]},
-        {"a": {}},
-        {"a": {"b": 1}},
-        {"a": {"b": {"c": {"d": 4}}}},
-        {"a": [[1, 2], [3, 4]]},
-        {"a": {"s": "a}b{c[d]e"}},
-    ])
-    def test_nested_raw(self, obj: dict) -> None:
+    @pytest.mark.parametrize(
+        "obj",
+        [
+            {"a": []},
+            {"a": [1]},
+            {"a": [1, 2, 3]},
+            {"a": ["x", "y"]},
+            {"a": [{"b": 1}, {"c": 2}]},
+            {"a": {}},
+            {"a": {"b": 1}},
+            {"a": {"b": {"c": {"d": 4}}}},
+            {"a": [[1, 2], [3, 4]]},
+            {"a": {"s": "a}b{c[d]e"}},
+        ],
+    )
+    def test_nested_raw(self, obj: dict[str, object]) -> None:
         payload = json.dumps(obj)
         key = next(iter(obj))
         raw = collect(payload)[key]
@@ -447,7 +467,7 @@ class TestValidity:
 
     def test_deeply_nested(self) -> None:
         depth = 20
-        inner: dict = {"leaf": 1}
+        inner: dict[str, object] = {"leaf": 1}
         for _ in range(depth):
             inner = {"child": inner}
         obj = {"root": inner}
@@ -551,14 +571,17 @@ class TestComplexEscapes:
         payload = r'{"s": "\\\\"}'
         assert collect(payload)["s"] == "\\\\"
 
-    @pytest.mark.parametrize("code,expected", [
-        (r"\u0000", "\x00"),       # null character
-        (r"\u001F", "\x1f"),       # control character
-        (r"\u007F", "\x7f"),       # DEL
-        (r"\u00E9", "\xe9"),       # é
-        (r"\u4E2D", "\u4e2d"),     # 中
-        (r"\uFFFF", "\uffff"),     # BMP max
-    ])
+    @pytest.mark.parametrize(
+        "code,expected",
+        [
+            (r"\u0000", "\x00"),  # null character
+            (r"\u001F", "\x1f"),  # control character
+            (r"\u007F", "\x7f"),  # DEL
+            (r"\u00E9", "\xe9"),  # é
+            (r"\u4E2D", "\u4e2d"),  # 中
+            (r"\uFFFF", "\uffff"),  # BMP max
+        ],
+    )
     def test_unicode_codepoints(self, code: str, expected: str) -> None:
         payload = f'{{"s": "{code}"}}'
         assert collect(payload)["s"] == expected
@@ -590,7 +613,7 @@ class TestComplexEscapes:
         r"""Byte-by-byte feed for \\uD83D\\uDE00."""
         full = r'{"s": "\uD83D\uDE00"}'
         s = ToolArgStream("c")
-        events: list = []
+        events: list[ToolFieldEvent] = []
         for ch in full:
             events.extend(s.feed(ch))
         text = "".join(e.text for e in events if isinstance(e, ToolFieldDelta))
@@ -616,32 +639,43 @@ class TestComplexEscapes:
         assert key == "ke\ny"
 
 
-# ── Benchmark (not a correctness test) ────────────────────────────────────────
+# ── O(1) verification via cProfile call counts ────────────────────────────────
+
+
+def _step_calls(payload: str) -> int:
+    """Return the number of _step() invocations needed to process payload."""
+    pr = cProfile.Profile()
+    s = ToolArgStream("c")
+    pr.runcall(s.feed, payload)
+    for stat in pr.getstats():
+        if hasattr(stat.code, "co_name") and stat.code.co_name == "_step":
+            return stat.callcount
+    return 0  # pragma: no cover
 
 
 class TestPerf:
-    """Verify O(1)-per-character behaviour: time should scale linearly."""
+    """Verify O(1)-per-character behaviour using call counts (machine-independent).
 
-    _LIMIT_NS = 2_000  # generous upper bound per character, even on slow CI
+    cProfile.callcount is deterministic: unaffected by machine speed, load, or
+    coverage instrumentation overhead that trips up wall-clock timing tests.
+    """
 
-    @pytest.mark.parametrize("n", [10_000, 100_000, 1_000_000])
-    def test_linear_time_string(self, n: int) -> None:
+    @pytest.mark.parametrize("n", [1_000, 10_000, 100_000])
+    def test_step_calls_linear_string(self, n: int) -> None:
+        """_step() called exactly once per character for plain string values."""
         payload = '{"data": "' + "x" * n + '"}'
-        start = time.perf_counter()
+        calls = _step_calls(payload)
+        # Verify correctness too
         events = ToolArgStream("c").feed(payload)
-        elapsed = time.perf_counter() - start
-
         assert events[0] == ToolFieldStart(0, "c", "data")
         assert events[-1] == ToolFieldEnd(0, "c", "data")
         assert sum(len(e.text) for e in events if isinstance(e, ToolFieldDelta)) == n
+        # No reprocess ever happens for string values → exactly 1 call/char
+        assert calls == len(payload), f"expected {len(payload)}, got {calls} for n={n}"
 
-        ns = elapsed / len(payload) * 1e9
-        assert ns < self._LIMIT_NS, f"too slow: {ns:.0f} ns/char for n={n}"
-
-    @pytest.mark.parametrize("n", [10_000, 100_000, 1_000_000])
-    def test_linear_time_raw(self, n: int) -> None:
-        """Raw (non-string) values also O(1) per char."""
-        # build {"f0":0,"f1":1,...} with n total chars
+    @pytest.mark.parametrize("n", [1_000, 10_000, 100_000])
+    def test_step_calls_linear_raw(self, n: int) -> None:
+        """_step() called ≤ 2× per character for raw values (reprocess on delimiter)."""
         fields = []
         total = 0
         i = 0
@@ -651,68 +685,69 @@ class TestPerf:
             total += len(entry) + 1  # +1 for comma
             i += 1
         payload = "{" + ",".join(fields) + "}"
-        start = time.perf_counter()
-        ToolArgStream("c").feed(payload)
-        elapsed = time.perf_counter() - start
+        calls = _step_calls(payload)
+        # Each comma/} ending a raw value triggers one reprocess → at most 2×
+        assert calls <= 2 * len(payload), f"super-linear: {calls} calls for {len(payload)} chars"
+        # In practice close to 1× — ratio must be sane
+        assert calls / len(payload) < 1.5, f"too many reprocess calls: {calls / len(payload):.2f}×"
 
-        ns = elapsed / len(payload) * 1e9
-        assert ns < self._LIMIT_NS, f"too slow: {ns:.0f} ns/char for n={n}"
-
-    def test_o1_scaling(self) -> None:
-        """time/n must be roughly constant across 3 orders of magnitude (no O(n²))."""
-        sizes = [10_000, 100_000, 1_000_000]
-        ns_per_char = []
-        for n in sizes:
-            payload = '{"d": "' + "x" * n + '"}'
-            start = time.perf_counter()
-            ToolArgStream("c").feed(payload)
-            ns_per_char.append((time.perf_counter() - start) / len(payload) * 1e9)
-
-        # ratio between largest and smallest must be < 10× (O(n²) would be ~10000×)
-        ratio = max(ns_per_char) / min(ns_per_char)
-        assert ratio < 10, (
-            f"non-linear scaling detected: {[f'{x:.0f}' for x in ns_per_char]} ns/char "
-            f"(ratio={ratio:.1f}×)"
-        )
+    def test_step_calls_scale_linearly(self) -> None:
+        """Call count grows proportionally to input length (not O(n²))."""
+        sizes = [1_000, 10_000, 100_000]
+        counts = [_step_calls('{"d": "' + "x" * n + '"}') for n in sizes]
+        # Each size is 10× bigger → calls must also grow ~10× (within 20%)
+        for prev, curr, (n0, n1) in zip(counts, counts[1:], zip(sizes, sizes[1:])):
+            expected = n1 / n0
+            actual = curr / prev
+            assert 0.8 * expected <= actual <= 1.2 * expected, (
+                f"non-linear: {n0}→{n1} chars, {prev}→{curr} calls (ratio {actual:.2f}×)"
+            )
 
     @pytest.mark.parametrize("chunk_size", [1, 16, 64, 256])
-    def test_chunked_throughput(self, chunk_size: int) -> None:
-        """Chunked feeding must stay O(1) per character regardless of chunk size."""
-        n = 200_000
+    def test_chunked_same_call_count(self, chunk_size: int) -> None:
+        """Chunked feeding must not add extra _step() calls vs batch."""
+        n = 10_000
         payload = '{"content": "' + "a" * n + '"}'
-        start = time.perf_counter()
-        collect(payload, chunk_size=chunk_size)
-        elapsed = time.perf_counter() - start
+        batch_calls = _step_calls(payload)
 
-        ns = elapsed / len(payload) * 1e9
-        assert ns < self._LIMIT_NS, f"too slow at chunk_size={chunk_size}: {ns:.0f} ns/char"
+        pr = cProfile.Profile()
+        s = ToolArgStream("c")
+        pr.enable()
+        for i in range(0, len(payload), chunk_size):
+            s.feed(payload[i : i + chunk_size])
+        pr.disable()
+        chunked_calls = next(
+            (
+                stat.callcount
+                for stat in pr.getstats()
+                if hasattr(stat.code, "co_name") and stat.code.co_name == "_step"
+            ),
+            0,
+        )
+        assert chunked_calls == batch_calls, f"chunk_size={chunk_size}: chunked={chunked_calls} != batch={batch_calls}"
 
     def test_many_short_fields(self) -> None:
-        """100 fields of ~20 chars each."""
+        """100 fields — correctness + call count stays linear."""
         obj = {f"field_{i:03d}": f"value number {i}" for i in range(100)}
         payload = json.dumps(obj)
-        start = time.perf_counter()
         got = collect(payload)
-        elapsed = time.perf_counter() - start
-
         assert len(got) == 100
         assert all(got[f"field_{i:03d}"] == f"value number {i}" for i in range(100))
-        ns = elapsed / len(payload) * 1e9
-        assert ns < self._LIMIT_NS, f"too slow: {ns:.0f} ns/char"
+        assert _step_calls(payload) <= 2 * len(payload)
 
     def test_throughput_report(self) -> None:
-        """Print ns/char breakdown for manual inspection (never fails)."""
+        """Print ns/char and calls/char for manual inspection (never fails)."""
         results = []
         for label, payload in [
             ("string 500k", '{"content": "' + "a" * 500_000 + '"}'),
-            ("raw 500k",    "{" + ",".join(f'"f{i}":{i}' for i in range(25_000)) + "}"),
-            ("100 fields",  json.dumps({f"k{i}": "x" * 100 for i in range(100)})),
+            ("raw 500k", "{" + ",".join(f'"f{i}":{i}' for i in range(25_000)) + "}"),
+            ("100 fields", json.dumps({f"k{i}": "x" * 100 for i in range(100)})),
         ]:
             start = time.perf_counter()
             ToolArgStream("c").feed(payload)
             elapsed = time.perf_counter() - start
             ns = elapsed / len(payload) * 1e9
-            mb_s = len(payload) / elapsed / 1e6
-            results.append(f"{label}: {ns:.1f} ns/char  ({mb_s:.1f} MB/s)")
+            cpc = _step_calls(payload) / len(payload)
+            results.append(f"{label}: {ns:.0f} ns/char  {cpc:.2f} calls/char")
 
         print("\n  " + "\n  ".join(results))
