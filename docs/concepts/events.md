@@ -53,6 +53,38 @@ All events are frozen dataclasses with `slots=True`:
       partial_json: str
   ```
 
+`ToolFieldStart`
+: Emitted when a new top-level field of a tool's JSON input has been identified.
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class ToolFieldStart:
+      index: int
+      tool_use_id: ToolCallID
+      key: str
+  ```
+
+`ToolFieldDelta`
+: A decoded chunk of the current field's value. String values have escape
+  sequences resolved and surrounding quotes stripped; other types are raw JSON.
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class ToolFieldDelta:
+      index: int
+      tool_use_id: ToolCallID
+      key: str
+      text: str
+  ```
+
+`ToolFieldEnd`
+: Emitted when the current top-level field is fully received.
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class ToolFieldEnd:
+      index: int
+      tool_use_id: ToolCallID
+      key: str
+  ```
+
 `ToolResult`
 : The result of executing a tool, added by the agent after dispatch.
   ```python
@@ -93,7 +125,9 @@ All events are combined into a single type alias:
 
 ```python
 type StreamEvent = (
-    ReasoningDelta | TextDelta | ToolUseStart | ToolInputDelta
+    ReasoningDelta | TextDelta
+    | ToolUseStart | ToolInputDelta
+    | ToolFieldStart | ToolFieldDelta | ToolFieldEnd
     | ToolResult | IterationEnd | Error | SessionEndEvent
 )
 ```
@@ -142,34 +176,62 @@ similar to how Claude Code shows Edit tool diffs live.
 :alt: Streaming tool arguments demo
 ```
 
-The agent accumulates fragments internally and parses the complete JSON at
-`IterationEnd`, but consumers can decode partial JSON on the fly using a
-library like [partial-json-parser](https://pypi.org/project/partial-json-parser/):
+### ToolArgStream
+
+`axio` ships a zero-dependency, O(1)-per-character streaming JSON parser that
+converts `ToolInputDelta` chunks into structured `ToolField*` events:
 
 ```python
-from partial_json_parser import loads as partial_json_loads
+from axio.tool_args import ToolArgStream
 
-tool_buffers: dict[str, str] = {}  # tool_use_id -> accumulated JSON
+stream = ToolArgStream("call_1")
+stream.feed('{"path":"/tmp/f')
+# → [ToolFieldStart(0, "call_1", "path"),
+#    ToolFieldDelta(0, "call_1", "path", "/tmp/f")]
+
+stream.feed('oo.py"}')
+# → [ToolFieldDelta(0, "call_1", "path", "oo.py"),
+#    ToolFieldEnd(0, "call_1", "path")]
+```
+
+Top-level **string** fields are decoded (escape sequences resolved, quotes
+stripped). All other top-level values (numbers, booleans, objects, arrays) are
+emitted as raw JSON fragments via `ToolFieldDelta.text`.
+
+Typical usage — create one `ToolArgStream` per tool call and forward its
+output events downstream:
+
+```python
+from axio.tool_args import ToolArgStream
+from axio.events import ToolFieldStart, ToolFieldDelta, ToolFieldEnd
+
+parsers: dict[str, ToolArgStream] = {}
 
 async for event in agent.run_stream(prompt, ctx):
     match event:
-        case ToolUseStart(tool_use_id=tid, name=name):
-            tool_buffers[tid] = ""
+        case ToolUseStart(tool_use_id=tid, name=name, index=idx):
+            parsers[tid] = ToolArgStream(tid, idx)
             print(f"▶ {name}")
 
         case ToolInputDelta(tool_use_id=tid, partial_json=pj):
-            tool_buffers[tid] += pj
-            # Decode whatever is parseable so far
-            try:
-                parsed = partial_json_loads(tool_buffers[tid])
-                print(f"  {parsed}", end="\r")
-            except Exception:
-                pass
+            for field_event in parsers[tid].feed(pj):
+                match field_event:
+                    case ToolFieldStart(key=key):
+                        print(f"\n  {key}: ", end="", flush=True)
+                    case ToolFieldDelta(text=text):
+                        print(text, end="", flush=True)
+                    case ToolFieldEnd():
+                        pass
 
         case ToolResult(tool_use_id=tid, content=content):
             print(f"\n  → {content}")
-            del tool_buffers[tid]
+            parsers.pop(tid, None)
 ```
+
+The `ToolField*` events are also emitted directly by the agent stream when a
+transport produces `ToolInputDelta` events — you can match them without
+instantiating `ToolArgStream` yourself if you prefer to rely on the agent-level
+integration (see below).
 
 See the full working example in
 [examples/stream_tool_args.py](https://github.com/axio-agent/monorepo/blob/master/examples/stream_tool_args.py).
