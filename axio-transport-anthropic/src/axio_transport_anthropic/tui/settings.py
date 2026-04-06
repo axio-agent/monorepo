@@ -10,7 +10,7 @@ from textual.widgets import Button, Input, Static
 
 
 class AnthropicSettingsScreen(ModalScreen[dict[str, str] | None]):
-    """Editable settings form for Anthropic transport: api_key."""
+    """Editable settings form for Anthropic transport: api_key, base_url."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
     CSS = """
@@ -31,11 +31,17 @@ class AnthropicSettingsScreen(ModalScreen[dict[str, str] | None]):
     def compose(self) -> ComposeResult:
         with Container(id="anthropic-settings"):
             yield Static("[bold]Anthropic Settings[/]")
-            yield Static("API Key (leave blank to use ANTHROPIC_API_KEY env var):", classes="field-label")
+            yield Static("API Key (leave blank to use ANTHROPIC_API_KEY):", classes="field-label")
             yield Input(
                 value=self._settings.get("api_key", ""),
                 id="api-key",
                 password=True,
+            )
+            yield Static("Base URL (leave blank to use ANTHROPIC_BASE_URL or default):", classes="field-label")
+            yield Input(
+                value=self._settings.get("base_url", ""),
+                placeholder="https://api.anthropic.com/v1",
+                id="base-url",
             )
             with Horizontal(classes="settings-buttons"):
                 yield Button("Save", id="btn-save", variant="primary")
@@ -50,6 +56,9 @@ class AnthropicSettingsScreen(ModalScreen[dict[str, str] | None]):
             api_key = self.query_one("#api-key", Input).value.strip()
             if api_key:
                 result["api_key"] = api_key
+            base_url = self.query_one("#base-url", Input).value.strip()
+            if base_url:
+                result["base_url"] = base_url
             self.dismiss(result)
         else:
             self.dismiss(None)

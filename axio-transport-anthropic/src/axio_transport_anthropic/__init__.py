@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
@@ -179,8 +180,8 @@ class AnthropicTransport(CompletionTransport):
     )
 
     name: str = "Anthropic"
-    base_url: str = "https://api.anthropic.com/v1"
-    api_key: str = ""
+    base_url: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"))
+    api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
     model: ModelSpec = field(default_factory=lambda: ANTHROPIC_MODELS["claude-sonnet-4-6"])
     models: ModelRegistry = field(default_factory=lambda: ModelRegistry(ANTHROPIC_MODELS.values()))
     session: aiohttp.ClientSession | None = field(default=None, repr=False, compare=False)
@@ -391,8 +392,9 @@ class AnthropicTransport(CompletionTransport):
         )
         return cls(
             name=str(data.get("name", "")),
-            base_url=str(data["base_url"]),
-            api_key=str(data.get("api_key", "")),
+            base_url=str(data.get("base_url", ""))
+            or os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
+            api_key=str(data.get("api_key", "")) or os.environ.get("ANTHROPIC_API_KEY", ""),
             models=models,
             session=session,
         )

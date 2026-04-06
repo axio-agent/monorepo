@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
@@ -323,8 +324,8 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
     )
 
     name: str = "OpenAI"
-    base_url: str = "https://api.openai.com/v1"
-    api_key: str = ""
+    base_url: str = field(default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
     model: ModelSpec = field(default_factory=lambda: OPENAI_MODELS["gpt-4.1-mini"])
     models: ModelRegistry = field(default_factory=lambda: ModelRegistry(OPENAI_MODELS.values()))
     session: aiohttp.ClientSession | None = field(default=None, repr=False, compare=False)
@@ -609,8 +610,8 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         )
         return cls(
             name=str(data.get("name", "")),
-            base_url=str(data["base_url"]),
-            api_key=str(data.get("api_key", "")),
+            base_url=str(data.get("base_url", "")) or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            api_key=str(data.get("api_key", "")) or os.environ.get("OPENAI_API_KEY", ""),
             models=models,
             session=session,
         )

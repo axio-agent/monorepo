@@ -23,7 +23,6 @@ class OpenAISettingsScreen(ModalScreen[dict[str, str] | None]):
     .settings-buttons { height: auto; margin-top: 1; }
     .settings-buttons Button { margin: 0 1; }
     """
-    DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
     def __init__(self, settings: dict[str, str]) -> None:
         super().__init__()
@@ -32,12 +31,13 @@ class OpenAISettingsScreen(ModalScreen[dict[str, str] | None]):
     def compose(self) -> ComposeResult:
         with Container(id="openai-settings"):
             yield Static("[bold]OpenAI Settings[/]")
-            yield Static("Base URL:", classes="field-label")
+            yield Static("Base URL (leave blank to use OPENAI_BASE_URL or default):", classes="field-label")
             yield Input(
-                value=self._settings.get("base_url", self.DEFAULT_BASE_URL),
+                value=self._settings.get("base_url", ""),
+                placeholder="https://api.openai.com/v1",
                 id="base-url",
             )
-            yield Static("API Key (leave blank to use env var):", classes="field-label")
+            yield Static("API Key (leave blank to use OPENAI_API_KEY):", classes="field-label")
             yield Input(
                 value=self._settings.get("api_key", ""),
                 id="api-key",
