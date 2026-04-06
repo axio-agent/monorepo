@@ -18,8 +18,7 @@ from axio.messages import Message
 from axio.tool import Tool, ToolHandler
 from axio.types import StopReason
 
-from axio_transport_anthropic import ANTHROPIC_MODELS, AnthropicTransport
-from axio_transport_anthropic import _convert_messages
+from axio_transport_anthropic import ANTHROPIC_MODELS, AnthropicTransport, _convert_messages
 
 
 class GetWeather(ToolHandler):
@@ -454,8 +453,9 @@ class TestConnectionError:
         fake_server: tuple[FakeAnthropicServer, str],
         transport: AnthropicTransport,
     ) -> None:
+        assert transport.session is not None
         call_count = 0
-        original_post = transport.session.post  # type: ignore[union-attr]
+        original_post = transport.session.post
 
         def patched_post(*args: Any, **kwargs: Any) -> Any:
             nonlocal call_count
@@ -465,7 +465,7 @@ class TestConnectionError:
             return original_post(*args, **kwargs)
 
         fake_server[0].responses.append(_text_sse("ok"))
-        with patch.object(transport.session, "post", side_effect=patched_post):  # type: ignore[union-attr]
+        with patch.object(transport.session, "post", side_effect=patched_post):
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 events = await _collect(transport.stream([], [], ""))
         text = [e for e in events if isinstance(e, TextDelta)]
