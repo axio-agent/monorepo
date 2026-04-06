@@ -455,16 +455,13 @@ class AgentApp(App[None]):
                 await self._write_meta("[red]No transports available — set an API key env variable[/]")
                 return
 
-            # Resolve model for each role: persisted config -> transport defaults -> skip
+            # Resolve model for each role from persisted config
             for role in ModelRole:
                 config_value = await self._config.get(f"model.{role}")
-                binding: RoleBinding | None = None
                 if config_value:
                     binding = self._transports.resolve(config_value)
-                if binding is None:
-                    binding = self._transports.resolve_default(role.value)
-                if binding is not None:
-                    self._role_bindings[role] = binding
+                    if binding is not None:
+                        self._role_bindings[role] = binding
 
             # Set up chat transport
             if ModelRole.CHAT in self._role_bindings:
@@ -580,13 +577,12 @@ class AgentApp(App[None]):
         lines.append("**Transports**")
         lines.append("")
         for name in self._transports.discovered:
-            meta = self._transports.get_meta(name)
             if name in self._transports.available:
                 t = self._transports.get_transport(name)
-                count = len(t.models)
-                lines.append(f"- {meta.label} ({count} models)")
+                lines.append(f"- {t.name} ({len(t.models)} models)")
             else:
-                lines.append(f"- ~~{meta.label}~~ — no API key")
+                label = name.replace("-", " ").title()
+                lines.append(f"- ~~{label}~~ — no API key")
 
         # Model roles
         lines.append("")
@@ -1063,11 +1059,15 @@ class AgentApp(App[None]):
         for name in self._transports.discovered:
             if name not in screens:
                 continue
-            meta = self._transports.get_meta(name)
+            label = (
+                self._transports.get_transport(name).name
+                if name in self._transports.available
+                else name.replace("-", " ").title()
+            )
             screen_cls = screens[name]
             yield SystemCommand(
-                f"Configure {meta.label}",
-                f"Edit {meta.label} transport settings",
+                f"Configure {label}",
+                f"Edit {label} transport settings",
                 lambda n=name, s=screen_cls: self._show_transport_settings(n, s),
             )
 
@@ -1083,10 +1083,10 @@ class AgentApp(App[None]):
             return
         was_available = name in self._transports.available
         await self._transports.save_settings(name, result)
-        meta = self._transports.get_meta(name)
 
         if name not in self._transports.available:
-            await self._write_meta(f"[yellow]{meta.label}: API key required to activate[/]")
+            label = name.replace("-", " ").title()
+            await self._write_meta(f"[yellow]{label}: API key required to activate[/]")
             return
 
         if not was_available:
@@ -1096,18 +1096,7 @@ class AgentApp(App[None]):
         await self._update_status()
 
     async def _activate_transport(self, name: str) -> None:
-        """Resolve role defaults and set up agent for a newly activated transport."""
-        meta = self._transports.get_meta(name)
-
-        # Fill unset roles from this transport's defaults
-        for role in ModelRole:
-            if role in self._role_bindings:
-                continue
-            binding = self._transports.resolve_default(role.value)
-            if binding is not None and binding.transport == name:
-                self._role_bindings[role] = binding
-                await self._config.set(f"model.{role}", self._transports.encode(name, binding.model.id))
-
+        """Set up agent for a newly activated transport."""
         # Set up chat if this transport claimed the chat role
         if ModelRole.CHAT in self._role_bindings and self._role_bindings[ModelRole.CHAT].transport == name:
             cb = self._role_bindings[ModelRole.CHAT]
@@ -1130,11 +1119,11 @@ class AgentApp(App[None]):
             vb = self._role_bindings[ModelRole.VISION]
             VisionAnalyze._transport = self._transports.make_transport(name, vb.model)
 
-        await self._write_meta(f"[green]{meta.label} activated[/]")
+        label = self._transports.get_transport(name).name
+        await self._write_meta(f"[green]{label} activated[/]")
 
     async def _reconfigure_transport(self, name: str) -> None:
         """Rebuild cached transport instances after settings change."""
-        meta = self._transports.get_meta(name)
         for role, binding in self._role_bindings.items():
             if binding.transport != name:
                 continue
@@ -1161,7 +1150,8 @@ class AgentApp(App[None]):
                             self._agent.selector = self._get_active_selector()
                         except ImportError:
                             pass
-        await self._write_meta(f"[dim]{meta.label} settings updated[/]")
+        label = self._transports.get_transport(name).name
+        await self._write_meta(f"[dim]{label} settings updated[/]")
 
     def _guard_descriptions(self) -> dict[str, str]:
         result: dict[str, str] = {}

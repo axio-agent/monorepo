@@ -84,17 +84,21 @@ Register it under `axio.tools.settings`:
 my_plugin = "my_package.plugin:MyPlugin"
 ```
 
-## TransportMeta
+## Transport display name
 
-Transport packages can provide metadata for display and configuration:
+Each transport class declares its display name via a `name: str` field:
 
 ```python
-@dataclass(frozen=True, slots=True)
-class TransportMeta:
-    label: str              # Display name
-    api_key_env: str        # Environment variable for API key
-    role_defaults: dict[str, str]  # Default role mappings
+@dataclass(slots=True)
+class MyTransport(CompletionTransport):
+    name: str = "My Provider"
+    api_key: str = field(default_factory=lambda: os.environ.get("MY_API_KEY", ""))
+    ...
 ```
 
-This metadata is used by the TUI to show transport options and prompt for
-API keys.
+The TUI uses `transport.name` to label the transport in the welcome screen
+and command palette.  A transport is considered *available* when its
+`fetch_models()` call succeeds; if it raises (e.g. because no API key is
+present), the transport is shown as unavailable.  API key lookup is each
+transport's own responsibility — typically via a `field(default_factory=...)`
+that reads the appropriate environment variable.

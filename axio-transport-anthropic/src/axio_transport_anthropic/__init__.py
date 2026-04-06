@@ -9,14 +9,14 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Self
+from typing import Any, Self
 
 import aiohttp
 from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
-from axio.models import Capability, ModelRegistry, ModelSpec, TransportMeta
+from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.tool import Tool
 from axio.transport import CompletionTransport
 from axio.types import StopReason, Usage
@@ -166,19 +166,6 @@ def _convert_tools(tools: list[Tool]) -> list[dict[str, Any]]:
 
 @dataclass(slots=True)
 class AnthropicTransport(CompletionTransport):
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="Anthropic",
-        api_key_env="ANTHROPIC_API_KEY",
-        role_defaults={
-            "chat": "claude-sonnet-4-6",
-            "compact": "claude-haiku-4-5-20251001",
-            "subagent": "claude-haiku-4-5-20251001",
-            "guard": "claude-haiku-4-5-20251001",
-            "vision": "claude-sonnet-4-6",
-            "reasoning": "claude-opus-4-6",
-        },
-    )
-
     name: str = "Anthropic"
     base_url: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"))
     api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))

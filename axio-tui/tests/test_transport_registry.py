@@ -7,11 +7,11 @@ from collections.abc import Generator
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import aiohttp
-from axio.models import Capability, ModelRegistry, ModelSpec, TransportMeta
+from axio.models import Capability, ModelRegistry, ModelSpec
 
 from axio_tui.sqlite_context import ProjectConfig
 from axio_tui.transport_registry import TransportRegistry
@@ -28,12 +28,6 @@ _SPEC_OTHER = ModelSpec(id="other-chat", capabilities=_TT, context_window=50_000
 
 @dataclass(slots=True)
 class _FakeTransport:
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="Fake",
-        api_key_env="FAKE_API_KEY",
-        role_defaults={"chat": "test-chat", "vision": "test-vision", "embedding": "test-embed"},
-    )
-
     base_url: str = "https://fake.api/v1"
     api_key: str = ""
     model: ModelSpec = _SPEC_CHAT
@@ -46,12 +40,6 @@ class _FakeTransport:
 
 @dataclass(slots=True)
 class _OtherTransport:
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="Other",
-        api_key_env="OTHER_API_KEY",
-        role_defaults={"chat": "other-chat"},
-    )
-
     api_key: str = ""
     model: ModelSpec = _SPEC_OTHER
     models: ModelRegistry = field(default_factory=lambda: ModelRegistry([_SPEC_OTHER]))
@@ -62,25 +50,21 @@ class _OtherTransport:
 
 
 @dataclass(slots=True)
-class _NoMetaTransport:
+class _FailFetchTransport:
+    """Transport whose fetch_models always fails (simulates missing credentials)."""
+
     api_key: str = ""
     model: ModelSpec = _SPEC_CHAT
     models: ModelRegistry = field(default_factory=ModelRegistry)
     session: aiohttp.ClientSession | None = None
 
     async def fetch_models(self) -> None:
-        pass
+        raise RuntimeError("no credentials")
 
 
 @dataclass(slots=True)
 class _AuthTransport:
     """Fake transport that supports on_auth_refresh (like CodexTransport)."""
-
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="Auth",
-        api_key_env="AUTH_API_KEY",
-        role_defaults={"chat": "test-chat"},
-    )
 
     api_key: str = ""
     refresh_token: str = ""
@@ -105,11 +89,6 @@ def _patch_discover(
         with (
             patch("axio_tui.transport_registry.discover_transports", return_value=transports),
             patch("axio_tui.transport_registry.discover_transport_settings", return_value=settings or {}),
-            patch.dict(
-                "os.environ",
-                {m.api_key_env: "key" for cls in transports.values() if (m := getattr(cls, "META", None))},
-                clear=False,
-            ),
         ):
             yield
 
@@ -117,28 +96,17 @@ def _patch_discover(
 
 
 class TestTransportRegistryInit:
-    async def test_discovers_transport_with_api_key(self) -> None:
+    async def test_discovers_transport(self) -> None:
         session = AsyncMock(spec=aiohttp.ClientSession)
         reg = TransportRegistry()
         with _patch_discover({"fake": _FakeTransport}):
             await reg.init(session)
         assert reg.available == ["fake"]
 
-    async def test_skips_transport_without_api_key(self) -> None:
+    async def test_transport_unavailable_when_fetch_fails(self) -> None:
         session = AsyncMock(spec=aiohttp.ClientSession)
         reg = TransportRegistry()
-        with (
-            patch("axio_tui.transport_registry.discover_transports", return_value={"fake": _FakeTransport}),
-            patch("axio_tui.transport_registry.discover_transport_settings", return_value={}),
-            patch.dict("os.environ", {}, clear=True),
-        ):
-            await reg.init(session)
-        assert reg.available == []
-
-    async def test_skips_transport_without_meta(self) -> None:
-        session = AsyncMock(spec=aiohttp.ClientSession)
-        reg = TransportRegistry()
-        with _patch_discover({"nometa": _NoMetaTransport}):
+        with _patch_discover({"fail": _FailFetchTransport}):
             await reg.init(session)
         assert reg.available == []
 
@@ -223,25 +191,6 @@ class TestResolve:
         assert reg.resolve("nonexistent-model") is None
 
 
-class TestResolveDefault:
-    async def test_resolves_role_default(self) -> None:
-        session = AsyncMock(spec=aiohttp.ClientSession)
-        reg = TransportRegistry()
-        with _patch_discover({"fake": _FakeTransport}):
-            await reg.init(session)
-        binding = reg.resolve_default("chat")
-        assert binding is not None
-        assert binding.transport == "fake"
-        assert binding.model.id == "test-chat"
-
-    async def test_returns_none_for_unknown_role(self) -> None:
-        session = AsyncMock(spec=aiohttp.ClientSession)
-        reg = TransportRegistry()
-        with _patch_discover({"fake": _FakeTransport}):
-            await reg.init(session)
-        assert reg.resolve_default("unknown_role") is None
-
-
 class TestEncode:
     def test_encode(self) -> None:
         reg = TransportRegistry()
@@ -257,7 +206,7 @@ class TestMakeTransport:
         transport = reg.make_transport("fake", _SPEC_VISION)
         assert isinstance(transport, _FakeTransport)
         assert transport.model == _SPEC_VISION
-        assert transport.api_key == "key"
+        assert transport.api_key == ""
 
     async def test_make_transport_passes_saved_base_url(self, tmp_path: Path) -> None:
         session = AsyncMock(spec=aiohttp.ClientSession)
@@ -283,7 +232,7 @@ class TestSavedSettings:
         assert transport.base_url == "https://custom.api/v1"
         await config.close()
 
-    async def test_init_saved_api_key_overrides_env(self, tmp_path: Path) -> None:
+    async def test_init_saved_api_key_overrides_default(self, tmp_path: Path) -> None:
         session = AsyncMock(spec=aiohttp.ClientSession)
         config = ProjectConfig(tmp_path / "test.db", project="test")
         await config.set("transport.fake.api_key", "saved-key")
@@ -294,17 +243,13 @@ class TestSavedSettings:
         assert transport.api_key == "saved-key"
         await config.close()
 
-    async def test_init_saved_api_key_without_env(self, tmp_path: Path) -> None:
-        """A transport can be bootstrapped with a saved api_key even without env var."""
+    async def test_init_saved_api_key_activates_transport(self, tmp_path: Path) -> None:
+        """A transport can be bootstrapped with a saved api_key."""
         session = AsyncMock(spec=aiohttp.ClientSession)
         config = ProjectConfig(tmp_path / "test.db", project="test")
         await config.set("transport.fake.api_key", "saved-key")
         reg = TransportRegistry()
-        with (
-            patch("axio_tui.transport_registry.discover_transports", return_value={"fake": _FakeTransport}),
-            patch("axio_tui.transport_registry.discover_transport_settings", return_value={}),
-            patch.dict("os.environ", {}, clear=True),
-        ):
+        with _patch_discover({"fake": _FakeTransport}):
             await reg.init(session, global_config=config)
         assert reg.available == ["fake"]
         assert reg.get_transport("fake").api_key == "saved-key"
@@ -341,7 +286,7 @@ class TestSavedSettings:
             original = reg.get_transport("fake")
             assert original.base_url == "https://fake.api/v1"
 
-            # Save new settings (env var still available inside patch)
+            # Save new settings
             await reg.save_settings("fake", {"base_url": "https://new.api/v1"})
 
             # Transport instance was replaced
@@ -373,17 +318,13 @@ class TestSavedSettings:
         await config.close()
 
     async def test_discovered_includes_unavailable_transports(self) -> None:
-        """Transports without API keys are in `discovered` but not in `available`."""
+        """Transports whose fetch_models fails are in `discovered` but not in `available`."""
         session = AsyncMock(spec=aiohttp.ClientSession)
         reg = TransportRegistry()
-        with (
-            patch("axio_tui.transport_registry.discover_transports", return_value={"fake": _FakeTransport}),
-            patch("axio_tui.transport_registry.discover_transport_settings", return_value={}),
-            patch.dict("os.environ", {}, clear=True),
-        ):
+        with _patch_discover({"fail": _FailFetchTransport}):
             await reg.init(session)
         assert reg.available == []
-        assert reg.discovered == ["fake"]
+        assert reg.discovered == ["fail"]
 
     async def test_init_without_config_uses_defaults(self) -> None:
         session = AsyncMock(spec=aiohttp.ClientSession)
@@ -392,7 +333,7 @@ class TestSavedSettings:
             await reg.init(session)
         transport = reg.get_transport("fake")
         assert transport.base_url == "https://fake.api/v1"
-        assert transport.api_key == "key"
+        assert transport.api_key == ""
 
 
 class TestAuthRefresh:

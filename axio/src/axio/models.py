@@ -7,15 +7,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 
-@dataclass(frozen=True, slots=True)
-class TransportMeta:
-    """Metadata a transport plugin declares about itself."""
-
-    label: str
-    api_key_env: str | None
-    role_defaults: dict[str, str]
-
-
 class Capability(StrEnum):
     text = "text"
     vision = "vision"

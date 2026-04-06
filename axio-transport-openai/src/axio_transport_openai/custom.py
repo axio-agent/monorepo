@@ -30,9 +30,8 @@ Configuration is persisted to ``~/.local/share/axio/openai-custom.json``:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar
 
-from axio.models import ModelRegistry, TransportMeta
+from axio.models import ModelRegistry
 
 from axio_transport_openai import OpenAITransport
 
@@ -45,12 +44,6 @@ class OpenAICompatibleTransport(OpenAITransport):
     with ``name``, ``base_url``, ``api_key``, and ``models`` populated from the JSON
     config.  Supports JSON round-trip via :meth:`to_dict` / :meth:`from_dict`.
     """
-
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="OpenAI-Compatible",
-        api_key_env="",  # no env-var required; the hub manages activation
-        role_defaults={},
-    )
 
     base_url: str = ""  # override OpenAITransport default
     models: ModelRegistry = field(default_factory=ModelRegistry)  # empty default

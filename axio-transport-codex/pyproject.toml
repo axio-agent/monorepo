@@ -17,7 +17,6 @@ codex = "axio_transport_codex:CodexTransport"
 [project.entry-points."axio.transport.settings"]
 codex = "axio_transport_codex.tui:CodexSettingsScreen"
 
-
 [project.urls]
 Homepage = "https://github.com/axio-agent/axio-transport-codex"
 Repository = "https://github.com/axio-agent/axio-transport-codex"

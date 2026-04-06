@@ -10,14 +10,14 @@ import platform
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any
 
 import aiohttp
 from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
-from axio.models import Capability, ModelRegistry, ModelSpec, TransportMeta
+from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.tool import Tool
 from axio.transport import CompletionTransport
 from axio.types import StopReason, Usage
@@ -160,19 +160,7 @@ def _convert_messages(messages: list[Message], system: str) -> tuple[str, list[d
 
 @dataclass(slots=True)
 class CodexTransport(CompletionTransport):
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="ChatGPT (Codex)",
-        api_key_env="",
-        role_defaults={
-            "chat": "gpt-4.1",
-            "compact": "gpt-4.1-mini",
-            "subagent": "gpt-4.1-mini",
-            "guard": "gpt-4.1-nano",
-            "vision": "gpt-4.1",
-            "reasoning": "o4-mini",
-        },
-    )
-
+    name: str = "ChatGPT (Codex)"
     api_key: str = ""
     refresh_token: str = ""
     expires_at: str = ""

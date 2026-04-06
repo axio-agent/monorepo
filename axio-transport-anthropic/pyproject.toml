@@ -15,7 +15,6 @@ anthropic = "axio_transport_anthropic:AnthropicTransport"
 
 [project.entry-points."axio.transport.settings"]
 anthropic = "axio_transport_anthropic.tui:AnthropicSettingsScreen"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

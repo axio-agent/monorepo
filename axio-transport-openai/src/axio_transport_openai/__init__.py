@@ -9,14 +9,14 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Self
+from typing import Any, Self
 
 import aiohttp
 from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
-from axio.models import Capability, ModelRegistry, ModelSpec, TransportMeta
+from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.tool import Tool
 from axio.transport import CompletionTransport, EmbeddingTransport
 from axio.types import StopReason, Usage
@@ -310,19 +310,6 @@ class ThinkTagParser:
 
 @dataclass(slots=True)
 class OpenAITransport(CompletionTransport, EmbeddingTransport):
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="OpenAI",
-        api_key_env="OPENAI_API_KEY",
-        role_defaults={
-            "chat": "gpt-5.4",
-            "compact": "gpt-5.4-mini",
-            "subagent": "gpt-5.4-mini",
-            "guard": "gpt-4.1-nano",
-            "vision": "gpt-5.4",
-            "reasoning": "o4-mini",
-        },
-    )
-
     name: str = "OpenAI"
     base_url: str = field(default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))

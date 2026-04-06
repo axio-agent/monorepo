@@ -257,17 +257,3 @@ async def test_stream_sends_bare_model_id(fake_server: tuple[FakeServer, str]) -
 
 
 # ---------------------------------------------------------------------------
-# META
-# ---------------------------------------------------------------------------
-
-
-def test_meta_label() -> None:
-    assert OpenAICompatibleTransport.META.label == "OpenAI-Compatible"
-
-
-def test_meta_no_api_key_env() -> None:
-    assert OpenAICompatibleTransport.META.api_key_env == ""
-
-
-def test_meta_no_role_defaults() -> None:
-    assert OpenAICompatibleTransport.META.role_defaults == {}

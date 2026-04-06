@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
 import aiohttp
-from axio.models import Capability, ModelRegistry, ModelSpec, TransportMeta
+from axio.models import Capability, ModelRegistry, ModelSpec
 
 from .plugin import discover_transport_settings, discover_transports
 from .sqlite_context import ProjectConfig
@@ -28,11 +27,10 @@ class RoleBinding:
 
 @dataclass(slots=True)
 class TransportRegistry:
-    """Discovers transports, checks API keys, fetches model catalogues."""
+    """Discovers transports, creates instances, and manages them."""
 
     _transports: dict[str, Any] = field(default_factory=dict, repr=False)
     _classes: dict[str, type] = field(default_factory=dict, repr=False)
-    _metas: dict[str, TransportMeta] = field(default_factory=dict)
     _screens: dict[str, type] = field(default_factory=dict)
     _saved: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
     _config: ProjectConfig | None = field(default=None, repr=False)
@@ -44,7 +42,7 @@ class TransportRegistry:
         config: ProjectConfig | None = None,
         global_config: ProjectConfig | None = None,
     ) -> None:
-        """Discover transports, create instances for those with API keys, fetch models."""
+        """Discover transports, create instances for those that initialise successfully."""
         self._session = session
         self._config = global_config or config
         cls_map = discover_transports()
@@ -52,44 +50,31 @@ class TransportRegistry:
 
         pending: list[tuple[str, Any]] = []
         for name, cls in cls_map.items():
-            meta: TransportMeta | None = getattr(cls, "META", None)
-            if meta is None:
-                logger.warning("Transport %r has no META, skipping", name)
-                continue
-
-            # Always store class and meta so settings screens work for all transports
             self._classes[name] = cls
-            self._metas[name] = meta
-
-            # Load saved settings from config
             saved: dict[str, str] = {}
             if self._config is not None:
                 saved = await self._load_settings(self._config, name)
             self._saved[name] = saved
 
-            # Determine API key: saved settings first, env second
-            env_key = os.environ.get(meta.api_key_env, "") if meta.api_key_env else ""
-            api_key = saved.get("api_key", "") or env_key
-            if not api_key and meta.api_key_env:
-                logger.info("Transport %r: no API key (env %s), skipping", name, meta.api_key_env)
-                continue
-
-            # Build transport with saved settings as extra kwargs
-            kwargs: dict[str, Any] = {"api_key": api_key, "session": session}
+            kwargs: dict[str, Any] = {"session": session}
             for k, v in saved.items():
-                if k != "api_key" and v:
+                if v:
                     kwargs[k] = v
-
-            pending.append((name, cls(**kwargs)))
+            try:
+                instance = cls(**kwargs)
+            except Exception:
+                logger.warning("Transport %r failed to instantiate, skipping", name, exc_info=True)
+                continue
+            pending.append((name, instance))
 
         async def _fetch_one(name: str, transport: Any) -> None:
             if hasattr(transport, "on_auth_refresh"):
                 transport.on_auth_refresh = partial(self._persist_auth, name)
             try:
                 await transport.fetch_models()
+                self._transports[name] = transport
             except Exception:
-                logger.warning("Transport %r: fetch_models failed", name, exc_info=True)
-            self._transports[name] = transport
+                logger.warning("Transport %r: fetch_models failed, skipping", name, exc_info=True)
 
         await asyncio.gather(*[_fetch_one(n, t) for n, t in pending])
 
@@ -133,22 +118,18 @@ class TransportRegistry:
         # Re-create transport with new settings
         if name in self._classes and self._session is not None:
             cls = self._classes[name]
-            meta = self._metas[name]
-            env_key = os.environ.get(meta.api_key_env, "") if meta.api_key_env else ""
-            api_key = settings.get("api_key", "") or env_key
-            if api_key or not meta.api_key_env:
-                kwargs: dict[str, Any] = {"api_key": api_key, "session": self._session}
-                for k, v in settings.items():
-                    if k != "api_key" and v:
-                        kwargs[k] = v
-                transport = cls(**kwargs)
-                if hasattr(transport, "on_auth_refresh"):
-                    transport.on_auth_refresh = partial(self._persist_auth, name)
-                try:
-                    await transport.fetch_models()
-                except Exception:
-                    logger.warning("Transport %r: fetch_models failed after reconfigure", name, exc_info=True)
-                self._transports[name] = transport
+            kwargs: dict[str, Any] = {"session": self._session}
+            for k, v in settings.items():
+                if v:
+                    kwargs[k] = v
+            transport = cls(**kwargs)
+            if hasattr(transport, "on_auth_refresh"):
+                transport.on_auth_refresh = partial(self._persist_auth, name)
+            try:
+                await transport.fetch_models()
+            except Exception:
+                logger.warning("Transport %r: fetch_models failed after reconfigure", name, exc_info=True)
+            self._transports[name] = transport
 
     @property
     def available(self) -> list[str]:
@@ -157,15 +138,12 @@ class TransportRegistry:
 
     @property
     def discovered(self) -> list[str]:
-        """Names of all discovered transports (including those without API keys)."""
+        """Names of all discovered transports (including those that failed to initialise)."""
         return list(self._classes)
 
     def get_transport(self, name: str) -> Any:
         """Return the initialised transport instance by name."""
         return self._transports[name]
-
-    def get_meta(self, name: str) -> TransportMeta:
-        return self._metas[name]
 
     def all_models(self, *caps: Capability) -> list[tuple[str, ModelSpec]]:
         """Return (transport_name, ModelSpec) across all transports, optionally filtered."""
@@ -211,7 +189,6 @@ class TransportRegistry:
         """Register a dynamically-created transport instance (e.g. custom providers)."""
         self._transports[name] = instance
         self._classes[name] = type(instance)
-        self._metas[name] = type(instance).META
 
     def unregister_by_prefix(self, prefix: str) -> None:
         """Remove all transports whose names start with *prefix*."""
@@ -219,7 +196,6 @@ class TransportRegistry:
         for n in names:
             del self._transports[n]
             self._classes.pop(n, None)
-            self._metas.pop(n, None)
             self._saved.pop(n, None)
 
     def resolve(self, config_value: str) -> RoleBinding | None:
@@ -240,16 +216,6 @@ class TransportRegistry:
         for name, transport in self._transports.items():
             if config_value in transport.models:
                 return RoleBinding(transport=name, model=transport.models[config_value])
-        return None
-
-    def resolve_default(self, role: str) -> RoleBinding | None:
-        """Find the first transport that has a default for the given role."""
-        for name, meta in self._metas.items():
-            if name not in self._transports:
-                continue
-            model_id = meta.role_defaults.get(role)
-            if model_id and model_id in self._transports[name].models:
-                return RoleBinding(transport=name, model=self._transports[name].models[model_id])
         return None
 
     def encode(self, name: str, model_id: str) -> str:

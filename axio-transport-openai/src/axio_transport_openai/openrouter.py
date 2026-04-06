@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, ClassVar
+import os
+from dataclasses import dataclass, field
+from typing import Any
 
 from axio.exceptions import StreamError
-from axio.models import Capability, ModelSpec, TransportMeta
+from axio.models import Capability, ModelSpec
 
 from axio_transport_openai import OpenAITransport
 
@@ -16,19 +17,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class OpenRouterTransport(OpenAITransport):
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="OpenRouter",
-        api_key_env="OPENROUTER_API_KEY",
-        role_defaults={
-            "chat": "google/gemini-2.5-pro-preview",
-            "compact": "google/gemini-2.5-flash-preview",
-            "subagent": "google/gemini-2.5-flash-preview",
-            "guard": "google/gemini-2.5-flash-preview",
-            "vision": "google/gemini-2.5-pro-preview",
-            "reasoning": "deepseek/deepseek-r1",
-        },
-    )
-
+    name: str = "OpenRouter"
+    api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
     base_url: str = "https://openrouter.ai/api/v1"
     model: ModelSpec = ModelSpec(id="google/gemini-2.5-pro-preview")
 

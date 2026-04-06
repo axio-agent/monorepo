@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, ClassVar
+import os
+from dataclasses import dataclass, field
+from typing import Any
 
 from axio.exceptions import StreamError
-from axio.models import Capability, ModelSpec, TransportMeta
+from axio.models import Capability, ModelSpec
 
 from axio_transport_openai import OpenAITransport
 
@@ -16,20 +17,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class NebiusTransport(OpenAITransport):
-    META: ClassVar[TransportMeta] = TransportMeta(
-        label="Nebius AI Studio",
-        api_key_env="NEBIUS_API_KEY",
-        role_defaults={
-            "chat": "MiniMaxAI/MiniMax-M2.5",
-            "compact": "openai/gpt-oss-120b",
-            "subagent": "openai/gpt-oss-120b",
-            "guard": "openai/gpt-oss-20b",
-            "vision": "Qwen/Qwen2.5-VL-72B-Instruct",
-            "embedding": "Qwen/Qwen3-Embedding-8B",
-            "reasoning": "deepseek-ai/DeepSeek-R1-0528",
-        },
-    )
-
+    name: str = "Nebius AI Studio"
+    api_key: str = field(default_factory=lambda: os.environ.get("NEBIUS_API_KEY", ""))
     base_url: str = "https://api.tokenfactory.nebius.com/v1"
     model: ModelSpec = ModelSpec(id="deepseek-ai/DeepSeek-V3-0324")
 
