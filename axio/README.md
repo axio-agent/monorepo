@@ -25,9 +25,24 @@ pip install axio
 
 ## Quick start
 
+<!--
+name: test_readme_quick_start
+```python
+import sys, types
+from axio.testing import StubTransport, make_text_response
+
+_m = types.ModuleType("axio_transport_openai")
+class OpenAITransport(StubTransport):
+    def __init__(self, api_key: str = "", model: str = "") -> None:
+        super().__init__([make_text_response("Hello, Alice!")])
+_m.OpenAITransport = OpenAITransport  # type: ignore[attr-defined]
+sys.modules["axio_transport_openai"] = _m
+```
+-->
+<!-- name: test_readme_quick_start -->
 ```python
 import asyncio
-from axio import Agent
+from axio.agent import Agent
 from axio.context import MemoryContextStore
 from axio.tool import Tool, ToolHandler
 
@@ -84,6 +99,7 @@ asyncio.run(main())
 
 ### CompletionTransport
 
+<!-- name: test_readme_completion_transport -->
 ```python
 from typing import Protocol, runtime_checkable
 from collections.abc import AsyncIterator
@@ -100,18 +116,30 @@ class CompletionTransport(Protocol):
 
 ### ContextStore
 
+<!-- name: test_readme_context_store -->
 ```python
-class ContextStore(ABC):
+from abc import ABC, abstractmethod
+from axio.context import ContextStore
+from axio.messages import Message
+
+class MyContextStore(ContextStore, ABC):
+    @abstractmethod
     async def append(self, message: Message) -> None: ...
+
+    @abstractmethod
     async def get_history(self) -> list[Message]: ...
-    async def fork(self) -> ContextStore: ...   # branch conversation
-    async def clear(self) -> None: ...
-    async def close(self) -> None: ...
+
+    # Everything else — session_id, close(), fork(), clear(),
+    # get/set_context_tokens() — has a default implementation.
 ```
 
 ### PermissionGuard
 
+<!-- name: test_readme_permission_guard -->
 ```python
+from typing import Protocol, runtime_checkable
+from axio.tool import ToolHandler
+
 @runtime_checkable
 class PermissionGuard(Protocol):
     async def check(self, handler: ToolHandler) -> ToolHandler: ...
@@ -131,6 +159,7 @@ class PermissionGuard(Protocol):
 
 ## Tools
 
+<!-- name: test_readme_tools -->
 ```python
 from axio.tool import Tool, ToolHandler
 
@@ -153,7 +182,9 @@ tool = Tool(
 
 ## Testing
 
+<!-- name: test_readme_testing -->
 ```python
+from axio.agent import Agent
 from axio.testing import (
     StubTransport,
     make_tool_use_response,

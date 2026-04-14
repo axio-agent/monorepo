@@ -10,8 +10,10 @@ from typing import Any
 from uuid import uuid4
 
 import aiohttp
+import aiosqlite
 from axio.agent import Agent
-from axio.context import ContextStore, MemoryContextStore, SessionInfo, compact_context
+from axio.compaction import compact_context
+from axio.context import ContextStore, MemoryContextStore, SessionInfo
 from axio.events import (
     Error,
     IterationEnd,
@@ -31,6 +33,7 @@ from axio.permission import PermissionGuard
 from axio.selector import ToolSelector
 from axio.tool import Tool
 from axio.tool_args import ToolArgStream
+from axio_context_sqlite import SQLiteContextStore
 from pygments.token import Token  # type: ignore[import-untyped]
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
@@ -56,7 +59,7 @@ from axio_tui.transport_registry import RoleBinding, TransportRegistry
 
 from .prompt import SYSTEM_PROMPT
 from .screens import ModelSelectScreen, PluginHubScreen, QuitDialog, SessionSelectScreen, ToolDetailScreen
-from .sqlite_context import GLOBAL_PROJECT, ProjectConfig, SQLiteContextStore
+from .sqlite_config import GLOBAL_PROJECT, ProjectConfig, connect_config
 from .tools import SUBAGENT_SYSTEM_PROMPT, Confirm, StatusLine, SubAgent, VisionAnalyze, _short
 
 logger = logging.getLogger(__name__)
@@ -262,7 +265,7 @@ _ROLE_LABELS: dict[ModelRole, str] = {
     ModelRole.REASONING: "Reasoning",
 }
 
-DB_PATH = Path.home() / ".local" / "share" / "axio-tui.db"
+DB_PATH = Path.home() / ".local" / "share" / "axio-tui" / "axio.db"
 
 
 class _AxioLogFilter(logging.Filter):
@@ -361,9 +364,11 @@ class AgentApp(App[None]):
         self._agent: Agent | None = None
         self._transports = TransportRegistry()
         self._role_bindings: dict[ModelRole, RoleBinding] = {}
-        self._chat_context = SQLiteContextStore(DB_PATH, uuid4().hex)
-        self._config = ProjectConfig(DB_PATH)
-        self._global_config = ProjectConfig(DB_PATH, project=GLOBAL_PROJECT)
+        self._db_conn: aiosqlite.Connection | None = None
+        self._config_conn: aiosqlite.Connection | None = None
+        self._chat_context_: SQLiteContextStore | None = None
+        self._config_: ProjectConfig | None = None
+        self._global_config_: ProjectConfig | None = None
         self._is_running = False
         self.ready: asyncio.Event = asyncio.Event()
         self._worker: Any = None
@@ -396,6 +401,33 @@ class AgentApp(App[None]):
         self._tools_plugins: dict[str, ToolsPlugin] = {}
         self._nav_index: int | None = None
 
+    @property
+    def _chat_context(self) -> SQLiteContextStore:
+        assert self._chat_context_ is not None
+        return self._chat_context_
+
+    @_chat_context.setter
+    def _chat_context(self, value: SQLiteContextStore) -> None:
+        self._chat_context_ = value
+
+    @property
+    def _config(self) -> ProjectConfig:
+        assert self._config_ is not None
+        return self._config_
+
+    @_config.setter
+    def _config(self, value: ProjectConfig) -> None:
+        self._config_ = value
+
+    @property
+    def _global_config(self) -> ProjectConfig:
+        assert self._global_config_ is not None
+        return self._global_config_
+
+    @_global_config.setter
+    def _global_config(self, value: ProjectConfig) -> None:
+        self._global_config_ = value
+
     def compose(self) -> ComposeResult:
         yield Header()
         log = VerticalScroll(id="log")
@@ -418,6 +450,14 @@ class AgentApp(App[None]):
         SubAgent._factory = self._make_subagent
 
         self._session = aiohttp.ClientSession()
+
+        from axio_context_sqlite import connect as connect_context
+
+        self._db_conn = await connect_context(DB_PATH)
+        self._config_conn = await connect_config(DB_PATH)
+        self._chat_context = SQLiteContextStore(self._db_conn, uuid4().hex)
+        self._config = ProjectConfig(self._config_conn)
+        self._global_config = ProjectConfig(self._config_conn, project=GLOBAL_PROJECT)
 
         # Show UI immediately; heavy init runs in background
         inp = self.query_one("#input", Input)
@@ -489,7 +529,8 @@ class AgentApp(App[None]):
                 try:
                     from axio_tui_rag.embedding_cache import CachedEmbeddingTransport
 
-                    embed_cache = CachedEmbeddingTransport(raw_transport, DB_PATH, eb.model.id)
+                    embed_db = DB_PATH.parent / "embed_cache.db"
+                    embed_cache = CachedEmbeddingTransport(raw_transport, embed_db, eb.model.id)
                     self._embed_cache = embed_cache
                     if "embedding" in self._selector_classes:
                         cls = self._selector_classes["embedding"]
@@ -646,9 +687,10 @@ class AgentApp(App[None]):
                 pass
         if self._embed_cache is not None:
             await self._embed_cache.close()
-        await self._chat_context.close()
-        await self._config.close()
-        await self._global_config.close()
+        if self._db_conn is not None:
+            await self._db_conn.close()
+        if self._config_conn is not None:
+            await self._config_conn.close()
         if self._session is not None:
             await self._session.close()
             # Give aiohttp time to close underlying SSL transports
@@ -875,7 +917,8 @@ class AgentApp(App[None]):
                     try:
                         from axio_tui_rag.embedding_cache import CachedEmbeddingTransport
 
-                        self._embed_cache = CachedEmbeddingTransport(raw_transport, DB_PATH, spec.id)
+                        embed_db = DB_PATH.parent / "embed_cache.db"
+                        self._embed_cache = CachedEmbeddingTransport(raw_transport, embed_db, spec.id)
                         if "embedding" in self._selector_classes:
                             cls = self._selector_classes["embedding"]
                             self._selector_instances["embedding"] = cls(
@@ -897,8 +940,8 @@ class AgentApp(App[None]):
         self.push_screen(ModelRoleSelectScreen(self._role_bindings), self._on_role_selected)
 
     async def _new_session(self) -> None:
-        await self._chat_context.close()
-        self._chat_context = SQLiteContextStore(DB_PATH, uuid4().hex)
+        assert self._db_conn is not None
+        self._chat_context = SQLiteContextStore(self._db_conn, uuid4().hex)
         self._last_input_tokens = 0
         await self.action_clear_log()
         await self._write_meta("[dim]--- New session ---[/]")
@@ -906,9 +949,7 @@ class AgentApp(App[None]):
     async def _fork_conversation(self) -> None:
         if self._is_running:
             return
-        forked = await self._chat_context.fork()
-        await self._chat_context.close()
-        self._chat_context = forked
+        self._chat_context = await self._chat_context.fork()
         await self.action_clear_log()
         await self._render_history()
         await self._write_meta("[dim]--- Forked conversation ---[/]")
@@ -923,8 +964,8 @@ class AgentApp(App[None]):
     async def _on_session_selected(self, info: SessionInfo | None) -> None:
         if info is None:
             return
-        await self._chat_context.close()
-        self._chat_context = SQLiteContextStore(DB_PATH, info.session_id)
+        assert self._db_conn is not None
+        self._chat_context = SQLiteContextStore(self._db_conn, info.session_id)
         self._last_input_tokens = 0
         await self._update_status()
         await self.action_clear_log()
@@ -978,9 +1019,9 @@ class AgentApp(App[None]):
 
     async def _replace_context(self, messages: list[Message]) -> None:
         """Close current context, create a fresh SQLite store, populate it."""
+        assert self._db_conn is not None and self._chat_context is not None
         total_in, total_out = await self._chat_context.get_context_tokens()
-        await self._chat_context.close()
-        self._chat_context = SQLiteContextStore(DB_PATH, uuid4().hex)
+        self._chat_context = SQLiteContextStore(self._db_conn, uuid4().hex)
         for msg in messages:
             await self._chat_context.append(msg)
         if total_in or total_out:
@@ -1141,7 +1182,8 @@ class AgentApp(App[None]):
                         try:
                             from axio_tui_rag.embedding_cache import CachedEmbeddingTransport
 
-                            self._embed_cache = CachedEmbeddingTransport(raw_transport, DB_PATH, binding.model.id)
+                            embed_db = DB_PATH.parent / "embed_cache.db"
+                            self._embed_cache = CachedEmbeddingTransport(raw_transport, embed_db, binding.model.id)
                             if "embedding" in self._selector_classes:
                                 cls = self._selector_classes["embedding"]
                                 self._selector_instances["embedding"] = cls(

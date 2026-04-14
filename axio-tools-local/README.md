@@ -29,10 +29,11 @@ pip install axio-tools-local
 
 ### Standalone (without TUI)
 
+<!-- name: test_readme_standalone -->
 ```python
-from axio import Agent
+from axio.agent import Agent
 from axio.context import MemoryContextStore
-from axio_transport_openai import OpenAITransport
+from axio_transport_openai import OpenAITransport, OPENAI_MODELS
 from axio_tools_local.shell import Shell
 from axio_tools_local.read_file import ReadFile
 from axio_tools_local.write_file import WriteFile
@@ -49,7 +50,7 @@ tools = [
 agent = Agent(
     system="You are a coding assistant with access to the local filesystem.",
     tools=tools,
-    transport=OpenAITransport(api_key="sk-...", model="gpt-4o"),
+    transport=OpenAITransport(api_key="sk-...", model=OPENAI_MODELS["gpt-4o"]),
 )
 ```
 
@@ -64,6 +65,13 @@ uv run axio   # Shell, ReadFile, WriteFile, PatchFile, ListFiles, RunPython appe
 
 ### Shell
 
+<!--
+name: test_readme_shell
+```python
+from axio_tools_local.shell import Shell
+```
+-->
+<!-- name: test_readme_shell -->
 ```python
 Shell(command="git log --oneline -5", cwd="/path/to/repo", timeout=30)
 Shell(command="python -m pytest", stdin=None)
@@ -75,16 +83,31 @@ Parameters: `command: str`, `timeout: int = 5`, `cwd: str = "."`, `stdin: str | 
 
 Applies an exact string replacement — safe for surgical edits without rewriting the whole file:
 
+<!--
+name: test_readme_patch_file
+```python
+from axio_tools_local.patch_file import PatchFile
+```
+-->
+<!-- name: test_readme_patch_file -->
 ```python
 PatchFile(
     file_path="src/main.py",
-    old_string="def foo():",
-    new_string="def foo(x: int) -> int:",
+    from_line=5,
+    to_line=5,
+    content="def foo(x: int) -> int:",
 )
 ```
 
 ### ListFiles
 
+<!--
+name: test_readme_list_files
+```python
+from axio_tools_local.list_files import ListFiles
+```
+-->
+<!-- name: test_readme_list_files -->
 ```python
 ListFiles(pattern="src/**/*.py")
 ListFiles(pattern="tests/test_*.py")
@@ -92,6 +115,13 @@ ListFiles(pattern="tests/test_*.py")
 
 ### RunPython
 
+<!--
+name: test_readme_run_python
+```python
+from axio_tools_local.run_python import RunPython
+```
+-->
+<!-- name: test_readme_run_python -->
 ```python
 RunPython(code="import sys; print(sys.version)")
 ```

@@ -30,16 +30,16 @@ pip install "axio-transport-openai[tui]"
 
 ## Usage
 
+<!-- name: test_readme_usage -->
 ```python
-from axio import Agent
+from axio.agent import Agent
 from axio.context import MemoryContextStore
-from axio_transport_openai import OpenAITransport
+from axio_transport_openai import OpenAITransport, OPENAI_MODELS
 
 transport = OpenAITransport(
     api_key="sk-...",
-    model="gpt-4o-mini",
+    model=OPENAI_MODELS["gpt-4o-mini"],
     base_url="https://api.openai.com/v1",  # default; override for local models
-    max_tokens=4096,
 )
 
 agent = Agent(system="You are a helpful assistant.", tools=[], transport=transport)
@@ -52,25 +52,43 @@ async def main() -> None:
 
 ### Local models (Ollama, vLLM, LM Studio)
 
+<!-- name: test_readme_usage -->
 ```python
+from axio.models import ModelSpec, Capability
+
 transport = OpenAITransport(
     api_key="ollama",                        # any non-empty string
-    model="llama3.2",
+    model=ModelSpec(id="llama3.2", capabilities=frozenset({Capability.text})),
     base_url="http://localhost:11434/v1",
 )
 ```
 
 ### Streaming events
 
+<!-- name: test_readme_streaming -->
 ```python
+import asyncio
+from axio.agent import Agent
+from axio.context import MemoryContextStore
+from axio.testing import StubTransport, make_text_response
 from axio.events import TextDelta, SessionEndEvent
 
-async for event in agent.run_stream("Tell me a joke", ctx):
-    match event:
-        case TextDelta(delta=text):
-            print(text, end="", flush=True)
-        case SessionEndEvent(total_usage=usage):
-            print(f"\n[{usage.input_tokens}in / {usage.output_tokens}out tokens]")
+agent = Agent(
+    system="",
+    tools=[],
+    transport=StubTransport([make_text_response("Why did the chicken cross the road?")]),
+)
+
+async def main() -> None:
+    ctx = MemoryContextStore()
+    async for event in agent.run_stream("Tell me a joke", ctx):
+        match event:
+            case TextDelta(delta=text):
+                print(text, end="", flush=True)
+            case SessionEndEvent(total_usage=usage):
+                print(f"\n[{usage.input_tokens}in / {usage.output_tokens}out tokens]")
+
+asyncio.run(main())
 ```
 
 ## Plugin registration

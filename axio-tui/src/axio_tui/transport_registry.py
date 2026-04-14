@@ -12,7 +12,7 @@ import aiohttp
 from axio.models import Capability, ModelRegistry, ModelSpec
 
 from .plugin import discover_transport_settings, discover_transports
-from .sqlite_context import ProjectConfig
+from .sqlite_config import ProjectConfig
 
 logger = logging.getLogger(__name__)
 

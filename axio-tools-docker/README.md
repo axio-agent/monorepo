@@ -32,8 +32,9 @@ pip install axio-tools-docker
 
 ## Usage
 
+<!-- name: test_readme_usage; mark: skip -->
 ```python
-from axio import Agent
+from axio.agent import Agent
 from axio.context import MemoryContextStore
 from axio_transport_openai import OpenAITransport
 from axio_tools_docker.plugin import DockerPlugin
@@ -69,14 +70,15 @@ async def main() -> None:
 
 ## Configuration
 
+<!-- name: test_readme_config -->
 ```python
 from axio_tools_docker.config import SandboxConfig
 
 config = SandboxConfig(
     image="python:3.12-slim",
-    memory_limit="512m",
-    cpu_quota=100000,    # 1 CPU
-    work_dir="/workspace",
+    memory="512m",
+    cpus="1.0",
+    workdir="/workspace",
 )
 ```
 

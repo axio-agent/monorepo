@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 from collections.abc import AsyncGenerator, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 
 from axio.blocks import TextBlock, ToolResultBlock, ToolUseBlock
 from axio.context import ContextStore
@@ -34,10 +35,14 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class Agent:
     system: str
-    tools: list[Tool]
     transport: CompletionTransport
+    tools: list[Tool] = field(default_factory=list)
     selector: ToolSelector | None = field(default=None)
     max_iterations: int = field(default=50)
+
+    def copy(self, **overrides: Any) -> Self:
+        """Return a new Agent with *overrides* applied."""
+        return dataclasses.replace(self, **overrides)
 
     def run_stream(self, user_message: str, context: ContextStore) -> AgentStream:
         return AgentStream(self._run_loop(user_message, context))

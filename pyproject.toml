@@ -1,6 +1,7 @@
 [tool.uv.workspace]
 members = [
     "axio",
+    "axio-context-sqlite",
     "axio-tools-docker",
     "axio-tools-local",
     "axio-tools-mcp",
@@ -15,6 +16,7 @@ members = [
 
 [tool.uv.sources]
 axio                       = { workspace = true }
+axio-context-sqlite        = { workspace = true }
 axio-tools-docker          = { workspace = true }
 axio-tools-local           = { workspace = true }
 axio-tools-mcp             = { workspace = true }

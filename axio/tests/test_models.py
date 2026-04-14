@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from axio.models import Capability, ModelRegistry, ModelSpec
+from axio.models import ModelRegistry, ModelSpec
 
 A = ModelSpec(id="a", input_cost=1.0)
 B = ModelSpec(id="b", input_cost=2.0)

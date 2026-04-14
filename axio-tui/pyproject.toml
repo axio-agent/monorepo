@@ -8,10 +8,10 @@ license = {text = "MIT"}
 keywords = ["llm", "agent", "ai", "tui", "textual", "terminal", "chat"]
 dependencies = [
     "axio",
+    "axio-context-sqlite",
     "textual>=2.1.0",
     "textual-serve>=1.1",
     "argclass>=1.6",
-    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +48,7 @@ packages = ["src/axio_tui"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests", "README.md"]
 
 [tool.ruff]
 line-length = 119
@@ -67,6 +68,7 @@ dev = [
     "mypy>=1.14",
     "ruff>=0.9",
     "pytest-cov>=7.1.0",
+    "markdown-pytest>=0.6.0",
 ]
 
 [[tool.mypy.overrides]]

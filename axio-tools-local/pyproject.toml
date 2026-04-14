@@ -29,6 +29,7 @@ packages = ["src/axio_tools_local"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests", "README.md"]
 
 [tool.ruff]
 line-length = 119
@@ -48,5 +49,6 @@ dev = [
     "mypy>=1.14",
     "ruff>=0.9",
     "pytest-cov>=7.1.0",
+    "markdown-pytest>=0.6.0",
 ]
 

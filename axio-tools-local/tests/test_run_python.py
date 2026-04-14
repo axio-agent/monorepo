@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from axio_tools_local.run_python import RunPython
 
@@ -88,19 +89,17 @@ class TestRunPythonCwd:
 
 
 class TestRunPythonCleanup:
-    async def test_temp_file_deleted_after_run(self) -> None:
+    async def test_temp_file_deleted_after_run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The temp .py file must be cleaned up after execution."""
-        before = set(Path(tempfile.gettempdir()).glob("tmp*.py"))
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
         await run("print('x')")
-        after = set(Path(tempfile.gettempdir()).glob("tmp*.py"))
-        assert after == before
+        assert list(tmp_path.glob("*.py")) == []
 
-    async def test_temp_file_deleted_on_timeout(self) -> None:
+    async def test_temp_file_deleted_on_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The temp file must be cleaned up even when execution times out."""
-        before = set(Path(tempfile.gettempdir()).glob("tmp*.py"))
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
         await run("import time; time.sleep(10)", timeout=1)
-        after = set(Path(tempfile.gettempdir()).glob("tmp*.py"))
-        assert after == before
+        assert list(tmp_path.glob("*.py")) == []
 
 
 class TestRunPythonMisc:

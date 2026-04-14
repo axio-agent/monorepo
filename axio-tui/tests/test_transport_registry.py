@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 from axio.models import Capability, ModelRegistry, ModelSpec
 
-from axio_tui.sqlite_context import ProjectConfig
+from axio_tui.sqlite_config import ProjectConfig
 from axio_tui.transport_registry import TransportRegistry
 
 _TT = frozenset({Capability.text, Capability.tool_use})

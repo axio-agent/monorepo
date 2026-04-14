@@ -33,8 +33,10 @@ pip install "axio-tui[guards]"
 
 Intercepts tool calls that contain filesystem paths (`file_path`, `filename`, `directory`, `path`, `cwd`). On the first access to a new directory it asks the user to **allow**, **allow all** (subtree), or **deny**.
 
+<!-- name: test_readme_path_guard -->
 ```python
 from axio_tui_guards.guards import PathGuard
+from axio_tools_local.write_file import WriteFile
 from axio.tool import Tool
 
 guard = PathGuard()   # uses TUI prompt_fn by default
@@ -56,24 +58,36 @@ Decision caching:
 
 Uses a secondary LLM call to review the tool handler arguments before execution. If the reviewer deems the call unsafe it raises `GuardError` with the reason.
 
+<!-- name: test_readme_llm_guard -->
 ```python
 from axio_tui_guards.guards import LLMGuard
-from axio_transport_openai import OpenAITransport
+from axio.agent import Agent
+from axio.context import MemoryContextStore
+from axio.testing import StubTransport, make_text_response
 
-reviewer = OpenAITransport(api_key="sk-...", model="gpt-4o-mini")
-guard = LLMGuard(transport=reviewer)
+reviewer = Agent(system="", tools=[], transport=StubTransport([make_text_response("allow")]))
+guard = LLMGuard(agent=reviewer, context=MemoryContextStore())
 ```
 
 ### Composing guards
 
 Guards are applied in order — attach both for layered protection:
 
+<!-- name: test_readme_composing -->
 ```python
+from axio_tui_guards.guards import PathGuard, LLMGuard
+from axio_tools_local.shell import Shell
+from axio.agent import Agent
+from axio.context import MemoryContextStore
+from axio.testing import StubTransport, make_text_response
+from axio.tool import Tool
+
+reviewer = Agent(system="", tools=[], transport=StubTransport([make_text_response("allow")]))
 tool = Tool(
     name="shell",
     description="Run shell commands",
     handler=Shell,
-    guards=(PathGuard(), LLMGuard(transport=reviewer)),
+    guards=(PathGuard(), LLMGuard(agent=reviewer, context=MemoryContextStore())),
 )
 ```
 
@@ -81,6 +95,7 @@ tool = Tool(
 
 Implement the `PermissionGuard` protocol to write your own:
 
+<!-- name: test_readme_custom_guard -->
 ```python
 from axio.permission import PermissionGuard
 from axio.exceptions import GuardError

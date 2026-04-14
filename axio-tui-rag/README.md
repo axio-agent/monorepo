@@ -44,10 +44,11 @@ Then ask the agent:
 
 ### Standalone
 
+<!-- name: test_readme_standalone -->
 ```python
-from axio import Agent
+from axio.agent import Agent
 from axio.context import MemoryContextStore
-from axio_transport_openai import OpenAITransport
+from axio_transport_openai import OpenAITransport, OPENAI_MODELS
 from axio_tui_rag import IndexFiles, SemanticSearch
 from axio.tool import Tool
 
@@ -59,7 +60,7 @@ tools = [
 agent = Agent(
     system="You are a code assistant. Index files before searching.",
     tools=tools,
-    transport=OpenAITransport(api_key="sk-...", model="gpt-4o"),
+    transport=OpenAITransport(api_key="sk-...", model=OPENAI_MODELS["gpt-4o"]),
 )
 ```
 

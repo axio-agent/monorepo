@@ -24,14 +24,14 @@ pip install axio-transport-codex
 
 ## Usage
 
+<!-- name: test_readme_usage -->
 ```python
-from axio import Agent
+from axio.agent import Agent
 from axio.context import MemoryContextStore
 from axio_transport_codex import CodexTransport
 
 transport = CodexTransport(
-    access_token="your-chatgpt-oauth-token",
-    model="gpt-4o",
+    api_key="your-chatgpt-oauth-token",
 )
 
 agent = Agent(system="You are a helpful assistant.", tools=[], transport=transport)

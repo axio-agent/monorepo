@@ -32,9 +32,10 @@ uv run axio   # MCP Servers section appears in settings
 
 ### Standalone
 
+<!-- name: test_readme_standalone -->
 ```python
 from axio_tools_mcp.registry import MCPRegistry
-from axio import Agent
+from axio.agent import Agent
 from axio.context import MemoryContextStore
 from axio_transport_openai import OpenAITransport
 

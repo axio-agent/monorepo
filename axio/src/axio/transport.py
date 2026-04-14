@@ -1,4 +1,12 @@
-"""Transport protocols: completion, image gen, TTS, STT."""
+"""Transport protocols: completion, image gen, TTS, STT.
+
+Transports should be stateless — all request state lives in the arguments
+passed to each method call.  This allows multiple agents to share a single
+transport instance and call it concurrently without interference.
+
+The one allowed exception is a reusable connection pool (e.g. an
+``aiohttp.ClientSession``), which is safe to share across concurrent calls.
+"""
 
 from __future__ import annotations
 
