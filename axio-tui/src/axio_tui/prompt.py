@@ -1,6 +1,22 @@
 import os
 from datetime import date, datetime
 
+from axio.blocks import TextBlock
+from axio.messages import Message
+
+LAST_ITERATION_MESSAGE = Message(
+    role="system",
+    content=[
+        TextBlock(
+            text=(
+                "IMPORTANT: You have reached the maximum number of iterations. "
+                "You MUST stop all tool usage immediately and respond directly to the user. "
+                "Summarize what you have done and what remains, then ask the user how to proceed."
+            )
+        )
+    ],
+)
+
 SYSTEM_PROMPT = """
 <assistant_behavior>
   <runtime_context>

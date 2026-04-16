@@ -57,7 +57,7 @@ from axio_tui.plugin import (
 )
 from axio_tui.transport_registry import RoleBinding, TransportRegistry
 
-from .prompt import SYSTEM_PROMPT
+from .prompt import LAST_ITERATION_MESSAGE, SYSTEM_PROMPT
 from .screens import ModelSelectScreen, PluginHubScreen, QuitDialog, SessionSelectScreen, ToolDetailScreen
 from .sqlite_config import GLOBAL_PROJECT, ProjectConfig, connect_config
 from .tools import SUBAGENT_SYSTEM_PROMPT, Confirm, StatusLine, SubAgent, VisionAnalyze, _short
@@ -503,6 +503,19 @@ class AgentApp(App[None]):
                     if binding is not None:
                         self._role_bindings[role] = binding
 
+            # Apply Nebius defaults when no config is saved for a role
+            _NEBIUS = "nebius"
+            if _NEBIUS in self._transports.available:
+                _nebius_t = self._transports.get_transport(_NEBIUS)
+                if ModelRole.CHAT not in self._role_bindings and "MiniMaxAI/MiniMax-M2.5" in _nebius_t.models:
+                    self._role_bindings[ModelRole.CHAT] = RoleBinding(
+                        transport=_NEBIUS, model=_nebius_t.models["MiniMaxAI/MiniMax-M2.5"]
+                    )
+                if ModelRole.VISION not in self._role_bindings and "Qwen/Qwen2.5-VL-72B-Instruct" in _nebius_t.models:
+                    self._role_bindings[ModelRole.VISION] = RoleBinding(
+                        transport=_NEBIUS, model=_nebius_t.models["Qwen/Qwen2.5-VL-72B-Instruct"]
+                    )
+
             # Set up chat transport
             if ModelRole.CHAT in self._role_bindings:
                 chat_binding = self._role_bindings[ModelRole.CHAT]
@@ -591,6 +604,7 @@ class AgentApp(App[None]):
                 system=SYSTEM_PROMPT,
                 tools=self._active_tools,
                 transport=chat_transport,
+                last_iteration_message=LAST_ITERATION_MESSAGE,
             )
 
             await self._update_status()
@@ -1152,6 +1166,7 @@ class AgentApp(App[None]):
                     tools=self._active_tools,
                     transport=self._chat_transport,
                     selector=self._get_active_selector(),
+                    last_iteration_message=LAST_ITERATION_MESSAGE,
                 )
             else:
                 self._agent.transport = self._chat_transport
