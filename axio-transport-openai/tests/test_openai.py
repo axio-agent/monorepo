@@ -556,6 +556,20 @@ def test_build_payload_text_only_stays_string() -> None:
     assert payload["messages"][0]["content"] == "Hello"
 
 
+def test_build_payload_system_message_in_history() -> None:
+    """System messages in history are passed through as role=system."""
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    messages = [
+        Message(role="system", content=[TextBlock(text="You are concise.")]),
+        Message(role="user", content=[TextBlock(text="Hello")]),
+    ]
+    payload = t.build_payload(messages, [], "")
+    msgs = payload["messages"]
+    system_msgs = [m for m in msgs if m["role"] == "system"]
+    assert len(system_msgs) == 1
+    assert system_msgs[0]["content"] == "You are concise."
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------

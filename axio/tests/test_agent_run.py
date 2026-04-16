@@ -2,12 +2,35 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from axio.agent import Agent
+from axio.blocks import TextBlock
 from axio.context import MemoryContextStore
 from axio.events import IterationEnd, ReasoningDelta, SessionEndEvent, StreamEvent, TextDelta, ToolResult
+from axio.messages import Message
 from axio.testing import MsgInput, StubTransport, make_text_response, make_tool_use_response
 from axio.tool import Tool, ToolHandler
 from axio.types import StopReason, Usage
+
+
+class CapturingTransport:
+    """Records messages passed to each stream() call."""
+
+    def __init__(self, responses: list[list[StreamEvent]]) -> None:
+        self._responses = responses
+        self._call_count = 0
+        self.calls: list[list[Message]] = []
+
+    async def _generate(self, events: list[StreamEvent]) -> AsyncIterator[StreamEvent]:
+        for event in events:
+            yield event
+
+    def stream(self, messages: list[Message], tools: list[Tool], system: str) -> AsyncIterator[StreamEvent]:
+        self.calls.append(list(messages))
+        idx = min(self._call_count, len(self._responses) - 1)
+        self._call_count += 1
+        return self._generate(self._responses[idx])
 
 
 class OkHandler(ToolHandler):
@@ -190,3 +213,61 @@ class TestMaxIterations:
         last = events[-1]
         assert isinstance(last, SessionEndEvent)
         assert last.stop_reason == StopReason.error
+
+
+class TestLastIterationMessage:
+    async def test_injected_only_on_last_iteration(self) -> None:
+        """last_iteration_message is appended to history only on the final iteration."""
+        tool = Tool(name="echo", description="echo", handler=OkHandler)
+        hint = Message(role="system", content=[TextBlock(text="wrap up now")])
+        transport = CapturingTransport(
+            [
+                make_tool_use_response("echo", "c1", {"msg": "hi"}, 1),
+                make_text_response("Done", 2),
+            ]
+        )
+        agent = Agent(
+            system="test",
+            tools=[tool],
+            transport=transport,
+            max_iterations=2,
+            last_iteration_message=hint,
+        )
+        await agent.run("go", MemoryContextStore())
+
+        # iteration 1: hint NOT in history
+        assert hint not in transport.calls[0]
+        # iteration 2 (last): hint IS the final message
+        assert transport.calls[1][-1] is hint
+
+    async def test_not_injected_when_none(self) -> None:
+        """No injection when last_iteration_message is None (default)."""
+        transport = CapturingTransport([make_text_response("hi", 1)])
+        agent = Agent(system="test", tools=[], transport=transport)
+        await agent.run("go", MemoryContextStore())
+
+        history = transport.calls[0]
+        assert all(m.role != "system" for m in history)
+
+    async def test_not_stored_in_context(self) -> None:
+        """last_iteration_message is injected into the stream but not persisted."""
+        tool = Tool(name="echo", description="echo", handler=OkHandler)
+        hint = Message(role="system", content=[TextBlock(text="wrap up")])
+        transport = CapturingTransport(
+            [
+                make_tool_use_response("echo", "c1", {"msg": "hi"}, 1),
+                make_text_response("Done", 2),
+            ]
+        )
+        agent = Agent(
+            system="test",
+            tools=[tool],
+            transport=transport,
+            max_iterations=2,
+            last_iteration_message=hint,
+        )
+        context = MemoryContextStore()
+        await agent.run("go", context)
+
+        history = await context.get_history()
+        assert hint not in history

@@ -10,7 +10,7 @@ from axio.blocks import ContentBlock, from_dict, to_dict
 
 @dataclass(slots=True)
 class Message:
-    role: Literal["user", "assistant"]
+    role: Literal["user", "assistant", "system"]
     content: list[ContentBlock] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

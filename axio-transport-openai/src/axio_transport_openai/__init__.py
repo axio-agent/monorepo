@@ -214,6 +214,12 @@ def _convert_messages(messages: list[Message], system: str) -> list[dict[str, An
                     if text_parts_u:
                         result.append({"role": "user", "content": "".join(text_parts_u)})
 
+        elif msg.role == "system":
+            result.append({
+                "role": "system",
+                "content": "".join(b.text for b in msg.content if isinstance(b, TextBlock)),
+            })
+
         elif msg.role == "assistant":
             text_parts: list[str] = []
             tool_calls: list[dict[str, Any]] = []

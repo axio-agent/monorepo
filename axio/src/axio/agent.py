@@ -39,6 +39,7 @@ class Agent:
     tools: list[Tool] = field(default_factory=list)
     selector: ToolSelector | None = field(default=None)
     max_iterations: int = field(default=50)
+    last_iteration_message: Message | None = field(default=None)
 
     def copy(self, **overrides: Any) -> Self:
         """Return a new Agent with *overrides* applied."""
@@ -143,14 +144,19 @@ class Agent:
             for iteration in range(1, self.max_iterations + 1):
                 history = await context.get_history()
                 logger.info("Iteration %d, history length=%d", iteration, len(history))
-                active_tools = list(await self._select_tools(history, self.tools))
+                effective_history = (
+                    [*history, self.last_iteration_message]
+                    if self.last_iteration_message and iteration == self.max_iterations
+                    else history
+                )
+                active_tools = list(await self._select_tools(effective_history, self.tools))
                 content: list[TextBlock | ToolUseBlock] = []
                 pending: dict[str, dict[str, Any]] = {}
                 stop_reason = StopReason.end_turn
                 malformed: set[str] = set()
 
                 try:
-                    async for event in self.transport.stream(history, active_tools, self.system):
+                    async for event in self.transport.stream(effective_history, active_tools, self.system):
                         yield event
                         match event:
                             case TextDelta(delta=delta):

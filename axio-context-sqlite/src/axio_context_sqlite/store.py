@@ -185,6 +185,9 @@ class SQLiteContextStore(ContextStore):
             return 0, 0
         return int(row[0]), int(row[1])
 
+    async def close(self) -> None:
+        """No-op: the caller owns the connection."""
+
     async def list_sessions(self) -> list[SessionInfo]:
         """List all sessions for a project, newest first."""
         async with self._conn.execute(
