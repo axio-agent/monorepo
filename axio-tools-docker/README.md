@@ -32,31 +32,24 @@ pip install axio-tools-docker
 
 ## Quick start
 
-<!-- name: test_readme_usage; mark: skip -->
+<!-- name: test_readme_usage; mark: docker -->
 ```python
 import asyncio
-import os
 from axio.agent import Agent
 from axio.context import MemoryContextStore
-from axio_transport_openai import OpenAITransport
+from axio.testing import StubTransport, make_text_response
 from axio_tools_docker import DockerSandbox
 
 async def main() -> None:
-    async with DockerSandbox(
-        os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock"),
-        image="python:3.12-slim",
-        volumes={"/workspace": "/tmp/agent-workspace"},
-    ) as sandbox:
+    transport = StubTransport([make_text_response("Done.")])
+    async with DockerSandbox(image="python:3.12-alpine") as sandbox:
         agent = Agent(
             system="You are a coding assistant. Use the sandbox tools to run code safely.",
             tools=sandbox.tools,
-            transport=OpenAITransport(api_key="sk-...", model="gpt-4o"),
+            transport=transport,
         )
         ctx = MemoryContextStore()
-        result = await agent.run(
-            "Write a Python script that computes the first 20 Fibonacci numbers and run it.",
-            ctx,
-        )
+        result = await agent.run("Print hello from Python.", ctx)
         print(result)
 
 asyncio.run(main())
