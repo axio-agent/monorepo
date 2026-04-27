@@ -4,17 +4,20 @@ These tests verify the multi-agent orchestration patterns where agents
 interact with the bead store and each other.
 """
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiochannel import Channel
 from axio.compaction import AutoCompactStore
 from axio.context import MemoryContextStore
 from axio.messages import Message
 from axio.models import ModelSpec
+from axio.testing import StubTransport, make_text_response
 
 from gas_town.beads import DDL, BeadTool, bead_summary, get_bead
-from gas_town.swarm import make_analyze_tool, make_spawn_polecat_tool
+from gas_town.swarm import make_analyze_tool, make_sling_tool, run_gastown
 
 # =============================================================================
 # Fixtures
@@ -148,8 +151,6 @@ class TestContextCompaction:
 
     async def test_auto_compact_triggers_at_threshold(self, mock_model_spec: ModelSpec) -> None:
         """Test that compaction is triggered when token limit is reached."""
-        from axio.testing import StubTransport, make_text_response
-
         transport = StubTransport([make_text_response("Summary.")] * 10)
         store = AutoCompactStore(MemoryContextStore(), transport, keep_recent=1)
 
@@ -165,8 +166,6 @@ class TestContextCompaction:
 
     async def test_compact_keeps_recent_messages(self, mock_model_spec: ModelSpec) -> None:
         """Test that recent messages are preserved after compaction."""
-        from axio.testing import StubTransport, make_text_response
-
         transport = StubTransport([make_text_response("Summary.")] * 10)
         store = AutoCompactStore(MemoryContextStore(), transport, keep_recent=2)
 
@@ -189,33 +188,21 @@ class TestContextCompaction:
 class TestToolGuards:
     """Tests for role-based tool access guards."""
 
-    async def test_polecat_restricted_from_spawn_tools(self, db_connection) -> None:
-        """Test that Polecat role cannot spawn other agents."""
-        guard_factory = MagicMock()
-        guard = MagicMock()
-        guard.check = AsyncMock(return_value=False)
-        guard_factory.return_value = guard
-
-        from axio.agent import Agent
-        from axio.transport import DummyCompletionTransport
-
-        proto = Agent(system="s", transport=DummyCompletionTransport())
-        make_spawn_polecat_tool(
-            workspace=Path("/tmp"),
-            on_event=MagicMock(),
-            transport=MagicMock(),
-            role_models={},
-            proto=proto,
+    async def test_sling_attaches_guard(self, db_connection) -> None:
+        """Test that make_sling_tool wires guard_factory into the tool."""
+        guard_factory = MagicMock(return_value=MagicMock())
+        queue: Channel[int] = Channel()
+        make_sling_tool(
             db=db_connection,
+            queue=queue,
             guard_factory=guard_factory,
         )
-        guard_factory.assert_called()
+        guard_factory.assert_called_with("mayor", "sling")
 
     async def test_witness_has_read_only_bead_access(self) -> None:
         """Test that Witness role has limited bead tool access."""
-        workspace = Path("/tmp")
         analyze_tool = make_analyze_tool(
-            workspace=workspace,
+            toolbox={},
             on_event=MagicMock(),
             transport=MagicMock(),
             role_models={},
@@ -238,3 +225,44 @@ class TestErrorHandling:
         tool = BeadTool(action="update", id=99999, status="closed")  # type: ignore[call-arg]
         result = await tool(db_connection)
         assert "not found" in result
+
+
+# =============================================================================
+# Symlink protection
+# =============================================================================
+
+
+class TestSymlinkProtection:
+    """run_gastown must not follow symlinks on the host filesystem."""
+
+    @pytest.mark.asyncio
+    async def test_beads_db_symlink_deleted_before_open(self, workspace: Path, tmp_path) -> None:
+        """A symlink planted at .gas-town/beads.db must be deleted, not opened."""
+        gas_dir = workspace / ".gas-town"
+        gas_dir.mkdir(parents=True)
+        secret = tmp_path / "secret.db"
+        secret.write_text("sensitive")
+        db_link = gas_dir / "beads.db"
+        db_link.symlink_to(secret)
+
+        stub_transport = StubTransport([make_text_response("done")])
+        on_event = AsyncMock()
+        role_models = {"default": ModelSpec(id="gpt-4")}
+
+        try:
+            await asyncio.wait_for(
+                run_gastown(
+                    task="test",
+                    workspace=workspace,
+                    on_event=on_event,
+                    transport=stub_transport,
+                    role_models=role_models,
+                    toolbox={},
+                ),
+                timeout=2.0,
+            )
+        except (TimeoutError, Exception):
+            pass
+
+        assert not db_link.is_symlink(), "symlink should have been deleted"
+        assert secret.read_text() == "sensitive", "original target must be untouched"

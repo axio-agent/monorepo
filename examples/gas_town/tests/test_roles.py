@@ -27,8 +27,10 @@ class TestMayor:
     def test_mayor_is_chief_of_staff(self) -> None:
         assert "convoy" in MAYOR.system.lower() or "dispatch" in MAYOR.system.lower()
 
-    def test_mayor_mentions_spawn_tools(self) -> None:
-        assert "spawn_polecat" in MAYOR.system
+    def test_mayor_dispatches_polecats_directly(self) -> None:
+        assert "sling" in MAYOR.system
+        assert "await_beads" in MAYOR.system
+        assert "spawn_witness" not in MAYOR.system
 
 
 class TestWorkerRoles:
@@ -61,7 +63,7 @@ class TestWorkerRoles:
 
     def test_witness_has_monitoring_focus(self, loader) -> None:
         spec = loader.load_file(ROLES_DIR / "witness.toml")
-        assert "monitor" in spec.system.lower() or "oversight" in spec.system.lower()
+        assert "monitor" in spec.system.lower() or "patrol" in spec.system.lower()
 
     def test_refinery_has_merge_focus(self, loader) -> None:
         spec = loader.load_file(ROLES_DIR / "refinery.toml")

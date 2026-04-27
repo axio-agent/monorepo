@@ -10,6 +10,7 @@ To adjust which model each role uses, edit the role_models dict in main().
 
 import argparse
 import asyncio
+import secrets
 import sys
 import time
 from collections.abc import Callable
@@ -31,6 +32,7 @@ from axio.events import (
 from axio.models import ModelSpec
 from axio.permission import PermissionGuard
 from axio.tool import ToolHandler
+from axio_tools_docker.sandbox import DockerSandbox
 from axio_transport_openai.nebius import NebiusTransport
 from rich.console import Console, ConsoleRenderable
 from rich.live import Live
@@ -42,6 +44,48 @@ from rich.text import Text
 from rich.tree import Tree
 
 from .swarm import run_swarm
+
+# ---------------------------------------------------------------------------
+# Sandbox persistence
+# ---------------------------------------------------------------------------
+
+SANDBOX_FILE = ".axio-swarm/sandbox"
+
+
+def load_sandbox_name(workspace: Path) -> str | None:
+    """Return the container name saved from a previous run, or None."""
+    p = workspace / SANDBOX_FILE
+    if p.is_symlink():
+        p.unlink()
+        return None
+    if p.is_file():
+        name = p.read_text().strip()
+        return name or None
+    return None
+
+
+def save_sandbox_name(workspace: Path, name: str) -> None:
+    """Persist *name* so the next run can reattach to the same container."""
+    p = workspace / SANDBOX_FILE
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.is_symlink():
+        p.unlink()
+    elif p.exists() and not p.is_file():
+        raise ValueError(f"Refusing to write sandbox name to non-regular file: {p}")
+    p.write_text(name)
+
+
+def pick_sandbox_name(workspace: Path) -> str:
+    """Return the container name to use this run.
+
+    Reuses the saved name if one exists — DockerSandbox will attach to the
+    running container automatically, or create a fresh one if it's gone.
+    """
+    saved = load_sandbox_name(workspace)
+    if saved:
+        return saved
+    return f"axio-swarm-{secrets.token_hex(4)}"
+
 
 # ---------------------------------------------------------------------------
 # Role colours
@@ -371,14 +415,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workspace",
         required=True,
-        help="Directory where agents read and write files",
+        help="Directory where agents read and write files (mounted at /workspace in the container)",
     )
+    parser.add_argument("--image", default="python:3.12-slim", help="Docker image for the sandbox")
+    parser.add_argument("--memory", default="512m", help="Container memory limit (default: 512m)")
+    parser.add_argument("--cpus", type=float, default=2.0, help="Container CPU limit (default: 2.0)")
+    parser.add_argument("--network", action="store_true", help="Enable network access inside the container")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
     workspace = Path(args.workspace).resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    sandbox_name = pick_sandbox_name(workspace)
 
     console = Console()
     renderer = SwarmRenderer(console)
@@ -399,33 +450,47 @@ async def main() -> None:
         #   transport.models.search("Qwen2.5-72B").first()      # multilingual
         # ------------------------------------------------------------------
         role_models: dict[str, ModelSpec] = {
-            "default": transport.models["MiniMaxAI/MiniMax-M2.5"],
-            "architect": transport.models["Qwen/Qwen3-235B-A22B-Instruct-2507"],
-            "security_engineer": transport.models["openai/gpt-oss-120b"],
+            "default": transport.models["Qwen/Qwen3.5-397B-A17B"],
             "project_manager": transport.models["openai/gpt-oss-120b"],
-            "challenger": transport.models["zai-org/GLM-5"],
-            # analyst runs many instances in parallel
-            "analyst": transport.models["deepseek-ai/DeepSeek-V3.2"],
+            # "architect": transport.models["Qwen/Qwen3-235B-A22B-Instruct-2507"],
+            # "security_engineer": transport.models["openai/gpt-oss-120b"],
+            # "challenger": transport.models["zai-org/GLM-5"],
+            # "analyst": transport.models["openai/gpt-oss-120b"],
         }
 
         console.print()
         console.print(Rule("[bold]Agent Swarm[/bold]"))
         console.print(f"[dim]Task:[/dim]          {args.task}")
         console.print(f"[dim]Workspace:[/dim]     {workspace}")
+        console.print(f"[dim]Sandbox:[/dim]       {sandbox_name}")
+        console.print(f"[dim]Image:[/dim]         {args.image}")
         console.print(f"[dim]Default model:[/dim] {role_models['default'].id}")
         console.print()
 
         try:
-            with renderer:
-                await run_swarm(
-                    task=args.task,
-                    workspace=workspace,
-                    on_event=renderer.on_event,
-                    transport=transport,
-                    role_models=role_models,
-                    guard_factory=renderer.make_guard,
-                    prompt_fn=renderer.make_prompt_fn(),
-                )
+            async with DockerSandbox(
+                image=args.image,
+                memory=args.memory,
+                cpus=str(args.cpus),
+                network=args.network,
+                volumes={"/workspace": str(workspace)},
+                workdir="/workspace",
+                name=sandbox_name,
+                remove=False,
+            ) as sandbox:
+                save_sandbox_name(workspace, sandbox_name)
+                toolbox = {t.name: t for t in sandbox.tools}
+                with renderer:
+                    await run_swarm(
+                        task=args.task,
+                        workspace=workspace,
+                        on_event=renderer.on_event,
+                        transport=transport,
+                        role_models=role_models,
+                        toolbox=toolbox,
+                        guard_factory=renderer.make_guard,
+                        prompt_fn=renderer.make_prompt_fn(),
+                    )
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/yellow]")
             sys.exit(1)

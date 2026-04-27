@@ -2,33 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from axio.agent import Agent
+from axio.agent_loader import TomlAgentLoader
+from axio.exceptions import GuardError
 from axio.models import ModelSpec
+from axio.permission import PermissionGuard
+from axio.testing import StubTransport, make_text_response
 from axio.transport import DummyCompletionTransport
 
 from agent_swarm.roles import ROLE_NAMES, ROLES_DIR, make_orchestrator
-from agent_swarm.swarm import file_tools, make_analyze_tool, make_delegate_tool, run_swarm, transport_for
+from agent_swarm.swarm import make_analyze_tool, make_delegate_tool, run_swarm, transport_for
 
 
 class TestSwarmInitialization:
     """Test swarm initialization with various transports."""
 
     @pytest.mark.asyncio
-    async def test_swarm_can_be_initialized_with_stub_transport(self, workspace: Path):
+    async def test_swarm_can_be_initialized_with_stub_transport(self, workspace: Path, stub_toolbox):
         """Test that the swarm can be initialized with stub transport."""
-        from axio.testing import StubTransport, make_text_response
-
         stub_transport = StubTransport([make_text_response("Test initial response")])
 
         on_event = AsyncMock()
         role_models = {"default": ModelSpec(id="gpt-4")}
-
-        import asyncio
 
         async def run_test():
             try:
@@ -39,6 +40,7 @@ class TestSwarmInitialization:
                         on_event=on_event,
                         transport=stub_transport,
                         role_models=role_models,
+                        toolbox=stub_toolbox,
                     ),
                     timeout=2.0,
                 )
@@ -56,65 +58,32 @@ class TestSwarmInitialization:
     def test_orchestrator_with_dummy_transport(self):
         """Test that make_orchestrator() returns an agent that can be copied."""
         real_transport = DummyCompletionTransport()
-        tools = file_tools()
 
         orchestrator = make_orchestrator("test roster")
-        copied = orchestrator.copy(transport=real_transport, tools=tools)
+        copied = orchestrator.copy(transport=real_transport, tools=[])
 
         assert isinstance(copied, Agent)
         assert copied.transport is real_transport
-        assert len(copied.tools) == len(tools)
 
     def test_role_can_be_copied_with_transport(self):
         """Test that role specs from TOML can be loaded and copied with a transport."""
-        from axio.agent_loader import TomlAgentLoader
-
         real_transport = DummyCompletionTransport()
-        tools = file_tools(role="backend_dev")
 
         loader = TomlAgentLoader()
         spec = loader.load_file(ROLES_DIR / "backend_dev.toml")
         proto = Agent(system=spec.system, transport=DummyCompletionTransport(), max_iterations=spec.max_iterations)
-        copied = proto.copy(transport=real_transport, tools=tools)
+        copied = proto.copy(transport=real_transport, tools=[])
 
         assert isinstance(copied, Agent)
         assert copied.transport is real_transport
-        assert len(copied.tools) == len(tools)
 
 
 class TestToolCreationWithGuards:
     """Test tool creation with permission guards."""
 
-    def test_file_tools_with_role_guard(self):
-        """Test file tools creation with a role-specific guard."""
-        from axio.permission import PermissionGuard
-
-        class RoleGuard(PermissionGuard):
-            """Dummy role guard for testing."""
-
-            def __init__(self, role: str, tool_name: str):
-                self.role = role
-                self.tool_name = tool_name
-
-            async def check(self, handler: Any) -> Any:
-                # Always allow
-                return handler
-
-        def guard_factory(role: str, tool_name: str) -> PermissionGuard:
-            return RoleGuard(role, tool_name)
-
-        tools = file_tools(role="backend_dev", guard_factory=guard_factory)
-
-        assert len(tools) == 6
-        for tool in tools:
-            assert len(tool.guards) == 1
-            assert isinstance(tool.guards[0], RoleGuard)
-
     @pytest.mark.asyncio
     async def test_analyze_tool_respects_guard(self):
         """Test that analyze tool respects guard checks."""
-        from axio.exceptions import GuardError
-        from axio.permission import PermissionGuard
 
         class DenyGuard(PermissionGuard):
             """Guard that denies all requests."""
@@ -123,13 +92,12 @@ class TestToolCreationWithGuards:
                 raise GuardError("Denied by guard")
 
         guard_factory = MagicMock(return_value=DenyGuard())
-        workspace = Path("/tmp/test")
         on_event = AsyncMock()
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
         # Create analyze tool with deny guard
-        make_analyze_tool(workspace, on_event, transport, role_models, "test_role", guard_factory=guard_factory)
+        make_analyze_tool({}, on_event, transport, role_models, "test_role", guard_factory=guard_factory)
 
         # Guard factory should be called
         guard_factory.assert_called()
@@ -149,15 +117,11 @@ class TestWorkspaceSetup:
         assert new_workspace.is_dir()
 
     @pytest.mark.asyncio
-    async def test_swarm_workspace_chdir(self, workspace: Path):
-        """Test that run_swarm changes to workspace directory."""
-        from axio.testing import StubTransport, make_text_response
-
+    async def test_swarm_workspace_chdir(self, workspace: Path, stub_toolbox):
+        """Test that run_swarm initialises correctly with the workspace."""
         stub_transport = StubTransport([make_text_response("response")])
         on_event = AsyncMock()
         role_models = {"default": ModelSpec(id="gpt-4")}
-
-        import asyncio
 
         async def run_test():
             try:
@@ -168,6 +132,7 @@ class TestWorkspaceSetup:
                         on_event=on_event,
                         transport=stub_transport,
                         role_models=role_models,
+                        toolbox=stub_toolbox,
                     ),
                     timeout=2.0,
                 )
@@ -190,7 +155,7 @@ class TestFullSwarmFlow:
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
-        delegate_tool = make_delegate_tool(workspace, on_event, transport, role_models, {})
+        delegate_tool = make_delegate_tool(on_event, transport, role_models, {})
 
         assert delegate_tool.name == "delegate"
         for role_name in ROLE_NAMES:
@@ -203,23 +168,14 @@ class TestFullSwarmFlow:
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
-        delegate_tool = make_delegate_tool(workspace, on_event, transport, role_models, {})
+        delegate_tool = make_delegate_tool(on_event, transport, role_models, {})
 
         # Verify the tool is properly configured
         assert delegate_tool.handler is not None
 
-        # Verify we have the expected number of file tools
-        file_tools_list = file_tools()
-        assert len(file_tools_list) == 6
-
 
 class TestEdgeCases:
     """Test edge cases and error conditions."""
-
-    def test_file_tools_empty_role(self):
-        """Test file_tools with empty role string."""
-        tools = file_tools(role="")
-        assert len(tools) == 6
 
     def test_transport_for_with_empty_role(self):
         """Test transport_for with empty role string."""
@@ -231,14 +187,11 @@ class TestEdgeCases:
 
     def test_analyze_tool_handler_validation(self):
         """Test analyze tool handler has required fields."""
-        from agent_swarm.swarm import make_analyze_tool
-
-        workspace = Path("/tmp/test")
         on_event = AsyncMock()
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
-        tool = make_analyze_tool(workspace, on_event, transport, role_models, "test_role")
+        tool = make_analyze_tool({}, on_event, transport, role_models, "test_role")
 
         # Instantiate the handler to check fields
         handler_class = tool.handler
@@ -248,12 +201,11 @@ class TestEdgeCases:
 
     def test_delegate_tool_handler_validation(self):
         """Test delegate tool handler has required fields."""
-        workspace = Path("/tmp/test")
         on_event = AsyncMock()
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
-        delegate_tool = make_delegate_tool(workspace, on_event, transport, role_models, {})
+        delegate_tool = make_delegate_tool(on_event, transport, role_models, {})
 
         handler_class = delegate_tool.handler
         handler_instance = handler_class(role="backend_dev", topic="test", task="do something")

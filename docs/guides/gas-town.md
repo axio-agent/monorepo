@@ -6,6 +6,13 @@ modelled on Steve Yegge's [Gas Town](https://github.com/gastownhall/gastown) met
 The full example lives in `examples/gas_town/` in the repository.
 For a deep dive into the methodology itself, see {doc}`../gas-town-rules`.
 
+## Prerequisites
+
+- **Docker** must be installed and running. All file and shell operations run inside
+  a Docker container — agents never touch the host filesystem directly.
+  Install Docker from <https://docs.docker.com/get-docker/>.
+- A Nebius AI Studio API key (`NEBIUS_API_KEY`).
+
 ## What is Gas Town?
 
 Gas Town is an opinionated orchestration model with a few core ideas:
@@ -144,10 +151,11 @@ The Mayor is the agent you talk to. It translates a task into a convoy:
 1. Creates a `[CONVOY]` bead as the work-order unit.
 2. Reads or analyses the domain (may use `analyze` or `list_files`).
 3. Decomposes the task into small child beads — one per component.
-4. Spawns polecats in parallel — one per bead, all in one response.
-5. Optionally spawns Witness for a mid-convoy health check.
-6. After all polecats finish, spawns Refinery to integrate the work.
-7. Closes the convoy bead and reports to the user.
+4. Calls `sling(bead_id=X)` for each bead — all in one response, fire-and-forget.
+5. Calls `await_beads()` to block until all polecats finish.
+6. Optionally spawns Witness for a mid-convoy health check (before or during the convoy).
+7. After all polecats finish, spawns Refinery to integrate the work.
+8. Closes the convoy bead and reports to the user.
 
 The Mayor never writes code itself. It only spawns workers.
 
@@ -162,8 +170,8 @@ No announcement. No waiting. No idle state.
 
 Lifecycle:
 
-1. Receives bead assignment in its first message.
-2. Marks the bead `in_progress` (done by `spawn_polecat` before the polecat starts).
+1. Receives bead assignment via the worker pool (bead ID pulled from the channel).
+2. Bead is already marked `in_progress` by `sling` before the polecat starts.
 3. Does the work (file tools, shell, run_python, analyze).
 4. Closes the bead: `bead(action='close', id=<id>)`.
 5. Session ends — done means gone.
@@ -198,110 +206,129 @@ design sessions, complex investigations, exploratory coding. Unlike polecats, th
 are not ephemeral and not managed by the Witness. Each crew member gets an
 `AutoCompactStore` context so long sessions survive context limits.
 
-## 3. Spawn tools and TypedDict contexts
+## 3. Dispatch tools and TypedDict contexts
 
-`swarm.py` defines spawn tools as top-level classes with typed `TypedDict` contexts —
-not closures. Each tool carries all its runtime dependencies in the context dict:
+`swarm.py` defines dispatch tools as top-level classes with typed `TypedDict` contexts —
+not closures. The Mayor uses two tools to manage polecats asynchronously:
+
+**`Sling`** — fire-and-forget polecat dispatch. Marks the bead `in_progress` and puts
+the bead ID into a shared async channel; returns immediately so the Mayor can sling
+multiple polecats in one response:
 
 ```python
-class SpawnPolecatContext(TypedDict):
-    workspace: Path
-    on_event: OnEventCallback
-    transport: CompletionTransport
-    role_models: dict[str, ModelSpec]
-    proto: Agent          # polecat prototype loaded from TOML
+class SlingContext(TypedDict):
     db: aiosqlite.Connection
-    counters: dict[int, int]
+    queue: Channel[int]   # aiochannel.Channel
 
 
-class SpawnPolecat(ToolHandler[SpawnPolecatContext]):
-    """Spawn a polecat worker to complete a specific bead."""
+class Sling(ToolHandler[SlingContext]):
+    """Sling a polecat at a bead — fire-and-forget, returns immediately.
+    Sling multiple polecats in one response for parallel execution.
+    After slinging all beads for a phase, call await_beads()."""
     bead_id: Annotated[int, Field(description="ID of the bead to work on")]
     topic: Annotated[str, Field(description="Short label, e.g. 'auth middleware'")]
 
-    async def __call__(self, context: SpawnPolecatContext) -> str:
+    async def __call__(self, context: SlingContext) -> str:
         db = context["db"]
         row = await get_bead(db, self.bead_id)
         if row is None:
             return f"Bead {self.bead_id} not found"
         bead_id, title, *_ = row
-        await mark_in_progress(db, bead_id)
+        await mark_in_progress(db, bead_id, assignee=f"polecat:{self.topic}")
+        await context["queue"].put(bead_id)
+        return f"[{bead_id}] {title} → slung to polecat pool"
+```
 
-        context["counters"][self.bead_id] = context["counters"].get(self.bead_id, 0) + 1
-        n = context["counters"][self.bead_id]
-        agent_id = f"polecat#{n}:{self.topic}"
+**`AwaitBeads`** — synchronisation point. Polls the bead store until all active beads
+are closed (or a timeout expires). The Mayor calls this after slinging a phase:
 
-        polecat_transport = transport_for("polecat", context["transport"], context["role_models"])
-        polecat = context["proto"].copy(transport=polecat_transport)
-        polecat_ctx = AutoCompactStore(MemoryContextStore(), polecat_transport, keep_recent=6)
-        stream = polecat.run_stream(
-            f"Workspace: {context['workspace']}\n\n"
-            f"Your assigned bead: [{bead_id}] {title}\n\n"
-            f"Close it with bead(action='close', id={bead_id}).",
-            polecat_ctx,
-        )
-        parts: list[str] = []
-        async for event in stream:
-            await context["on_event"](agent_id, event)
-            if isinstance(event, TextDelta):
-                parts.append(event.delta)
-        return "".join(parts)
+```python
+class AwaitBeads(ToolHandler[AwaitBeadsContext]):
+    """Wait until all active (open/in_progress) beads are closed."""
+    timeout: int = 3600
+
+    async def __call__(self, context: AwaitBeadsContext) -> str:
+        while True:
+            if not await has_active_beads(context["db"]):
+                return f"All beads complete.\n\n{await bead_summary(context['db'])}"
+            await asyncio.sleep(5)
+```
+
+**Worker pool** — pre-spawned coroutines pull bead IDs from the channel and run
+polecats concurrently. The pool is started before the Mayor runs and shut down
+after `await_beads()` returns:
+
+```python
+polecat_queue: Channel[int] = Channel()
+worker_tasks = [
+    asyncio.create_task(polecat_worker(i + 1, roles["polecat"][1], polecat_queue, ...))
+    for i in range(num_polecats)
+]
+# ... run Mayor ...
+polecat_queue.close()           # workers exit their async-for loop cleanly
+await asyncio.gather(*worker_tasks, return_exceptions=True)
 ```
 
 Key points:
 
-- `spawn_polecat` is called multiple times in one Mayor response — they all run
-  concurrently because Axio dispatches tool calls via `asyncio.gather()`.
+- `sling` is called multiple times in one Mayor response — all beads are queued
+  immediately and workers pick them up in parallel.
 - `topic` populates the status bar: **Polecat [auth middleware]**, **Polecat [data models]**,
   making parallel polecats identifiable at a glance.
 - `mark_in_progress()` updates the SQLite row before the polecat starts, so Witness
   sees accurate status if it runs mid-convoy.
-- The polecat prototype (`proto`) comes from `load_agents()` — it already has the
-  full toolbox injected (bead, file tools, analyze).
+- `channel.close()` provides clean shutdown — no sentinel values, no `task.cancel()`.
 
 ## 4. The Analyze tool
 
 Both Mayor and workers get an `analyze` tool that spawns ephemeral read-only analyst
-subagents. The `AnalyzeContext` TypedDict carries the transport and callbacks:
+subagents. The `AnalyzeContext` TypedDict carries the shared toolbox and callbacks:
 
 ```python
 class AnalyzeContext(TypedDict):
-    workspace: Path
+    toolbox: dict[str, Tool[Any]]  # analyst uses list_files + read_file from this
     on_event: OnEventCallback
     transport: CompletionTransport
     role_models: dict[str, ModelSpec]
     guard_factory: GuardFactory | None
     counter: list[int]  # [0] holds mutable call count
-
-
-ANALYST = Agent(
-    system="You are a read-only analyst. Read files and produce a concise report. "
-           "You must not create, modify, or delete any files.",
-    transport=DummyCompletionTransport(),
-)
 ```
 
-Analysts are fast (small `max_iterations=10`, fast model) and safe to call in
-parallel from multiple polecats simultaneously.
+`workspace: Path` is gone — the analyst's read tools come directly from the sandbox
+toolbox, already bound to the running container. The analyst is told to look in
+`/workspace` (the constant `WORKDIR`), which maps to the host workspace directory
+via the Docker volume mount.
+
+Analysts are fast (`max_iterations=10`, fast model) and safe to call in parallel
+from multiple polecats simultaneously.
 
 ## 5. Toolbox and role loading
 
-`build_toolbox()` creates the shared tool registry injected into worker roles:
+The toolbox starts from a **`DockerSandbox`** and is extended in-place with runtime
+tools before `load_agents()` is called:
 
 ```python
-toolbox = build_toolbox(workspace, on_event, transport, role_models, db, guard_factory)
-# toolbox == {
-#   "read_file": Tool(...), "write_file": Tool(...), "patch_file": Tool(...),
-#   "list_files": Tool(...), "shell": Tool(...), "run_python": Tool(...),
-#   "bead": make_bead_tool(db, ...), "analyze": make_analyze_tool(...),
-# }
+async with DockerSandbox(
+    image=args.image,
+    volumes={"/workspace": str(workspace)},
+    workdir="/workspace",
+    name=sandbox_name,
+    remove=False,
+) as sandbox:
+    toolbox = {t.name: t for t in sandbox.tools}
+    # toolbox == {"read_file": Tool(...), "write_file": Tool(...), ...}
 
-roles = load_agents(ROLES_DIR, toolbox=toolbox)
-# roles == {"polecat": ("Autonomous worker...", Agent(...)), "witness": ..., ...}
+    toolbox["bead"]    = make_bead_tool(db, ...)
+    toolbox["analyze"] = make_analyze_tool(toolbox=toolbox, ...)
+
+    roles = load_agents(ROLES_DIR, toolbox=toolbox)
+    # roles == {"polecat": ("Autonomous worker...", Agent(...)), "witness": ..., ...}
 ```
 
-The Mayor gets its own separate tool set (spawn tools + bead + analyze + read tools)
-because it does not use the standard worker toolbox.
+All file and shell tools in the toolbox are bound to the running container — agents
+read and write files inside `/workspace`, which is mounted from the host workspace
+directory. The Mayor gets its own separate tool set (sling + await_beads + bead +
+analyze + read tools) and does not use the worker toolbox directly.
 
 ## 6. GUPP in practice
 
@@ -339,14 +366,26 @@ cd examples/gas_town
 uv sync
 export NEBIUS_API_KEY=...
 
-uv run python -m gas_town --workspace /tmp/my_project \
+axio-gastown --workspace /tmp/my_project \
     "Build a Python rate limiter with token-bucket and sliding-window"
 ```
 
-Or via the installed console script:
+Docker is required. A fresh container is created on each run and removed on exit.
+
+**Docker options:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--image` | `python:3.12-slim` | Container image |
+| `--memory` | `512m` | Memory limit (e.g. `1g`) |
+| `--cpus` | `2.0` | CPU limit |
+| `--network` | off | Enable network access inside the container |
+| `--polecats` | `5` | Number of pre-spawned polecat workers |
 
 ```bash
-axio-gastown --workspace /tmp/my_project "Write an async task queue with priority levels"
+axio-gastown --workspace /tmp/my_project \
+    --image python:3.12-slim --memory 2g --polecats 8 \
+    "Write an async task queue with priority levels"
 ```
 
 Default model assignments in `__main__.py`:
@@ -363,15 +402,16 @@ role_models: dict[str, ModelSpec] = {
 }
 ```
 
-After a run the workspace contains all produced artifacts alongside `AGENTS.md` (the
-living project memory written and maintained by agents). The `.gas-town/` subdirectory
-holds internal orchestration data including the bead SQLite database — agents are
-instructed never to touch it.
+After a run the workspace directory (host-side) contains all produced artifacts
+alongside `AGENTS.md` (the living project memory written by agents). The `.gas-town/`
+subdirectory holds internal orchestration data including the bead SQLite database —
+agents are instructed never to touch it.
 
 Inspect the bead history with any SQLite tool:
 
 ```bash
-sqlite3 workspace/.gas-town/beads.db "SELECT id, title, status, assignee FROM beads"
+sqlite3 /tmp/my_project/.gas-town/beads.db \
+    "SELECT id, title, status, assignee FROM beads"
 ```
 
 ## Gas Town vs Agent Swarm

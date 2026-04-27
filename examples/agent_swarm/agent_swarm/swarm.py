@@ -10,7 +10,6 @@ Transport setup lives in main.py — swarm.py only uses what it is given.
 from __future__ import annotations
 
 import copy
-import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
@@ -25,21 +24,18 @@ from axio.models import ModelSpec
 from axio.permission import PermissionGuard
 from axio.tool import Tool, ToolHandler
 from axio.transport import CompletionTransport, DummyCompletionTransport
-from axio_tools_local.list_files import ListFiles
-from axio_tools_local.patch_file import PatchFile
-from axio_tools_local.read_file import ReadFile
-from axio_tools_local.run_python import RunPython
-from axio_tools_local.shell import Shell
-from axio_tools_local.write_file import WriteFile
 from pydantic import Field
 
 from .ask_user import make_ask_user_tool
+from .notes import make_notes_tool
 from .roles import ROLE_NAMES, ROLES_DIR, make_orchestrator
 from .todo import DDL as TODO_DDL
 from .todo import make_todo_tool
 
 OnEventCallback = Callable[[str, StreamEvent], Awaitable[None]]
 GuardFactory = Callable[[str, str], PermissionGuard]
+
+WORKDIR = "/workspace"
 
 # ---------------------------------------------------------------------------
 # Read-only analyst prototype
@@ -73,38 +69,12 @@ def transport_for(
 
 
 # ---------------------------------------------------------------------------
-# File tools helper
-# ---------------------------------------------------------------------------
-
-
-def file_tools(
-    role: str = "",
-    guard_factory: GuardFactory | None = None,
-) -> list[Tool[Any]]:
-    """Standard file + shell tools for specialist agents."""
-
-    def guards(name: str) -> tuple[PermissionGuard, ...]:
-        if guard_factory is None:
-            return ()
-        return (guard_factory(role, name),)
-
-    return [
-        Tool(name="read_file", description=ReadFile.__doc__ or "", handler=ReadFile, guards=guards("read_file")),
-        Tool(name="write_file", description=WriteFile.__doc__ or "", handler=WriteFile, guards=guards("write_file")),
-        Tool(name="patch_file", description=PatchFile.__doc__ or "", handler=PatchFile, guards=guards("patch_file")),
-        Tool(name="list_files", description=ListFiles.__doc__ or "", handler=ListFiles, guards=guards("list_files")),
-        Tool(name="shell", description=Shell.__doc__ or "", handler=Shell, guards=guards("shell")),
-        Tool(name="run_python", description=RunPython.__doc__ or "", handler=RunPython, guards=guards("run_python")),
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Analyze tool — top-level handler, context carries all runtime deps
 # ---------------------------------------------------------------------------
 
 
 class AnalyzeContext(TypedDict):
-    workspace: Path
+    toolbox: dict[str, Tool[Any]]  # shared toolbox; analyst uses list_files + read_file
     on_event: OnEventCallback
     transport: CompletionTransport
     role_models: dict[str, ModelSpec]
@@ -125,30 +95,10 @@ class Analyze(ToolHandler[AnalyzeContext]):
         agent_id = f"analyst#{n}:{self.task[:40]}"
 
         analyst_transport = transport_for("analyst", context["transport"], context["role_models"])
-
-        def a_guards(name: str) -> tuple[PermissionGuard, ...]:
-            gf = context["guard_factory"]
-            return (gf("analyst", name),) if gf else ()
-
-        analyst = ANALYST.copy(
-            transport=analyst_transport,
-            tools=[
-                Tool(
-                    name="list_files",
-                    description=ListFiles.__doc__ or "",
-                    handler=ListFiles,
-                    guards=a_guards("list_files"),
-                ),
-                Tool(
-                    name="read_file",
-                    description=ReadFile.__doc__ or "",
-                    handler=ReadFile,
-                    guards=a_guards("read_file"),
-                ),
-            ],
-            max_iterations=10,
-        )
-        stream = analyst.run_stream(f"Workspace: {context['workspace']}\n\n{self.task}", MemoryContextStore())
+        tb = context["toolbox"]
+        read_tools = [tb[k] for k in ("list_files", "read_file") if k in tb]
+        analyst = ANALYST.copy(transport=analyst_transport, tools=read_tools, max_iterations=10)
+        stream = analyst.run_stream(f"Workspace: {WORKDIR}\n\n{self.task}", MemoryContextStore())
         parts: list[str] = []
         async for event in stream:
             await context["on_event"](agent_id, event)
@@ -158,7 +108,7 @@ class Analyze(ToolHandler[AnalyzeContext]):
 
 
 def make_analyze_tool(
-    workspace: Path,
+    toolbox: dict[str, Tool[Any]],
     on_event: OnEventCallback,
     transport: CompletionTransport,
     role_models: dict[str, ModelSpec],
@@ -171,7 +121,7 @@ def make_analyze_tool(
         description=Analyze.__doc__ or "",
         handler=Analyze,
         context=AnalyzeContext(
-            workspace=workspace,
+            toolbox=toolbox,
             on_event=on_event,
             transport=transport,
             role_models=role_models,
@@ -188,7 +138,6 @@ def make_analyze_tool(
 
 
 class DelegateContext(TypedDict):
-    workspace: Path
     on_event: OnEventCallback
     transport: CompletionTransport
     role_models: dict[str, ModelSpec]
@@ -226,7 +175,7 @@ class Delegate(ToolHandler[DelegateContext]):
         specialist = proto.copy(transport=role_transport)
         specialist_ctx = AutoCompactStore(MemoryContextStore(), role_transport, keep_recent=6)
         stream = specialist.run_stream(
-            f"Workspace: {context['workspace']}\n\n{self.task}",
+            f"Workspace: {WORKDIR}\n\n{self.task}",
             specialist_ctx,
         )
         parts: list[str] = []
@@ -238,7 +187,6 @@ class Delegate(ToolHandler[DelegateContext]):
 
 
 def make_delegate_tool(
-    workspace: Path,
     on_event: OnEventCallback,
     transport: CompletionTransport,
     role_models: dict[str, ModelSpec],
@@ -251,7 +199,6 @@ def make_delegate_tool(
         description=Delegate.__doc__ or "",
         handler=Delegate,
         context=DelegateContext(
-            workspace=workspace,
             on_event=on_event,
             transport=transport,
             role_models=role_models,
@@ -261,76 +208,6 @@ def make_delegate_tool(
         ),
         guards=guards,
     )
-
-
-# ---------------------------------------------------------------------------
-# Toolbox — shared tools for all specialist agents
-# ---------------------------------------------------------------------------
-
-
-def build_toolbox(
-    workspace: Path,
-    on_event: OnEventCallback,
-    transport: CompletionTransport,
-    role_models: dict[str, ModelSpec],
-    guard_factory: GuardFactory | None = None,
-) -> dict[str, Tool[Any]]:
-    """Build the shared toolbox injected into specialist agents via load_agents().
-
-    The toolbox contains all tools listed in the specialist TOML files.  The
-    Orchestrator receives its own separate tool set (delegate + read tools +
-    ask_user + todo + analyze).
-    """
-
-    def guards(role: str, name: str) -> tuple[PermissionGuard, ...]:
-        return (guard_factory(role, name),) if guard_factory else ()
-
-    return {
-        "read_file": Tool(
-            name="read_file",
-            description=ReadFile.__doc__ or "",
-            handler=ReadFile,
-            guards=guards("specialist", "read_file"),
-        ),
-        "write_file": Tool(
-            name="write_file",
-            description=WriteFile.__doc__ or "",
-            handler=WriteFile,
-            guards=guards("specialist", "write_file"),
-        ),
-        "patch_file": Tool(
-            name="patch_file",
-            description=PatchFile.__doc__ or "",
-            handler=PatchFile,
-            guards=guards("specialist", "patch_file"),
-        ),
-        "list_files": Tool(
-            name="list_files",
-            description=ListFiles.__doc__ or "",
-            handler=ListFiles,
-            guards=guards("specialist", "list_files"),
-        ),
-        "shell": Tool(
-            name="shell",
-            description=Shell.__doc__ or "",
-            handler=Shell,
-            guards=guards("specialist", "shell"),
-        ),
-        "run_python": Tool(
-            name="run_python",
-            description=RunPython.__doc__ or "",
-            handler=RunPython,
-            guards=guards("specialist", "run_python"),
-        ),
-        "analyze": make_analyze_tool(
-            workspace,
-            on_event,
-            transport,
-            role_models,
-            caller_role="specialist",
-            guard_factory=guard_factory,
-        ),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +221,7 @@ async def run_swarm(
     on_event: OnEventCallback,
     transport: CompletionTransport,
     role_models: dict[str, ModelSpec],
+    toolbox: dict[str, Tool[Any]],
     guard_factory: GuardFactory | None = None,
     prompt_fn: Callable[[], str] | None = None,
 ) -> str:
@@ -351,11 +229,12 @@ async def run_swarm(
 
     Args:
         task:          What to build.
-        workspace:     Directory where agents read and write files.
+        workspace:     Directory where agents read and write files (host path).
         on_event:      Callback for every StreamEvent emitted by any agent.
         transport:     Base transport — shared session, per-role model applied via copy().
         role_models:   Maps role names (and "default") to ModelSpec.
                        Every role not listed falls back to role_models["default"].
+        toolbox:       Mapping of tool name → Tool, typically from a DockerSandbox.
         guard_factory: Optional ``(role, tool_name) -> PermissionGuard`` factory.
         prompt_fn:     Optional callable ``() -> str`` used by ``ask_user`` to read input.
     """
@@ -363,23 +242,34 @@ async def run_swarm(
 
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
-    os.chdir(workspace)
 
     def og(name: str) -> tuple[PermissionGuard, ...]:
         return (guard_factory("orchestrator", name),) if guard_factory else ()
 
     todo_path = workspace / ".axio-swarm" / "todos.db"
     todo_path.parent.mkdir(parents=True, exist_ok=True)
+    if todo_path.is_symlink():
+        todo_path.unlink()
     async with aiosqlite.connect(todo_path) as todo_db:
         await todo_db.execute(TODO_DDL)
         await todo_db.commit()
 
-        # Build shared toolbox and load specialist roles with tools injected.
-        toolbox = build_toolbox(workspace, on_event, transport, role_models, guard_factory)
+        # Extend the toolbox with runtime-only tools (analyze, notes).
+        toolbox = dict(toolbox)
+        toolbox["analyze"] = make_analyze_tool(
+            toolbox,
+            on_event,
+            transport,
+            role_models,
+            caller_role="specialist",
+            guard_factory=guard_factory,
+        )
+        toolbox["notes"] = make_notes_tool(workspace)
+
         roles = load_agents(ROLES_DIR, toolbox=toolbox)
 
         orch_analyze = make_analyze_tool(
-            workspace,
+            toolbox,
             on_event,
             transport,
             role_models,
@@ -387,7 +277,6 @@ async def run_swarm(
             guard_factory=guard_factory,
         )
         delegate = make_delegate_tool(
-            workspace,
             on_event,
             transport,
             role_models,
@@ -396,21 +285,25 @@ async def run_swarm(
         )
         todo_tool = make_todo_tool(todo_db, guards=og("todo"))
         ask_user_tool = make_ask_user_tool(prompt_fn=prompt_fn, guards=og("ask_user"))
-
-        orch_read_tools = [
-            Tool(name="list_files", description=ListFiles.__doc__ or "", handler=ListFiles, guards=og("list_files")),
-            Tool(name="read_file", description=ReadFile.__doc__ or "", handler=ReadFile, guards=og("read_file")),
-        ]
+        orch_notes_tool = make_notes_tool(workspace, guards=og("notes"))
 
         orch_transport = transport_for("orchestrator", transport, role_models)
         roster = "\n".join(f"  {name:20s} — {desc}" for name, (desc, _) in roles.items())
         orchestrator = make_orchestrator(roster).copy(
             transport=orch_transport,
-            tools=[delegate, ask_user_tool, todo_tool, orch_analyze, *orch_read_tools],
+            tools=[delegate, ask_user_tool, todo_tool, orch_analyze, orch_notes_tool],
         )
         orch_ctx = AutoCompactStore(MemoryContextStore(), orch_transport, keep_recent=10)
 
-        stream = orchestrator.run_stream(task, orch_ctx)
+        # Inject AGENTS.md into the orchestrator's initial message if it exists.
+        agents_md = workspace / "AGENTS.md"
+        full_task = task
+        if agents_md.is_file() and not agents_md.is_symlink():
+            content = agents_md.read_text().strip()
+            if content:
+                full_task = f"## Project context (AGENTS.md)\n\n{content}\n\n---\n\n## Task\n\n{task}"
+
+        stream = orchestrator.run_stream(full_task, orch_ctx)
         parts: list[str] = []
         async for event in stream:
             await on_event("orchestrator", event)

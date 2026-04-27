@@ -1,7 +1,5 @@
 """Docker sandbox tools for Axio."""
 
-from .config import SandboxConfig
-from .manager import SandboxManager
-from .plugin import DockerPlugin
+from .sandbox import DockerSandbox
 
-__all__ = ["DockerPlugin", "SandboxConfig", "SandboxManager"]
+__all__ = ["DockerSandbox"]

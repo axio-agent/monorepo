@@ -2,60 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from axio.models import ModelSpec
+from axio.testing import StubTransport, make_text_response
 from axio.tool import Tool
 from axio.transport import DummyCompletionTransport
 
 from agent_swarm.swarm import (
-    file_tools,
     make_analyze_tool,
     make_delegate_tool,
+    run_swarm,
     transport_for,
 )
-
-
-class TestFileTools:
-    """Test the file_tools function."""
-
-    def test_file_tools_returns_correct_tools_list(self):
-        """Test that file_tools() returns correct tools list."""
-        tools = file_tools()
-        tool_names = [t.name for t in tools]
-
-        expected_tools = ["read_file", "write_file", "patch_file", "list_files", "shell", "run_python"]
-        assert tool_names == expected_tools, f"Expected {expected_tools}, got {tool_names}"
-
-    def test_file_tools_returns_tool_instances(self):
-        """Test that file_tools() returns Tool instances."""
-        tools = file_tools()
-        for tool in tools:
-            assert isinstance(tool, Tool), f"Expected Tool instance, got {type(tool)}"
-            assert tool.name, "Tool name is empty"
-            assert tool.description, f"Tool {tool.name} has no description"
-            assert tool.handler, f"Tool {tool.name} has no handler"
-
-    def test_file_tools_with_guard_factory(self):
-        """Test file_tools with a guard factory."""
-        mock_guard = MagicMock()
-        guard_factory = MagicMock(return_value=mock_guard)
-
-        tools = file_tools(role="test_role", guard_factory=guard_factory)
-
-        # Verify guard_factory was called for each tool
-        assert guard_factory.call_count == 6
-        for tool in tools:
-            assert len(tool.guards) == 1, f"Tool {tool.name} should have one guard"
-            assert tool.guards[0] is mock_guard
-
-    def test_file_tools_without_guard_factory(self):
-        """Test file_tools without a guard factory returns empty guards."""
-        tools = file_tools()
-        for tool in tools:
-            assert tool.guards == (), f"Tool {tool.name} should have empty guards tuple"
 
 
 class TestTransportFor:
@@ -97,12 +59,11 @@ class TestMakeAnalyzeTool:
 
     def test_make_analyze_tool_creates_an_analyze_tool(self):
         """Test that make_analyze_tool() creates an analyze tool."""
-        workspace = Path("/tmp/test")
         on_event = AsyncMock()
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
-        tool = make_analyze_tool(workspace, on_event, transport, role_models, "orchestrator")
+        tool = make_analyze_tool({}, on_event, transport, role_models, "orchestrator")
 
         assert isinstance(tool, Tool)
         assert tool.name == "analyze"
@@ -113,14 +74,11 @@ class TestMakeAnalyzeTool:
         """Test make_analyze_tool with guard factory."""
         mock_guard = MagicMock()
         guard_factory = MagicMock(return_value=mock_guard)
-        workspace = Path("/tmp/test")
         on_event = AsyncMock()
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
-        tool = make_analyze_tool(
-            workspace, on_event, transport, role_models, "orchestrator", guard_factory=guard_factory
-        )
+        tool = make_analyze_tool({}, on_event, transport, role_models, "orchestrator", guard_factory=guard_factory)
 
         assert len(tool.guards) == 1
         assert tool.guards[0] is mock_guard
@@ -132,12 +90,11 @@ class TestMakeDelegateTool:
 
     def test_make_delegate_tool_creates_a_delegate_tool(self):
         """Test that make_delegate_tool() creates a delegate tool."""
-        workspace = Path("/tmp/test")
         on_event = AsyncMock()
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
-        tool = make_delegate_tool(workspace, on_event, transport, role_models, {})
+        tool = make_delegate_tool(on_event, transport, role_models, {})
 
         assert isinstance(tool, Tool)
         assert tool.name == "delegate"
@@ -148,12 +105,11 @@ class TestMakeDelegateTool:
         """Test make_delegate_tool with guard factory."""
         mock_guard = MagicMock()
         guard_factory = MagicMock(return_value=mock_guard)
-        workspace = Path("/tmp/test")
         on_event = AsyncMock()
         transport = DummyCompletionTransport()
         role_models = {"default": ModelSpec(id="gpt-4")}
 
-        tool = make_delegate_tool(workspace, on_event, transport, role_models, {}, guard_factory=guard_factory)
+        tool = make_delegate_tool(on_event, transport, role_models, {}, guard_factory=guard_factory)
 
         assert len(tool.guards) == 1
         assert tool.guards[0] is mock_guard
@@ -164,21 +120,13 @@ class TestRunSwarm:
     """Test the run_swarm function."""
 
     @pytest.mark.asyncio
-    async def test_run_swarm_initialization(self, workspace: Path):
+    async def test_run_swarm_initialization(self, workspace: Path, stub_toolbox):
         """Test that run_swarm() initialization works with stub."""
-        # Create a stub transport that returns immediately
-        from axio.testing import StubTransport, make_text_response
-
-        from agent_swarm.swarm import run_swarm
-
         stub_transport = StubTransport([make_text_response("Test response")])
 
         on_event = AsyncMock()
 
         role_models = {"default": ModelSpec(id="gpt-4")}
-
-        # Run with a short timeout to avoid hanging
-        import asyncio
 
         async def run_test():
             try:
@@ -189,6 +137,7 @@ class TestRunSwarm:
                         on_event=on_event,
                         transport=stub_transport,
                         role_models=role_models,
+                        toolbox=stub_toolbox,
                     ),
                     timeout=1.0,
                 )
@@ -204,10 +153,6 @@ class TestRunSwarm:
     @pytest.mark.asyncio
     async def test_run_swarm_requires_default_model(self, workspace: Path):
         """Test that run_swarm requires a default model in role_models."""
-        from axio.transport import DummyCompletionTransport
-
-        from agent_swarm.swarm import run_swarm
-
         transport = DummyCompletionTransport()
         on_event = AsyncMock()
 
@@ -221,24 +166,18 @@ class TestRunSwarm:
                 on_event=on_event,
                 transport=transport,
                 role_models=role_models,
+                toolbox={},
             )
 
     @pytest.mark.asyncio
-    async def test_run_swarm_creates_workspace_directory(self, workspace: Path):
+    async def test_run_swarm_creates_workspace_directory(self, workspace: Path, stub_toolbox):
         """Test that run_swarm creates the workspace directory."""
-        from axio.testing import StubTransport, make_text_response
-
-        from agent_swarm.swarm import run_swarm
-
-        # Create a new workspace path that doesn't exist yet
         test_workspace = workspace / "new_workspace"
         assert not test_workspace.exists()
 
         stub_transport = StubTransport([make_text_response("Test response")])
         on_event = AsyncMock()
         role_models = {"default": ModelSpec(id="gpt-4")}
-
-        import asyncio
 
         async def run_test():
             try:
@@ -249,6 +188,7 @@ class TestRunSwarm:
                         on_event=on_event,
                         transport=stub_transport,
                         role_models=role_models,
+                        toolbox=stub_toolbox,
                     ),
                     timeout=1.0,
                 )
@@ -258,3 +198,61 @@ class TestRunSwarm:
         await run_test()
 
         # Directory should be created
+
+
+# ---------------------------------------------------------------------------
+# Symlink protection
+# ---------------------------------------------------------------------------
+
+
+class TestSymlinkProtection:
+    """run_swarm must not follow symlinks on the host filesystem."""
+
+    @pytest.mark.asyncio
+    async def test_todo_db_symlink_deleted_before_open(self, workspace: Path, stub_toolbox, tmp_path: Path) -> None:
+        """A symlink planted at .axio-swarm/todos.db must be deleted, not opened."""
+        axio_dir = workspace / ".axio-swarm"
+        axio_dir.mkdir(parents=True)
+        secret = tmp_path / "secret.db"
+        secret.write_text("sensitive")
+        db_link = axio_dir / "todos.db"
+        db_link.symlink_to(secret)
+
+        stub_transport = StubTransport([make_text_response("done")])
+        on_event = AsyncMock()
+        role_models = {"default": ModelSpec(id="gpt-4")}
+
+        try:
+            await asyncio.wait_for(
+                run_swarm(
+                    task="test",
+                    workspace=workspace,
+                    on_event=on_event,
+                    transport=stub_transport,
+                    role_models=role_models,
+                    toolbox=stub_toolbox,
+                ),
+                timeout=2.0,
+            )
+        except (TimeoutError, Exception):
+            pass
+
+        # Symlink must be gone — replaced by a real file
+        assert not db_link.is_symlink(), "symlink should have been deleted"
+        assert secret.read_text() == "sensitive", "original target must be untouched"
+
+    def test_agents_md_symlink_guard_logic(self, workspace: Path) -> None:
+        """Guard condition 'is_file() and not is_symlink()' must reject a symlink to a real file.
+
+        is_file() follows symlinks and returns True for a symlink pointing to a file,
+        so the extra 'not is_symlink()' check is the one that blocks injection.
+        """
+        secret = workspace / "secret.md"
+        secret.write_text("injected content")
+        agents_md = workspace / "AGENTS.md"
+        agents_md.symlink_to(secret)
+
+        # Document the Python behaviour the guard relies on:
+        assert agents_md.is_file(), "is_file() follows symlinks — without the extra check it would be read"
+        assert agents_md.is_symlink()
+        assert not (agents_md.is_file() and not agents_md.is_symlink()), "guard must block symlinks"

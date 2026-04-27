@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 
 dependencies = [
     "axio",
-    "axio-tools-local",
+    "axio-tools-docker",
     "axio-transport-openai",
     "aiosqlite>=0.20",
     "rich>=13",

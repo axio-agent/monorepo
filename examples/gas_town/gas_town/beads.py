@@ -54,6 +54,21 @@ async def get_bead(db: aiosqlite.Connection, bead_id: int) -> tuple[int, str, st
     return row  # type: ignore[return-value]
 
 
+async def has_active_beads(db: aiosqlite.Connection) -> bool:
+    """Return True if there are any open or in_progress beads."""
+    async with db.execute("SELECT 1 FROM beads WHERE status IN ('open','in_progress') LIMIT 1") as cur:
+        return await cur.fetchone() is not None
+
+
+async def get_unreviewed_closed_beads(db: aiosqlite.Connection) -> list[tuple[int, str]]:
+    """Return (id, title) for closed beads not yet reviewed by the Refinery."""
+    async with db.execute(
+        "SELECT id, title FROM beads WHERE status='closed' AND notes NOT LIKE '%refinery:reviewed%'"
+    ) as cur:
+        rows = await cur.fetchall()
+    return [(int(r[0]), str(r[1])) for r in rows]
+
+
 async def mark_in_progress(db: aiosqlite.Connection, bead_id: int, assignee: str = "polecat") -> None:
     """Mark a bead as in_progress with the given assignee."""
     await db.execute(

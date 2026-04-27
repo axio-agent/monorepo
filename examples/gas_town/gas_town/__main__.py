@@ -30,6 +30,7 @@ from axio.events import (
 from axio.models import ModelSpec
 from axio.permission import PermissionGuard
 from axio.tool import ToolHandler
+from axio_tools_docker.sandbox import DockerSandbox
 from axio_transport_openai.nebius import NebiusTransport
 from rich.console import Console, ConsoleRenderable
 from rich.live import Live
@@ -323,8 +324,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workspace",
         required=True,
-        help="Directory where agents read and write files",
+        help="Directory where agents read and write files (mounted at /workspace in the container)",
     )
+    parser.add_argument("--image", default="python:3.12-slim", help="Docker image for the sandbox")
+    parser.add_argument("--memory", default="512m", help="Container memory limit (e.g. 512m, 2g)")
+    parser.add_argument("--cpus", default="2.0", help="Container CPU limit (e.g. 2.0)")
+    parser.add_argument("--network", action="store_true", help="Allow network access inside the sandbox")
+    parser.add_argument("--polecats", type=int, default=5, help="Number of polecat workers (default 5)")
     return parser.parse_args()
 
 
@@ -356,20 +362,33 @@ async def main() -> None:
         console.print(Rule("[bold]Gas Town Convoy[/bold]"))
         console.print(f"[dim]Task:[/dim]          {args.task}")
         console.print(f"[dim]Workspace:[/dim]     {workspace}")
+        console.print(f"[dim]Image:[/dim]         {args.image}")
         console.print(f"[dim]Mayor model:[/dim]   {role_models['mayor'].id}")
         console.print(f"[dim]Polecat model:[/dim] {role_models['polecat'].id}")
+        console.print(f"[dim]Polecats:[/dim]      {args.polecats}")
         console.print()
 
         try:
-            with renderer:
-                await run_gastown(
-                    task=args.task,
-                    workspace=workspace,
-                    on_event=renderer.on_event,
-                    transport=transport,
-                    role_models=role_models,
-                    guard_factory=renderer.make_guard,
-                )
+            async with DockerSandbox(
+                image=args.image,
+                memory=args.memory,
+                cpus=args.cpus,
+                network=args.network,
+                volumes={"/workspace": str(workspace)},
+                workdir="/workspace",
+            ) as sandbox:
+                toolbox = {t.name: t for t in sandbox.tools}
+                with renderer:
+                    await run_gastown(
+                        task=args.task,
+                        workspace=workspace,
+                        on_event=renderer.on_event,
+                        transport=transport,
+                        role_models=role_models,
+                        toolbox=toolbox,
+                        guard_factory=renderer.make_guard,
+                        num_polecats=args.polecats,
+                    )
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/yellow]")
             sys.exit(1)

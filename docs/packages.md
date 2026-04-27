@@ -15,7 +15,7 @@ and all are managed as a uv workspace.
 | `axio-transport-codex` | ChatGPT (Codex) OAuth transport | `axio.transport`, `axio.transport.settings` |
 | `axio-tools-local` | Filesystem & shell tools | `axio.tools` |
 | `axio-tools-mcp` | MCP tool loader | `axio.tools.settings` |
-| `axio-tools-docker` | Docker sandbox tools | `axio.tools.settings` |
+| `axio-tools-docker` | Docker sandbox tools | — |
 | `axio-tui` | Textual-based TUI app | `axio.tools` |
 | `axio-tui-guards` | Permission guard plugins | `axio.guards` |
 
@@ -112,11 +112,17 @@ Dependencies: `axio`, `mcp>=1.6`
 
 ### axio-tools-docker
 
-Dynamic tool provider for Docker sandbox environments. Provides isolated
-tool execution inside containers. Registered as a `ToolsPlugin` under
-`axio.tools.settings`.
+Docker sandbox environment as an async context manager. Spins up an isolated
+container via `aiodocker` and exposes six tools that mirror `axio-tools-local`:
+`shell`, `write_file`, `read_file`, `list_files`, `run_python`, `patch_file`.
+No entry points — used directly in code via `DockerSandbox`.
 
-Dependencies: `axio`
+```python
+async with DockerSandbox(image="python:3.12-slim") as sandbox:
+    agent = Agent(..., tools=sandbox.tools)
+```
+
+Dependencies: `axio`, `aiodocker>=0.26`
 
 ## TUI & Plugins
 
