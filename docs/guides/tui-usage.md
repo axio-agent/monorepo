@@ -49,7 +49,7 @@ Press `Ctrl+P` to access:
 - Fork Conversation
 - New Session
 - Reset conversation
-- Configure NCP Servers
+- Configure MCP Servers
 - Manage Plugins
 - Theme
 - Screenshot

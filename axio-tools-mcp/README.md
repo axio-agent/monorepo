@@ -32,12 +32,19 @@ uv run axio   # MCP Servers section appears in settings
 
 ### Standalone
 
+<!--
+name: test_readme_standalone
+```python
+from axio.testing import StubTransport, make_text_response
+transport = StubTransport([make_text_response("done")])
+```
+-->
 <!-- name: test_readme_standalone -->
 ```python
+import asyncio
 from axio_tools_mcp.registry import MCPRegistry
 from axio.agent import Agent
 from axio.context import MemoryContextStore
-from axio_transport_openai import OpenAITransport
 
 async def main() -> None:
     registry = MCPRegistry()
@@ -46,15 +53,18 @@ async def main() -> None:
     tools = registry.all_tools   # list[axio.Tool]
     print(f"Loaded {len(tools)} tools from MCP servers")
 
+    # Pass any CompletionTransport — e.g. OpenAITransport, AnthropicTransport
     agent = Agent(
         system="You are a helpful assistant.",
         tools=tools,
-        transport=OpenAITransport(api_key="sk-...", model="gpt-4o"),
+        transport=transport,
     )
     result = await agent.run("Use the available tools to help me", MemoryContextStore())
     print(result)
 
     await registry.close()
+
+asyncio.run(main())
 ```
 
 ## Transport types

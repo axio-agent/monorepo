@@ -23,7 +23,7 @@ class PermissionGuard(ABC):
                 logger.info("tool=%s args=%s", type(handler).__name__, handler.model_dump())
                 return handler  # always allow
 
-    See ``examples/agent_swarm/main.py`` (``RoleGuard``) for a production example.
+    See ``examples/agent_swarm/agent_swarm/__main__.py`` (``RoleGuard``) for a production example.
     """
 
     async def __call__(self, handler: Any) -> Any:

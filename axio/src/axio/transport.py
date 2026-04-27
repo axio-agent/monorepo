@@ -79,23 +79,27 @@ class DummyTransport:
 
 
 class DummyCompletionTransport(DummyTransport, CompletionTransport):
-    def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> Any:
+    def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:
         self._do_fail()
+        raise AssertionError("unreachable")
 
 
 class DummyImageGenTransport(DummyTransport, ImageGenTransport):
-    def generate(self, prompt: str, *, size: tuple[int, int] | None = None, n: int = 1) -> Any:
+    async def generate(self, prompt: str, *, size: tuple[int, int] | None = None, n: int = 1) -> list[bytes]:
         self._do_fail()
+        raise AssertionError("unreachable")
 
 
 class DummyTTSTransport(DummyTransport, TTSTransport):
-    def synthesize(self, text: str, *, voice: str | None = None) -> Any:
+    def synthesize(self, text: str, *, voice: str | None = None) -> AsyncIterator[bytes]:
         self._do_fail()
+        raise AssertionError("unreachable")
 
 
 class DummySTTTransport(DummyTransport, STTTransport):
-    def transcribe(self, audio: bytes, media_type: str = "audio/wav") -> Any:
+    async def transcribe(self, audio: bytes, media_type: str = "audio/wav") -> str:
         self._do_fail()
+        raise AssertionError("unreachable")
 
 
 class DummyEmbeddingTransport(DummyTransport, EmbeddingTransport):

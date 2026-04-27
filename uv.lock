@@ -44,8 +44,14 @@ dependencies = [
     { name = "axio" },
     { name = "axio-tools-local" },
     { name = "axio-transport-openai" },
-    { name = "pytest-asyncio" },
     { name = "rich" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
 ]
 
 [package.metadata]
@@ -54,8 +60,14 @@ requires-dist = [
     { name = "axio", editable = "axio" },
     { name = "axio-tools-local", editable = "axio-tools-local" },
     { name = "axio-transport-openai", editable = "axio-transport-openai" },
-    { name = "pytest-asyncio" },
     { name = "rich", specifier = ">=13" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
 ]
 
 [[package]]
@@ -462,6 +474,7 @@ dev = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
     { name = "ruff" },
 ]
 
@@ -479,6 +492,7 @@ dev = [
     { name = "mypy", specifier = ">=1.14" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.9" },
 ]
 
@@ -1128,9 +1142,14 @@ dependencies = [
     { name = "axio" },
     { name = "axio-tools-local" },
     { name = "axio-transport-openai" },
+    { name = "rich" },
+]
+
+[package.dev-dependencies]
+dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "rich" },
+    { name = "pytest-cov" },
 ]
 
 [package.metadata]
@@ -1139,9 +1158,14 @@ requires-dist = [
     { name = "axio", editable = "axio" },
     { name = "axio-tools-local", editable = "axio-tools-local" },
     { name = "axio-transport-openai", editable = "axio-transport-openai" },
+    { name = "rich", specifier = ">=13" },
+]
+
+[package.metadata.requires-dev]
+dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "rich", specifier = ">=13" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
 ]
 
 [[package]]

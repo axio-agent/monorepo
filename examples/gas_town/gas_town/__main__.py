@@ -107,7 +107,7 @@ class RoleGuard(PermissionGuard):
         self._tool_name = tool_name
         self._renderer = renderer
 
-    async def check(self, handler: ToolHandler) -> ToolHandler:
+    async def check(self, handler: ToolHandler[Any]) -> ToolHandler[Any]:
         async with self._renderer._lock:
             self._renderer._print_tool_call(self._role, self._tool_name, handler)
         return handler

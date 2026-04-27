@@ -86,7 +86,7 @@ class BeadTool(ToolHandler[aiosqlite.Connection]):
     ]
     id: Annotated[int, Field(default=0, description="Bead ID (required for update / close / note)")]
     title: Annotated[str, Field(default="", description="Bead title (required for create)")]
-    status: Annotated[BStatus, Field(default="open", description="New status (for update)")]
+    status: Annotated[BStatus | None, Field(default=None, description="New status (for update)")]
     assignee: Annotated[str, Field(default="", description="Assignee name (for update)")]
     notes: Annotated[str, Field(default="", description="Note text to append (for note)")]
 
@@ -107,7 +107,7 @@ class BeadTool(ToolHandler[aiosqlite.Connection]):
         bead_id, _, cur_status, cur_assignee, cur_notes = row
 
         if self.action == "update":
-            new_status = self.status or cur_status
+            new_status = self.status if self.status is not None else cur_status
             new_assignee = self.assignee or cur_assignee
             await db.execute(
                 "UPDATE beads SET status=?, assignee=? WHERE id=?",

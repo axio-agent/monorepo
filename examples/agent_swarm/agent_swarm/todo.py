@@ -59,9 +59,9 @@ class TodoTool(ToolHandler[aiosqlite.Connection]):
             return f"Added [{cur.lastrowid}]: {self.item}"
 
         # update
-        await db.execute("UPDATE todos SET status = ? WHERE id = ?", (self.status, self.id))
+        cur = await db.execute("UPDATE todos SET status = ? WHERE id = ?", (self.status, self.id))
         await db.commit()
-        if db.total_changes:
+        if cur.rowcount:
             return f"[{self.id}] → {self.status}"
         return f"Item {self.id} not found"
 

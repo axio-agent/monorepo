@@ -17,7 +17,7 @@ Transport setup lives in __main__.py — swarm.py only uses what it is given.
 
 from __future__ import annotations
 
-import dataclasses
+import copy
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -76,7 +76,9 @@ def transport_for(
 ) -> CompletionTransport:
     """Return a copy of *base* with the model for *role* (falls back to 'default')."""
     model = role_models.get(role) or role_models["default"]
-    return dataclasses.replace(base, model=model)  # type: ignore[type-var]
+    new_transport = copy.copy(base)
+    new_transport.model = model  # type: ignore[attr-defined]
+    return new_transport
 
 
 # ---------------------------------------------------------------------------
