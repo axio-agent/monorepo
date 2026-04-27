@@ -1,5 +1,9 @@
 # Getting Started
 
+**Axio** (*Asynchronous eXtensible Intelligent Orchestration*) gives you a minimal
+but complete foundation for building LLM-powered agents — see [Why Axio?](index.md#why-axio)
+for the story behind the name.
+
 ## Installation
 
 Install Axio from PyPI:

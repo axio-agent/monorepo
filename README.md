@@ -4,7 +4,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)](https://python.org)
 
-Monorepo for **axio** — a minimal, streaming-first, protocol-driven foundation for LLM-powered agents.
+Monorepo for **axio** (*Asynchronous eXtensible Intelligent Orchestration*) — a minimal,
+streaming-first, protocol-driven foundation for LLM-powered agents.
 
 ---
 

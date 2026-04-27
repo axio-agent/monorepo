@@ -7,9 +7,9 @@
 [![PyPI axio](https://img.shields.io/pypi/v/axio?label=axio&logo=pypi&logoColor=white)](https://pypi.org/project/axio/)
 [![PyPI axio-tui](https://img.shields.io/pypi/v/axio-tui?label=axio-tui&logo=pypi&logoColor=white)](https://pypi.org/project/axio-tui/)
 
-**A highly extensible, streaming-first agent framework for Python.**
+**Axio** (*Asynchronous eXtensible Intelligent Orchestration*) — a minimal but complete
+foundation for building LLM-powered agents in Python.
 
-Axio gives you a minimal but complete foundation for building LLM-powered agents.
 Every integration point is a protocol — bring your own transport, context store,
 tools, and permission guards.
 
@@ -153,6 +153,37 @@ asyncio.run(main())
 ::::
 
 ## Why Axio?
+
+The name is a backronym — each letter describes what the framework actually does:
+
+**A — Asynchronous.**
+The agent loop is built on `asyncio` end-to-end. Tool calls from a single
+LLM response are dispatched concurrently via `asyncio.gather` so results
+arrive in parallel, not sequentially. Every transport, tool, and context
+store uses `async def` throughout — no thread pools or blocking I/O hidden
+beneath the surface.
+
+**X — eXtensible.**
+Every integration point is a runtime-checkable `Protocol` or abstract base class.
+You can swap the transport (OpenAI, Anthropic, any custom endpoint), the context
+store (in-memory, SQLite, your own database), the permission guards, and the tools
+without touching a single line of framework code. The plugin system — based on
+Python entry points — lets separate packages register transports, tools, and
+guards that are discovered automatically at runtime. Extensible is capitalised
+because it is the core design decision from which everything else follows.
+
+**I — Intelligent.**
+The LLM drives the decision loop. Axio stays out of the way: it presents tools
+to the model, faithfully delivers tool results back, and keeps iterating until the
+model decides it is done. No hard-coded routing, no fixed decision trees — the
+intelligence lives in the model, not the framework.
+
+**O — Orchestration.**
+Axio coordinates agents, tools, context, and permissions into a coherent execution
+flow. Sub-agents can be spawned and composed via the built-in `subagent` tool;
+context stores are shared across agents; permission guards form a composable
+chain that gates every tool call. Complex multi-agent workflows emerge from
+simple, well-defined primitives.
 
 Extensible by design
 : Every integration point is a runtime-checkable `Protocol` or ABC.
