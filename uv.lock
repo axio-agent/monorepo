@@ -1128,13 +1128,9 @@ dependencies = [
     { name = "axio" },
     { name = "axio-tools-local" },
     { name = "axio-transport-openai" },
-    { name = "rich" },
-]
-
-[package.dev-dependencies]
-dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "rich" },
 ]
 
 [package.metadata]
@@ -1143,13 +1139,9 @@ requires-dist = [
     { name = "axio", editable = "axio" },
     { name = "axio-tools-local", editable = "axio-tools-local" },
     { name = "axio-transport-openai", editable = "axio-transport-openai" },
-    { name = "rich", specifier = ">=13" },
-]
-
-[package.metadata.requires-dev]
-dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "rich", specifier = ">=13" },
 ]
 
 [[package]]

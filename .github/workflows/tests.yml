@@ -26,6 +26,8 @@ jobs:
           - axio-transport-openai
           - axio-tui
           - axio-tui-guards
+          - examples/agent_swarm
+          - examples/gas_town
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -51,6 +53,8 @@ jobs:
           - axio-transport-openai
           - axio-tui
           - axio-tui-guards
+          - examples/agent_swarm
+          - examples/gas_town
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -75,11 +79,14 @@ jobs:
           - { name: axio-transport-openai,  cov: axio_transport_openai }
           - { name: axio-tui,               cov: axio_tui }
           - { name: axio-tui-guards,        cov: axio_tui_guards }
+          - { name: examples/agent_swarm,   cov: agent_swarm }
+          - { name: examples/gas_town,       cov: gas_town }
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --frozen
+        working-directory: ${{ matrix.package.name }}
       - run: uv run pytest -vv --cov=${{ matrix.package.cov }} --cov-report=term-missing
         working-directory: ${{ matrix.package.name }}
