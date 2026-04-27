@@ -401,5 +401,5 @@ structure at the cost of more orchestration prompting and more LLM calls.
 - {doc}`gas-town` — the bead-based convoy pattern with explicit work tracking
 - {doc}`writing-tools` — how to build custom ToolHandlers
 - {doc}`testing` — how to unit-test agents and tools with StubTransport
-- {ref}`concepts/agent` — the agent loop in detail
+- {doc}`../concepts/agent` — the agent loop in detail
 ```

@@ -399,3 +399,9 @@ swarms, integration review, and a workflow model that survives restarts.
 - {doc}`agent-swarm` — the simpler team-of-specialists pattern
 - {doc}`writing-tools` — how to build custom ToolHandlers
 ```
+
+```{toctree}
+:hidden:
+
+../gas-town-rules
+```

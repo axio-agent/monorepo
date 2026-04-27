@@ -154,7 +154,7 @@ asyncio.run(main())
 ```
 
 For long-running agents wrap `MemoryContextStore` with
-[`AutoCompactStore`](#autocompactstore) to automatically summarize old history
+`AutoCompactStore` to automatically summarize old history
 when the context window fills up.
 
 #### SQLiteContextStore
@@ -190,7 +190,7 @@ asyncio.run(main())
 ```
 
 `SQLiteContextStore` is the natural choice for production TUI sessions. Pair it
-with [`AutoCompactStore`](#autocompactstore) to keep context within model limits
+with `AutoCompactStore` to keep context within model limits
 across long conversations.
 
 ### Extension point

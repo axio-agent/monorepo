@@ -11,25 +11,6 @@ units, communication protocols, lifecycle patterns, and key anti-patterns.
 
 ---
 
-## Table of Contents
-
-1. [Philosophy and When to Use Gas Town](#1-philosophy-and-when-to-use-gas-town)
-2. [The GUPP Principle](#2-the-gupp-principle)
-3. [Roles](#3-roles)
-4. [The MEOW Stack](#4-the-meow-stack)
-5. [Molecular Workflows](#5-molecular-workflows)
-6. [Convoys](#6-convoys)
-7. [Communication: Nudge vs Mail](#7-communication-nudge-vs-mail)
-8. [Polecat Lifecycle](#8-polecat-lifecycle)
-9. [Patrol System](#9-patrol-system)
-10. [Handoff and Session Cycling](#10-handoff-and-session-cycling)
-11. [Nondeterministic Idempotence (NDI)](#11-nondeterministic-idempotence-ndi)
-12. [Key Anti-Patterns](#12-key-anti-patterns)
-13. [Dolt Health](#13-dolt-health)
-14. [Comparison to Kubernetes](#14-comparison-to-kubernetes)
-
----
-
 ## 1. Philosophy and When to Use Gas Town
 
 Gas Town is an "industrialized coding factory" — an opinionated system for running 10–30
