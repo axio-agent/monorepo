@@ -86,7 +86,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
+      - run: uv sync --frozen --all-extras
       - run: uv sync --frozen
-        working-directory: ${{ matrix.package.name }}
       - run: uv run pytest -vv --cov=${{ matrix.package.cov }} --cov-report=term-missing
         working-directory: ${{ matrix.package.name }}
