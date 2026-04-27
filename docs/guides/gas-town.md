@@ -370,16 +370,7 @@ axio-gastown --workspace /tmp/my_project \
     "Build a Python rate limiter with token-bucket and sliding-window"
 ```
 
-Docker is required. The rig creates a container on first run and saves its name to
-`workspace/.gas-town/sandbox`. On the next run you are asked whether to resume it:
-
-```
-Existing sandbox: axio-gastown-a3f1c82e
-Resume this container? [Y/n]
-```
-
-Press Enter or `y` to reattach (keeps installed packages and build state), `n` for a
-fresh container.
+Docker is required. A fresh container is created on each run and removed on exit.
 
 **Docker options:**
 
@@ -413,8 +404,8 @@ role_models: dict[str, ModelSpec] = {
 
 After a run the workspace directory (host-side) contains all produced artifacts
 alongside `AGENTS.md` (the living project memory written by agents). The `.gas-town/`
-subdirectory holds internal orchestration data including the bead SQLite database and
-the sandbox container name — agents are instructed never to touch it.
+subdirectory holds internal orchestration data including the bead SQLite database —
+agents are instructed never to touch it.
 
 Inspect the bead history with any SQLite tool:
 

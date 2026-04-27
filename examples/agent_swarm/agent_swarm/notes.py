@@ -60,7 +60,10 @@ class NotesTool(ToolHandler[Path]):
       drop   - remove a note by name
     """
 
-    action: Annotated[Literal["list", "read", "write", "append"], Field(description="list · read · write · append")]
+    action: Annotated[
+        Literal["list", "read", "write", "append", "drop"],
+        Field(description="list · read · write · append · drop"),
+    ]
     name: Annotated[str, Field(default="", description="Note name without extension (required for read/write/append)")]
     description: Annotated[
         str,

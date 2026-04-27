@@ -596,17 +596,18 @@ async def run_gastown(
 
         stream = mayor.run_stream(task, mayor_ctx)
         parts: list[str] = []
-        async for event in stream:
-            await on_event("mayor", event)
-            if isinstance(event, TextDelta):
-                parts.append(event.delta)
+        try:
+            async for event in stream:
+                await on_event("mayor", event)
+                if isinstance(event, TextDelta):
+                    parts.append(event.delta)
+        finally:
+            # Close the channel — workers exit their async-for loop cleanly.
+            polecat_queue.close()
+            await asyncio.gather(*worker_tasks, return_exceptions=True)
 
-        # Close the channel — workers exit their async-for loop cleanly.
-        polecat_queue.close()
-        await asyncio.gather(*worker_tasks, return_exceptions=True)
-
-        # Signal patrols to stop and wait for them to exit cleanly.
-        stop.set()
-        await asyncio.gather(*patrol_tasks, return_exceptions=True)
+            # Signal patrols to stop and wait for them to exit cleanly.
+            stop.set()
+            await asyncio.gather(*patrol_tasks, return_exceptions=True)
 
     return "".join(parts)

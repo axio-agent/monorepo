@@ -21,25 +21,23 @@ required.
 
 ## Quick start
 
-<!-- name: test_docker_quick_start; mark: skip -->
+<!-- name: test_docker_quick_start; mark: docker -->
 ```python
 import asyncio
 from axio.agent import Agent
 from axio.context import MemoryContextStore
-from axio_transport_openai import OpenAITransport
+from axio.testing import StubTransport, make_text_response
 from axio_tools_docker import DockerSandbox
 
 async def main() -> None:
-    async with DockerSandbox(image="python:3.12-slim") as sandbox:
+    transport = StubTransport([make_text_response("Done.")])
+    async with DockerSandbox(image="python:3.12-alpine") as sandbox:
         agent = Agent(
             system="You are a coding assistant. Use the sandbox tools.",
             tools=sandbox.tools,
-            transport=OpenAITransport(api_key="sk-...", model="gpt-4o"),
+            transport=transport,
         )
-        result = await agent.run(
-            "Write a script that prints the first 20 Fibonacci numbers, then run it.",
-            MemoryContextStore(),
-        )
+        result = await agent.run("Print hello from Python.", MemoryContextStore())
         print(result)
 
 asyncio.run(main())

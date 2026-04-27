@@ -127,7 +127,7 @@ class ReadFile(ToolHandler["DockerSandbox"]):
             result = "".join(lines)
         if len(result) > self.max_chars:
             return result[: self.max_chars] + "\n...[truncated]"
-        return result or "(no output)"
+        return result
 
 
 class ListFiles(ToolHandler["DockerSandbox"]):
@@ -526,8 +526,10 @@ class DockerSandbox:
             info.size = len(data)
             info.mode = mode
             tar.addfile(info, io.BytesIO(data))
+        parent = os.path.dirname(path) or "/"
+        await self.exec(f"mkdir -p {shlex.quote(parent)}")
         await self._container.put_archive(  # type: ignore[no-untyped-call]
-            path=os.path.dirname(path) or "/",
+            path=parent,
             data=buf.getvalue(),
         )
         return f"Wrote {len(data)} bytes to {path}"

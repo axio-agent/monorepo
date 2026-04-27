@@ -68,6 +68,10 @@ def save_sandbox_name(workspace: Path, name: str) -> None:
     """Persist *name* so the next run can reattach to the same container."""
     p = workspace / SANDBOX_FILE
     p.parent.mkdir(parents=True, exist_ok=True)
+    if p.is_symlink():
+        p.unlink()
+    elif p.exists() and not p.is_file():
+        raise ValueError(f"Refusing to write sandbox name to non-regular file: {p}")
     p.write_text(name)
 
 
