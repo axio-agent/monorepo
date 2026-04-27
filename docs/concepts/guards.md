@@ -68,6 +68,9 @@ class WriteFile(ToolHandler[Any]):
     path: str
     content: str
     async def __call__(self, context: Any) -> str: return "ok"
+
+# Note: PathGuard and LLMGuard are provided by the axio-tui-guards package
+# For testing, you can use AllowAllGuard as a placeholder:
 PathGuard = AllowAllGuard
 LLMGuard = AllowAllGuard
 ```

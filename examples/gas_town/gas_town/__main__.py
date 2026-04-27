@@ -177,61 +177,62 @@ class GastownRenderer:
         self._event_count += 1
         style = self._role_style(role)
 
-        if isinstance(event, ReasoningDelta):
-            self._flush_text(role)
-            if role not in self._header_printed:
-                self._print_header(role)
-            self._agent_status[role] = "reasoning…"
-            self._print(f"[dim italic]{event.delta}[/dim italic]", end="", highlight=False)
+        match event:
+            case ReasoningDelta():
+                self._flush_text(role)
+                if role not in self._header_printed:
+                    self._print_header(role)
+                self._agent_status[role] = "reasoning…"
+                self._print(f"[dim italic]{event.delta}[/dim italic]", end="", highlight=False)
 
-        elif isinstance(event, TextDelta):
-            if role not in self._header_printed:
-                self._print_header(role)
-            self._text_buf.setdefault(role, []).append(event.delta)
-            self._active_text = role
-            self._agent_status[role] = "writing…"
+            case TextDelta():
+                if role not in self._header_printed:
+                    self._print_header(role)
+                self._text_buf.setdefault(role, []).append(event.delta)
+                self._active_text = role
+                self._agent_status[role] = "writing…"
 
-        elif isinstance(event, ToolUseStart):
-            self._flush_text(role)
-            if role not in self._header_printed:
-                self._print_header(role)
-            self._agent_status[role] = f"▶ {event.name}"
+            case ToolUseStart():
+                self._flush_text(role)
+                if role not in self._header_printed:
+                    self._print_header(role)
+                self._agent_status[role] = f"▶ {event.name}"
 
-        elif isinstance(event, ToolResult):
-            result_status = "[red]✗ error[/red]" if event.is_error else "[green]✓[/green]"
-            content = (event.content or "").strip()
-            self._print(
-                f"[{style}]{event.name}[/{style}] {result_status}",
-                highlight=False,
-            )
-            if content:
-                self._print(Markdown(fence(content, event.name, event.input)))
-            self._agent_status[role] = "thinking…"
+            case ToolResult():
+                result_status = "[red]✗ error[/red]" if event.is_error else "[green]✓[/green]"
+                content = (event.content or "").strip()
+                self._print(
+                    f"[{style}]{event.name}[/{style}] {result_status}",
+                    highlight=False,
+                )
+                if content:
+                    self._print(Markdown(fence(content, event.name, event.input)))
+                self._agent_status[role] = "thinking…"
 
-        elif isinstance(event, IterationEnd):
-            u = event.usage
-            self._total_in += u.input_tokens
-            self._total_out += u.output_tokens
-            self._agent_status[role] = "thinking…"
-            self._print(
-                f"[dim]  iter {event.iteration} · {event.stop_reason} · ↑{u.input_tokens} ↓{u.output_tokens}[/dim]",
-                highlight=False,
-            )
+            case IterationEnd():
+                u = event.usage
+                self._total_in += u.input_tokens
+                self._total_out += u.output_tokens
+                self._agent_status[role] = "thinking…"
+                msg = (
+                    f"[dim]  iter {event.iteration} · {event.stop_reason} · ↑{u.input_tokens} ↓{u.output_tokens}[/dim]"
+                )
+                self._print(msg, highlight=False)
 
-        elif isinstance(event, Error):
-            self._flush_text(role)
-            self._agent_status.pop(role, None)
-            self._print(f"[bold red]ERROR ({role}): {event.exception}[/bold red]")
+            case Error():
+                self._flush_text(role)
+                self._agent_status.pop(role, None)
+                self._print(f"[bold red]ERROR ({role}): {event.exception}[/bold red]")
 
-        elif isinstance(event, SessionEndEvent):
-            self._flush_text(role)
-            self._agent_status.pop(role, None)
-            u = event.total_usage
-            self._print(
-                f"[dim][{style}]{self._role_title(role)}[/{style}] "
-                f"done — ↑{u.input_tokens} ↓{u.output_tokens} tokens total[/dim]",
-                highlight=False,
-            )
+            case SessionEndEvent():
+                self._flush_text(role)
+                self._agent_status.pop(role, None)
+                u = event.total_usage
+                self._print(
+                    f"[dim][{style}]{self._role_title(role)}[/{style}] "
+                    f"done — ↑{u.input_tokens} ↓{u.output_tokens} tokens total[/dim]",
+                    highlight=False,
+                )
 
     def _flush_text(self, role: str) -> None:
         buf = self._text_buf.pop(role, None)

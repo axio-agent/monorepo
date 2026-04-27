@@ -68,14 +68,14 @@ A `Message` pairs a role with a list of content blocks:
 
 <!-- name: test_message_dataclass -->
 ```python
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from axio.blocks import ContentBlock
 
 @dataclass(slots=True)
 class Message:
     role: Literal["user", "assistant", "system"]
-    content: list[ContentBlock]
+    content: list[ContentBlock] = field(default_factory=list)
 ```
 
 User messages typically contain `TextBlock` values. Assistant messages may
@@ -132,6 +132,8 @@ from axio.messages import Message
 from axio.blocks import TextBlock
 
 async def main():
+    # empty store, or pre-populate with existing messages:
+    # ctx = MemoryContextStore([existing_message, ...])
     ctx = MemoryContextStore()
     await ctx.append(Message(role="user", content=[TextBlock(text="Hello")]))
     await ctx.append(Message(role="assistant", content=[TextBlock(text="Hi!")]))

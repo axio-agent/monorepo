@@ -30,7 +30,8 @@ Create an event sequence for a simple text reply:
 
 <!-- name: test_make_text_response -->
 ```python
-from axio.events import TextDelta, IterationEnd, StopReason, Usage
+from axio.events import TextDelta, IterationEnd
+from axio.types import StopReason, Usage
 from axio.testing import make_text_response
 
 events = make_text_response(text="Hello world", iteration=1)

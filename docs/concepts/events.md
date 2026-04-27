@@ -109,6 +109,11 @@ All events are frozen dataclasses with `slots=True`:
 
 `Error`
 : Wraps an exception that occurred during streaming.
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class Error:
+      exception: BaseException
+  ```
 
 `SessionEndEvent`
 : Final event of the session. Carries the stop reason and cumulative token usage.
@@ -117,6 +122,16 @@ All events are frozen dataclasses with `slots=True`:
   class SessionEndEvent:
       stop_reason: StopReason
       total_usage: Usage
+  ```
+
+`Usage`
+: Token counts for one iteration or an entire session. Supports `+` to
+  accumulate totals across multiple iterations:
+  ```python
+  from axio.types import Usage
+  u1 = Usage(input_tokens=100, output_tokens=50)
+  u2 = Usage(input_tokens=200, output_tokens=80)
+  total = u1 + u2  # Usage(input_tokens=300, output_tokens=130)
   ```
 
 ## StreamEvent union
@@ -160,7 +175,7 @@ It also provides convenience methods:
 
 `get_final_text() -> str`
 : Consume the stream and return only the concatenated text deltas.
-  Raises `StreamError` on `Error` events.
+  Raises `StreamError` (from `axio.exceptions`) on `Error` events.
 
 `get_session_end() -> SessionEndEvent`
 : Consume the stream and return the final `SessionEndEvent`.
@@ -187,7 +202,7 @@ converts `ToolInputDelta` chunks into structured `ToolField*` events:
 ```python
 from axio.tool_args import ToolArgStream
 
-stream = ToolArgStream("call_1")
+stream = ToolArgStream("call_1", index=0)  # index defaults to 0
 stream.feed('{"path":"/tmp/f')
 # → [ToolFieldStart(0, "call_1", "path"),
 #    ToolFieldDelta(0, "call_1", "path", "/tmp/f")]

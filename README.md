@@ -45,7 +45,7 @@ pip install axio-tools-local axio-tools-mcp
 The recommended way is an isolated installation with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install "axio-tui[anthropic,openai,local,mcp,guards]"
+uv tool install "axio-tui[anthropic,openai,codex,local,mcp,guards]"
 ```
 
 Or with pip:

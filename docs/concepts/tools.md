@@ -13,10 +13,10 @@ from pydantic import BaseModel
 ```
 -->
 ```python
-class ToolHandler(BaseModel):
+class ToolHandler[T](BaseModel):
     """Subclass fields define JSON-schema for input parameters."""
 
-    async def __call__(self, context: Any) -> str:
+    async def __call__(self, context: T) -> str:
         raise NotImplementedError
 ```
 
@@ -46,12 +46,13 @@ The handler's **docstring** becomes the tool description sent to the LLM.
 
 ```python
 @dataclass(frozen=True, slots=True)
-class Tool:
+class Tool[T]:
     name: ToolName
     description: str
-    handler: type[ToolHandler]
+    handler: type[ToolHandler[T]]
     guards: tuple[PermissionGuard, ...] = ()
     concurrency: int | None = None
+    context: T = ...  # runtime default: empty MappingProxyType
 ```
 
 `handler`
@@ -93,7 +94,7 @@ sequenceDiagram
         Tool->>Guard: check(handler_instance)
         Guard-->>Tool: handler (or raise GuardError)
     end
-    Tool->>Handler: await handler_instance()
+    Tool->>Handler: await handler_instance(context)
     Handler-->>Tool: result string
     Tool-->>Agent: result
 ```
@@ -140,7 +141,7 @@ ToolName = str
 <!-- name: test_tool_selector_protocol -->
 ```python
 from collections.abc import Iterable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from axio.messages import Message
 from axio.tool import Tool
 
@@ -150,8 +151,8 @@ class ToolSelector(Protocol):
     async def select(
         self,
         messages: Iterable[Message],
-        tools: Iterable[Tool],
-    ) -> Iterable[Tool]: ...
+        tools: Iterable[Tool[Any]],
+    ) -> Iterable[Tool[Any]]: ...
 ```
 
 A selector is useful when you have a large tool catalogue and want to avoid
