@@ -12,25 +12,17 @@ The full example lives in `examples/agent_swarm/` in the repository.
 flowchart TD
     User([User]) -->|task| O[Orchestrator]
 
-    O -->|delegate| PM[Project Manager]
     O -->|delegate| AR[Architect]
     O -->|delegate| BE[Backend Dev]
-    O -->|delegate| FE[Frontend Dev]
     O -->|delegate| QA[QA Engineer]
     O -->|delegate| SEC[Security Engineer]
-    O -->|delegate| ETL[ETL Engineer]
-    O -->|delegate| DES[Designer]
-    O -->|delegate| UX[UX Engineer]
+    O -->|delegate| CH[Challenger]
+    O -->|delegate| AN[Analyst]
 
-    PM  -->|requirements.md| WS[(workspace/)]
-    AR  -->|design.md|       WS
-    BE  -->|solution.py|     WS
-    FE  -->|index.html|      WS
-    QA  -->|test_solution.py| WS
+    AR  -->|design.md|         WS[(workspace)]
+    BE  -->|solution.py|       WS
+    QA  -->|test_solution.py|  WS
     SEC -->|security_review.md| WS
-    ETL -->|pipeline.py|     WS
-    DES -->|design_spec.md|  WS
-    UX  -->|ux_spec.md|      WS
 
     WS -->|reads artifacts| BE
     WS -->|reads artifacts| QA
@@ -40,220 +32,244 @@ flowchart TD
 The **orchestrator** receives a task, decides which specialists to involve, and calls
 each one in sequence (or in parallel when independent). Specialists communicate through
 a shared **workspace directory**: the architect writes `design.md`, the backend dev reads
-it before implementing, the QA engineer reads the implementation before writing tests,
-and so on.
+it before implementing, the QA engineer reads the implementation before writing tests.
 
 ## Project structure
 
-```
-examples/agent_swarm/
-├── pyproject.toml       ← standalone workspace package
-├── main.py              ← CLI entry point, Rich live display
-├── swarm.py             ← Delegate tool, AutoCompactContextStore, run_swarm()
-└── roles/
-    ├── __init__.py      ← AGENTS registry + ORCHESTRATOR agent
-    ├── _common.py       ← OUTPUT_FORMAT appended to every role prompt
-    ├── architect.py
-    ├── backend_dev.py
-    ├── challenger.py
-    ├── designer.py
-    ├── etl_engineer.py
-    ├── frontend_dev.py
-    ├── project_manager.py
-    ├── qa.py
-    ├── security_engineer.py
-    └── ux_engineer.py
-```
+The example package contains four Python modules — the CLI entry point (`__main__.py`),
+the core swarm logic (`swarm.py`), the `ask_user` tool, and the `todo` tool — plus a
+`roles/` subdirectory. `roles/__init__.py` declares `ROLE_NAMES` and `make_orchestrator()`;
+every specialist role is a TOML file in that directory.
 
 ## 1. Defining roles
 
-A role is just an `Agent` pre-configured with `DummyCompletionTransport`.
-The dummy transport exists purely as a "not yet wired up" placeholder — calling it
-raises an error and logs a warning, so you never accidentally run an unconfigured agent:
+Roles are TOML files. Each file describes one specialist: its name, description,
+`max_iterations`, tool list, and system prompt.
 
-```python
-# roles/backend_dev.py
-from axio.agent import Agent
-from axio.transport import DummyCompletionTransport
+```toml
+# roles/architect.toml
+name = "architect"
+description = "Designs system architecture, component interfaces, and documents technical decisions"
+max_iterations = 100
+tools = ["read_file", "write_file", "patch_file", "list_files", "shell", "run_python", "analyze"]
 
-DESCRIPTION = "Implements server-side logic, data models, APIs, and business logic in Python"
-
-agent = Agent(
-    system="""\
-You are a senior backend developer. When given a task you:
-1. Read workspace/design.md (if it exists) for the blueprint.
-2. Implement the required Python code with full type annotations.
-3. Save the result to workspace/solution.py.
-...""",
-    transport=DummyCompletionTransport(),
-)
+[system]
+text = """
+You are a senior software architect. When given a task you:
+1. Read AGENTS.md if it exists for project history.
+2. Analyse requirements and identify key components.
+3. Write design.md with component map, interfaces, and contracts.
+...
+"""
 ```
 
-That's it. No custom dataclass, no registry entry point. Each file is
-self-contained: `DESCRIPTION` feeds the orchestrator's roster; `agent` is the
-prototype that gets activated at runtime via `copy()`.
+The `tools` list contains names that are resolved against the shared toolbox at
+runtime — the TOML file does not know about `Tool` objects, only names.
 
-The `roles/__init__.py` builds the registry and the **orchestrator** agent in one place:
+`roles/__init__.py` derives the role list from TOML filenames and builds the
+orchestrator with a dynamic roster:
 
 ```python
+from pathlib import Path
 from axio.agent import Agent
 from axio.transport import DummyCompletionTransport
-from . import architect, backend_dev, qa  # etc.
 
-AGENTS: dict[str, tuple[str, Agent]] = {
-    "architect":   (architect.DESCRIPTION,   architect.agent),
-    "backend_dev": (backend_dev.DESCRIPTION, backend_dev.agent),
-    "qa":          (qa.DESCRIPTION,          qa.agent),
-    # ...
-}
+ROLES_DIR = Path(__file__).parent
+ROLE_NAMES = [p.stem for p in sorted(ROLES_DIR.glob("*.toml"))]
 
-_roster = "\n".join(f"  {name:20s} — {desc}" for name, (desc, _) in AGENTS.items())
-
-ORCHESTRATOR = Agent(
-    system=f"""\
-You are a tech lead managing a team of specialist agents.
+def make_orchestrator(roster: str) -> Agent:
+    return Agent(
+        max_iterations=200,
+        system=f"""You are a tech lead managing a team of specialist agents.
 ...
 Available team members
 ----------------------
-{_roster}
+{roster}
+...""",
+        transport=DummyCompletionTransport(),
+    )
+```
 
-Use the delegate tool to assign work. Pass the workspace path in every delegation.\
-""",
+`make_orchestrator()` is called from `run_swarm()` after `load_agents()` runs,
+so the roster is always derived from actual loaded agents.
+
+**Adding a new role** is a single-file change: create `roles/new_role.toml`. No
+changes to Python files needed — `ROLE_NAMES` is derived from filenames automatically.
+
+## 2. Loading roles at runtime
+
+`load_agents()` from `axio.agent_loader` scans a directory for TOML/JSON/INI files,
+resolves tool names against a toolbox dict, and returns
+`dict[str, tuple[str, Agent]]`.
+
+`build_toolbox()` in `swarm.py` constructs the shared tool registry before `load_agents()` is called:
+
+```python
+from axio.agent_loader import load_agents
+
+toolbox = build_toolbox(workspace, on_event, transport, role_models, guard_factory)
+roles = load_agents(ROLES_DIR, toolbox=toolbox)
+# roles == {"architect": ("Designs system...", Agent(...)), "backend_dev": (...), ...}
+```
+
+The toolbox contains all tools any specialist might need:
+`read_file`, `write_file`, `patch_file`, `list_files`, `shell`, `run_python`, and `analyze`.
+Each tool is created once and shared across roles — guard tuples are attached per tool.
+
+## 3. Activating a role with `copy()`
+
+`Agent` is a frozen dataclass. `copy()` applies field overrides without mutation.
+The Delegate tool activates a specialist by copying its prototype:
+
+```python
+description, proto = roles[self.role]
+role_transport = transport_for(self.role, context["transport"], context["role_models"])
+specialist = proto.copy(transport=role_transport)
+specialist_ctx = AutoCompactStore(MemoryContextStore(), role_transport, keep_recent=6)
+stream = specialist.run_stream(
+    f"Workspace: {context['workspace']}\n\n{self.task}",
+    specialist_ctx,
+)
+```
+
+`transport_for()` returns a shallow copy of the base transport with the role's model applied:
+
+```python
+def transport_for(role, base, role_models):
+    model = role_models.get(role) or role_models["default"]
+    new_transport = copy.copy(base)
+    new_transport.model = model
+    return new_transport
+```
+
+This preserves the shared HTTP session while giving each agent a different model.
+
+## 4. Tool contexts via TypedDict
+
+Tools that spawn sub-agents carry their runtime dependencies in a typed context dict.
+`Delegate` is a top-level `ToolHandler[DelegateContext]` — not a closure:
+
+```python
+class DelegateContext(TypedDict):
+    workspace: Path
+    on_event: OnEventCallback
+    transport: CompletionTransport
+    role_models: dict[str, ModelSpec]
+    roles: dict[str, tuple[str, Agent]]
+    guard_factory: GuardFactory | None
+    counters: dict[str, int]
+
+
+class Delegate(ToolHandler[DelegateContext]):
+    """Delegate a task to a specialist team member."""
+
+    role: Annotated[
+        str,
+        Field(
+            description=f"Which specialist to delegate to. One of: {', '.join(ROLE_NAMES)}",
+            json_schema_extra={"enum": ROLE_NAMES},
+        ),
+    ]
+    topic: Annotated[str, Field(description="Short label, e.g. 'auth middleware'")]
+    task: Annotated[str, Field(description="Instructions for the specialist")]
+
+    async def __call__(self, context: DelegateContext) -> str:
+        ...
+```
+
+`json_schema_extra={"enum": ROLE_NAMES}` makes the JSON schema expose a strict enum
+so the LLM cannot hallucinate a role name.
+
+## 5. The Analyze tool
+
+The swarm includes a read-only `analyze` tool that spawns ephemeral analyst subagents
+for investigation tasks. Analysts can only read files — no write tools.
+
+```python
+class AnalyzeContext(TypedDict):
+    workspace: Path
+    on_event: OnEventCallback
+    transport: CompletionTransport
+    role_models: dict[str, ModelSpec]
+    guard_factory: GuardFactory | None
+    counter: list[int]  # [0] holds mutable call count
+
+
+ANALYST = Agent(
+    system="You are a read-only analyst. Read files and produce a concise report. "
+           "You must not create, modify, or delete any files.",
     transport=DummyCompletionTransport(),
 )
+
+
+class Analyze(ToolHandler[AnalyzeContext]):
+    """Spawn a read-only analyst subagent to investigate a question and return a report."""
+    task: Annotated[str, Field(description="Question or analysis task")]
+
+    async def __call__(self, context: AnalyzeContext) -> str:
+        context["counter"][0] += 1
+        n = context["counter"][0]
+        agent_id = f"analyst#{n}:{self.task[:40]}"
+
+        analyst = ANALYST.copy(
+            transport=transport_for("analyst", context["transport"], context["role_models"]),
+            tools=[list_files_tool, read_file_tool],
+            max_iterations=10,
+        )
+        stream = analyst.run_stream(
+            f"Workspace: {context['workspace']}\n\n{self.task}",
+            MemoryContextStore(),
+        )
+        parts: list[str] = []
+        async for event in stream:
+            await context["on_event"](agent_id, event)
+            if isinstance(event, TextDelta):
+                parts.append(event.delta)
+        return "".join(parts)
 ```
 
-The orchestrator is a regular `Agent` — not a special class. Its system prompt is
-built once from `AGENTS` so the roster is always up to date.
+Both the orchestrator and specialists get an `analyze` tool. Multiple analyst
+instances can run concurrently — Axio dispatches all tool calls in one response via
+`asyncio.gather()`.
 
-**Adding a new role** is a single-file change: create `roles/new_role.py`, add it
-to `AGENTS` in `__init__.py`. No changes to `swarm.py` or `main.py`.
+## 6. Streaming sub-agent output
 
-## 2. Activating a role with `copy()`
-
-`Agent` is a stateless frozen dataclass. `copy()` is just `dataclasses.replace()`.
-To run a specialist with a real transport:
+`run_stream()` returns an async iterator of `StreamEvent`. We iterate manually to
+both forward events to the display and collect the final text:
 
 ```python
-description, proto = AGENTS["backend_dev"]
-specialist = proto.copy(
-    transport=real_transport,
-    tools=file_tools,
-    max_iterations=25,
-)
-result = await specialist.run(task, MemoryContextStore())
-```
-
-The same applies to the orchestrator — it gets the real transport and the
-`delegate` tool at runtime:
-
-```python
-orchestrator = ORCHESTRATOR.copy(transport=transport, tools=[delegate])
-```
-
-No factory functions, no dependency injection containers. `copy()` is enough.
-
-## 3. The Delegate tool
-
-The `Delegate` tool is a `ToolHandler` subclass defined inside `make_delegate_tool()`
-so it closes over `transport`, `workspace`, `on_event`, `role_models`, and `guard_factory`:
-
-```python
-def make_delegate_tool(workspace, on_event, transport, role_models,
-                       guard_factory=None) -> Tool:
-    role_names = list(AGENTS.keys())
-
-    class Delegate(ToolHandler):
-        """Delegate a task to a specialist team member."""
-        role: Annotated[str, Field(json_schema_extra={"enum": role_names})]
-        task: str
-
-        async def __call__(self) -> str:
-            _description, proto = AGENTS[self.role]
-            role_transport = _transport_for(self.role, transport, role_models)
-            specialist = proto.copy(
-                transport=role_transport,
-                tools=file_tools(str(workspace), role=self.role,
-                                 guard_factory=guard_factory),
-                max_iterations=25,
-            )
-            context = AutoCompactContextStore(transport=role_transport)
-            stream = specialist.run_stream(
-                f"Workspace: {workspace}\n\n{self.task}",
-                context,
-            )
-            parts: list[str] = []
-            async for event in stream:
-                await on_event(self.role, event)
-                if isinstance(event, TextDelta):
-                    parts.append(event.delta)
-            return "".join(parts)
-
-    guards = (guard_factory("orchestrator", "delegate"),) if guard_factory else ()
-    return Tool(name="delegate", description=Delegate.__doc__ or "",
-                handler=Delegate, guards=guards)
-```
-
-Key points:
-
-- `json_schema_extra={"enum": role_names}` makes the JSON schema expose a strict enum
-  so the LLM cannot hallucinate a role name.
-- All parallel delegate calls in a single response run concurrently — no artificial cap.
-- Each specialist gets a fresh `AutoCompactContextStore` — clean context per delegation.
-
-## 4. Streaming sub-agent output
-
-Normally `AgentStream.get_final_text()` consumes the stream internally. In the swarm
-we need to **both** stream events to the display callback **and** collect the final text,
-so we iterate manually:
-
-```python
-stream = agent.run_stream(task, context)
+stream = specialist.run_stream(task, specialist_ctx)
 parts: list[str] = []
 async for event in stream:
-    await on_event(self.role, event)   # async: renderer holds a lock
+    await context["on_event"](agent_id, event)
     if isinstance(event, TextDelta):
         parts.append(event.delta)
 return "".join(parts)
 ```
 
 `on_event` is async — the renderer holds an `asyncio.Lock` so concurrent delegates
-don't interleave their output. It receives `TextDelta`, `ReasoningDelta`, `ToolUseStart`,
-`ToolResult`, `IterationEnd`, `SessionEndEvent`, and `Error`.
+don't interleave their output.
 
-## 5. Guards for logging and auditing
+## 7. Guards for logging and auditing
 
-`PermissionGuard` is not only for access control. Because it receives the fully-parsed
-`ToolHandler` instance (all Pydantic fields already validated), it is also the right
-place to log, audit, or display tool calls — **before** the tool executes.
+`PermissionGuard.check()` receives the fully-parsed `ToolHandler` instance (all fields
+already validated) and runs **before** the tool executes. This is the right place
+for logging, auditing, or display — not a separate event stream:
 
 ```python
 class RoleGuard(PermissionGuard):
-    """Logs every tool call to the renderer before execution."""
-
     def __init__(self, role: str, tool_name: str, renderer: SwarmRenderer) -> None:
         self._role = role
         self._tool_name = tool_name
         self._renderer = renderer
 
     async def check(self, handler: ToolHandler) -> ToolHandler:
-        async with self._renderer._lock:       # same lock as on_event — no interleaving
+        async with self._renderer._lock:   # same lock as on_event
             self._renderer._print_tool_call(self._role, self._tool_name, handler)
-        return handler                         # allow — raise GuardError to deny
+        return handler                     # return to allow; raise GuardError to deny
 ```
 
-The guard acquires the same `asyncio.Lock` the event callback uses, so output from
-concurrent specialists never interleaves.
-
-`SwarmRenderer` exposes a factory method:
-
-```python
-def make_guard(self, role: str, tool_name: str) -> RoleGuard:
-    return RoleGuard(role=role, tool_name=tool_name, renderer=self)
-```
-
-This factory is passed into `run_swarm()` and attached to every tool — file tools,
-`delegate`, and `ask_user`:
+`SwarmRenderer` exposes a factory method passed into `run_swarm()`:
 
 ```python
 await run_swarm(
@@ -262,181 +278,127 @@ await run_swarm(
     on_event=renderer.on_event,
     transport=transport,
     role_models=role_models,
-    guard_factory=renderer.make_guard,   # ← attaches RoleGuard to every tool
+    guard_factory=renderer.make_guard,
+    prompt_fn=renderer.make_prompt_fn(),
 )
 ```
 
-This removes all `ToolFieldStart` / `ToolFieldDelta` / `ToolFieldEnd` handling from
-`SwarmRenderer._handle()`. The event loop only needs to handle `ToolUseStart` (status
-bar update) and `ToolResult` (result content display).
+## 8. Orchestrator tools
 
-## 6. File tools with a workspace default
+The orchestrator gets five tools:
 
-`Shell` and `RunPython` accept a `cwd` field. The `file_tools()` helper creates local
-subclasses with `cwd` defaulting to the workspace so relative paths work out of the box:
+| Tool | Purpose |
+|---|---|
+| `delegate` | Spawn a specialist for a task |
+| `ask_user` | Ask the user a question before starting work |
+| `todo` | SQLite-backed task list (list/add/update) |
+| `analyze` | Spawn read-only analyst subagents |
+| `list_files`, `read_file` | Browse the workspace |
 
-```python
-def file_tools(workspace: str, role: str = "",
-               guard_factory: GuardFactory | None = None) -> list[Tool]:
-    class _Shell(Shell):
-        cwd: str = workspace
+The `todo` tool persists to `workspace/.axio-swarm/todos.db` and survives restarts.
+The `ask_user` tool pauses the Rich `Live` display during input.
 
-    class _RunPython(RunPython):
-        cwd: str = workspace
-
-    def guards(name: str) -> tuple[PermissionGuard, ...]:
-        if guard_factory is None:
-            return ()
-        return (guard_factory(role, name),)
-
-    return [
-        Tool(name="read_file",  description=ReadFile.__doc__ or "",  handler=ReadFile,   guards=guards("read_file")),
-        Tool(name="write_file", description=WriteFile.__doc__ or "", handler=WriteFile,  guards=guards("write_file")),
-        Tool(name="patch_file", description=PatchFile.__doc__ or "", handler=PatchFile,  guards=guards("patch_file")),
-        Tool(name="list_files", description=ListFiles.__doc__ or "", handler=ListFiles,  guards=guards("list_files")),
-        Tool(name="shell",      description=Shell.__doc__ or "",     handler=_Shell,     guards=guards("shell")),
-        Tool(name="run_python", description=RunPython.__doc__ or "", handler=_RunPython, guards=guards("run_python")),
-    ]
-```
-
-Specialists always receive the workspace path in their task message and use absolute
-paths for file I/O, so `cwd` is mainly a safety net for shell commands.
-
-## 7. Rich output
-
-`main.py` maps each role to a Rich style and handles `StreamEvent` types:
-
-```python
-ROLE_STYLES = {
-    "orchestrator":    "bold white",
-    "architect":       "bold cyan",
-    "backend_dev":     "bold green",
-    "qa":              "bold magenta",
-    # ...
-}
-```
+## 9. Rich output
 
 `SwarmRenderer` accumulates `TextDelta` events in a per-role buffer and renders the
-complete text as **markdown** when the role finishes speaking (at `ToolUseStart` or
-`SessionEndEvent`). This means headers, code blocks, and lists in agent responses
-render with full formatting rather than as raw text.
-
-Tool input display is handled by `RoleGuard` (see section 5 above) — the guard prints
-all tool fields before execution. `ToolResult` then shows the outcome: status (✓/✗)
-and any output. `ReasoningDelta` events (chain-of-thought tokens from reasoning models)
-print in dim italic. `IterationEnd` prints a compact token summary after each LLM call:
+complete text as Markdown when the role finishes speaking (on `ToolUseStart` or
+`SessionEndEvent`). `_handle()` uses `match/case` on `StreamEvent` subtypes:
 
 ```python
-elif isinstance(event, IterationEnd):
-    u = event.usage
-    self._print(
-        f"[dim]  iter {event.iteration} · {event.stop_reason} "
-        f"· ↑{u.input_tokens} ↓{u.output_tokens}[/dim]"
-    )
+match event:
+    case ReasoningDelta():
+        self._print(f"[dim italic]{event.delta}[/dim italic]", end="")
+    case TextDelta():
+        self._text_buf.setdefault(role, []).append(event.delta)
+    case ToolUseStart():
+        self._flush_text(role)
+        self._agent_status[role] = f"▶ {event.name}"
+    case ToolResult():
+        ...
+    case IterationEnd():
+        u = event.usage
+        self._print(f"[dim]  iter {event.iteration} · {event.stop_reason} "
+                    f"· ↑{u.input_tokens} ↓{u.output_tokens}[/dim]")
+    case SessionEndEvent():
+        ...
 ```
 
-A `StatusBar` renderable (passed once to `Live()` at construction) reads renderer state
-at Rich's refresh rate (4 fps) without any manual `update()` calls — avoiding flicker
-when dozens of events arrive per second.
+A `StatusBar` renderable passed once to `Live()` at construction reads renderer state
+at Rich's refresh rate (4 fps) — shows active agents with spinners and a running
+event/token counter.
 
-After the orchestrator finishes, the workspace is rendered as a `rich.tree.Tree`
-so you can see all the artifacts the team produced.
-
-## 8. Running it
-
-Install and run:
+## 10. Running it
 
 ```bash
 cd examples/agent_swarm
 uv sync
-export NEBIUS_API_KEY=...   # Nebius AI Studio — TokenFactory
+export NEBIUS_API_KEY=...   # Nebius AI Studio
 
-# Full software task — exercises architect + backend_dev + qa + security_engineer
-uv run python main.py "Build a Python rate limiter library with token-bucket and sliding-window strategies"
-
-# Data task — exercises etl_engineer + backend_dev + qa
-uv run python main.py "Write an ETL pipeline that reads CSV, normalises column names, and writes Parquet"
-
-# UI task — exercises ux_engineer + designer + frontend_dev
-uv run python main.py "Build a responsive login form with validation"
+uv run python -m agent_swarm --workspace /tmp/my_project \
+    "Build a Python rate limiter with token-bucket and sliding-window strategies"
 ```
 
-All roles default to `MiniMaxAI/MiniMax-M2.5` via Nebius TokenFactory.
-To assign a different model to a specific role, edit `role_models` in `main.py`:
+Model assignment in `__main__.py` — edit `role_models` to change per-role models:
 
 ```python
 role_models: dict[str, ModelSpec] = {
-    "default":           transport.models["MiniMaxAI/MiniMax-M2.5"],
-    # Uncomment to use a reasoning model for roles that need it:
-    # "orchestrator":    transport.models.search("DeepSeek-R1").first(),
-    # "architect":       transport.models.search("DeepSeek-R1").first(),
-    # "security_engineer": transport.models.search("DeepSeek-R1").first(),
+    "default":          transport.models["MiniMaxAI/MiniMax-M2.5"],
+    "architect":        transport.models["Qwen/Qwen3-235B-A22B-Instruct-2507"],
+    "security_engineer": transport.models["openai/gpt-oss-120b"],
+    "project_manager":  transport.models["openai/gpt-oss-120b"],
+    "challenger":       transport.models["zai-org/GLM-5"],
+    # analyst runs many instances in parallel — use a fast model
+    "analyst":          transport.models["deepseek-ai/DeepSeek-V3.2"],
 }
 ```
 
 `transport.models` is a `ModelRegistry` populated from the Nebius API after
-`fetch_models()`. Use `.search("substring").first()` to find models by name, or
-index directly with `transport.models["model-id"]`.
+`fetch_models()`. Index by exact model ID or use `.search("substring").first()`.
 
-After the run, the `workspace/` directory contains everything the team produced:
+After the run the workspace contains all produced artifacts: `AGENTS.md` (living project
+memory), `design.md` (architect), implementation files (backend/frontend developers),
+tests (qa), and review reports (security_engineer, challenger). The `.axio-swarm/`
+subdirectory holds internal orchestration data — the todo SQLite database and per-role
+analysis reports — and should not be treated as project output.
 
+## 11. Extending the team
+
+Add a role by creating one new TOML file:
+
+```toml
+# roles/data_scientist.toml
+name = "data_scientist"
+description = "Explores data, builds models, and produces analytical reports"
+max_iterations = 50
+tools = ["read_file", "write_file", "list_files", "shell", "run_python", "analyze"]
+
+[system]
+text = """
+You are a senior data scientist...
+"""
 ```
-workspace/
-├── requirements.md        ← project_manager
-├── design.md              ← architect
-├── solution.py            ← backend_dev
-├── test_solution.py       ← qa
-└── security_review.md     ← security_engineer
-```
 
-## 9. Extending the team
-
-To add a new role:
-
-1. Create `roles/data_scientist.py` following the same pattern as the other role files:
-
-   ```python
-   from axio.agent import Agent
-   from axio.transport import DummyCompletionTransport
-
-   DESCRIPTION = "Explores data, builds models, and produces analytical reports"
-   PROMPT = """You are a senior data scientist..."""
-
-   agent = Agent(system=PROMPT, transport=DummyCompletionTransport())
-   ```
-
-2. Import it in `roles/__init__.py` and add it to `AGENTS`:
-
-   ```python
-   from . import data_scientist
-   
-   AGENTS: dict[str, tuple[str, Agent]] = {
-       # ...existing roles...
-       "data_scientist": (data_scientist.DESCRIPTION, data_scientist.agent),
-   }
-   ```
-
-The orchestrator automatically picks up the new role — its system prompt is rebuilt from
-`AGENTS` on startup. No changes to `swarm.py` or `main.py` are needed.
+`ROLE_NAMES` is derived from TOML filenames — the orchestrator's roster and the
+`Delegate` enum update automatically. No Python changes needed.
 
 ## When to use this pattern
 
 Use agent swarms when:
 
-- The task genuinely benefits from different expertise applied sequentially or in parallel
+- The task genuinely benefits from different expertise applied in parallel
   (design → implement → test → review).
-- You want **isolation**: each agent starts with a clean context and cannot accidentally
-  carry state from a previous subtask.
-- You need **parallel work**: the orchestrator can delegate to all independent agents
-  simultaneously — frontend + backend + security all run at the same time if the LLM
-  issues multiple tool calls in one response.
+- You want **isolation**: each agent starts with a clean context and cannot
+  accidentally carry state from a previous subtask.
+- You need **parallel work**: the orchestrator can delegate to all independent
+  agents simultaneously — frontend + backend + security all run at once if the
+  LLM issues multiple tool calls in one response.
 
 For simpler cases — a single agent that can call tools to break down its own work —
-the built-in `subagent` tool from `axio-tui` is sufficient.
-The swarm pattern adds structure at the cost of more orchestration prompting and
-more LLM calls.
+the built-in `subagent` tool from `axio-tui` is sufficient. The swarm pattern adds
+structure at the cost of more orchestration prompting and more LLM calls.
 
 ```{seealso}
+- {doc}`gas-town` — the bead-based convoy pattern with explicit work tracking
 - {doc}`writing-tools` — how to build custom ToolHandlers
 - {doc}`testing` — how to unit-test agents and tools with StubTransport
 - {ref}`concepts/agent` — the agent loop in detail
