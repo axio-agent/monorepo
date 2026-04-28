@@ -694,7 +694,14 @@ class AgentApp(App[None]):
         context = await MemoryContextStore.from_context(self._chat_context)
         assert self._agent is not None
         sub_tools: list[Tool[Any]] = [
-            Tool(name=t.name, description=t.description, handler=t.handler)
+            Tool(
+                name=t.name,
+                description=t.description,
+                handler=t.handler,
+                schema=t.schema,
+                context=t.context,
+                concurrency=t.concurrency,
+            )
             for t in self._agent.tools
             if t.name != "subagent"
         ]

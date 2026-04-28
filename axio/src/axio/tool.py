@@ -59,7 +59,19 @@ class Tool[T]:
                 return_hint,
             )
         param_hints = {k: v for k, v in hints.items() if k != "return"}
-        param_fields = MappingProxyType({name: (hint, get_field_info(hint)) for name, hint in param_hints.items()})
+        try:
+            sig = inspect.signature(self.handler)
+        except (ValueError, TypeError):
+            sig = None
+        fields: dict[str, tuple[Any, FieldInfo | None]] = {}
+        for name, hint in param_hints.items():
+            fi = get_field_info(hint)
+            if fi is None and sig is not None and name in sig.parameters:
+                param = sig.parameters[name]
+                if param.default is not inspect.Parameter.empty:
+                    fi = FieldInfo(default=param.default)
+            fields[name] = (hint, fi)
+        param_fields = MappingProxyType(fields)
         if not self.schema:
             object.__setattr__(self, "schema", MappingProxyType(build_tool_schema(self.handler, hints=param_hints)))
         object.__setattr__(self, "_fields", param_fields)

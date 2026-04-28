@@ -175,8 +175,8 @@ class TestToolCall:
         assert received[0][0] is t
         assert received[0][1] == {"msg": "hello"}
 
-    async def test_guard_sees_materialised_defaults(self) -> None:
-        """Guards must receive kwargs with defaults already injected."""
+    async def test_guard_sees_materialised_field_defaults(self) -> None:
+        """Guards must receive kwargs with FieldInfo defaults already injected."""
         received: list[dict[str, Any]] = []
 
         class _Spy(PermissionGuard):
@@ -190,6 +190,22 @@ class TestToolCall:
         t: Tool[Any] = Tool(name="f", handler=f, guards=(_Spy(),))
         await t(query="hi")
         assert received == [{"query": "hi", "limit": 5}]
+
+    async def test_guard_sees_materialised_signature_defaults(self) -> None:
+        """Guards must receive kwargs with plain Python signature defaults injected."""
+        received: list[dict[str, Any]] = []
+
+        class _Spy(PermissionGuard):
+            async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+                received.append(dict(kwargs))
+                return kwargs
+
+        async def f(query: str, cwd: str = ".") -> str:
+            return f"{query}@{cwd}"
+
+        t: Tool[Any] = Tool(name="f", handler=f, guards=(_Spy(),))
+        await t(query="ls")
+        assert received == [{"query": "ls", "cwd": "."}]
 
     async def test_handler_error_wrapping(self) -> None:
         async def _fail() -> str:
