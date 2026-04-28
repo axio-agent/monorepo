@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Callable
 from importlib.metadata import entry_points
@@ -61,6 +62,9 @@ def discover_tools() -> list[Tool[Any]]:
         if not callable(handler):
             logger.warning("Entry point %r is not callable, skipping", ep.name)
             continue
+        if not inspect.iscoroutinefunction(handler):
+            logger.warning("Entry point %r is not an async callable, skipping", ep.name)
+            continue
         tools.append(_make_tool(ep.name, handler))
     return tools
 
@@ -74,7 +78,7 @@ def discover_tools_by_package() -> dict[str, list[Tool[Any]]]:
         except Exception:
             logger.warning("Failed to load tool entry point %r", ep.name, exc_info=True)
             continue
-        if not callable(handler):
+        if not callable(handler) or not inspect.iscoroutinefunction(handler):
             continue
         pkg = ep.dist.name if ep.dist else "unknown"
         groups.setdefault(pkg, []).append(_make_tool(ep.name, handler))

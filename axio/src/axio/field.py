@@ -1,4 +1,4 @@
-"""Field metadata for ToolHandler - lightweight replacement for pydantic.Field."""
+"""Field metadata for tool handler functions - lightweight replacement for pydantic.Field."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ MISSING: Final[MissingSentinel] = MissingSentinel()
 
 @dataclass(frozen=True)
 class FieldInfo:
-    """Metadata attached to a ToolHandler field via ``Annotated[T, FieldInfo(...)]``."""
+    """Metadata attached to a handler parameter via ``Annotated[T, FieldInfo(...)]``."""
 
     description: str = ""
     default: Any = MISSING
@@ -53,13 +53,14 @@ def Field(
     ge: int | float | None = None,
     le: int | float | None = None,
 ) -> FieldInfo:
-    """Annotate a ToolHandler field with metadata (description, default, constraints).
+    """Annotate a handler parameter with metadata (description, default, constraints).
 
     Usage::
 
-        class MyTool(ToolHandler[Any]):
-            query: Annotated[str, Field(description="Search query")]
-            limit: Annotated[int, Field(default=10, ge=1, le=100)]
+        async def search(
+            query: Annotated[str, Field(description="Search query")],
+            limit: Annotated[int, Field(default=10, ge=1, le=100)],
+        ) -> str: ...
     """
     return FieldInfo(description=description, default=default, ge=ge, le=le)
 

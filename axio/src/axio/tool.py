@@ -67,7 +67,7 @@ class Tool[T]:
         async with self._acquire():
             for guard in self.guards:
                 try:
-                    kwargs = await guard.check(self, **kwargs)
+                    kwargs = await guard(self, **kwargs)
                 except GuardError:
                     raise
                 except Exception as exc:

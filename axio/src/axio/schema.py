@@ -1,4 +1,4 @@
-"""JSON-schema builder for ToolHandler subclasses.
+"""JSON-schema builder for plain async handler functions.
 
 Produces clean schemas with no ``"title"`` keys - no post-processing needed
 in transports.

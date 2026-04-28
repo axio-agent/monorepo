@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class PermissionGuard(ABC):
     """Gate for tool calls. Return modified kwargs to allow, raise to deny.
 
-    Tool invokes guards via ``await guard.check(tool, **kwargs)``.
+    Tool invokes guards via ``await guard(tool, **kwargs)``.
 
     Guards receive the ``Tool`` object and the raw keyword arguments before
     execution.  Return the (possibly modified) dict to allow; raise
