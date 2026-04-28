@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from axio.tool import Tool
@@ -74,7 +75,14 @@ class MCPRegistry:
                     input_schema=input_schema,
                     session=session,
                 )
-                tools.append(Tool(name=tool_name, description=description, handler=handler))
+                tools.append(
+                    Tool(
+                        name=tool_name,
+                        description=description,
+                        handler=handler,
+                        schema=MappingProxyType(input_schema),
+                    )
+                )
             self._sessions[config.name] = session
             self._tools[config.name] = tools
             self._errors.pop(config.name, None)

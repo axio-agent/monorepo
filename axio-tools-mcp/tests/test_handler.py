@@ -119,12 +119,19 @@ def test_type_mapping() -> None:
     assert props["b"] == {"type": "boolean"}
 
 
-def test_optional_param_without_schema_default_has_no_default_key() -> None:
-    """Optional MCP params with no schema default must not emit 'default: null'."""
-    from axio.schema import build_tool_schema
+def test_mcp_schema_passed_through_to_tool() -> None:
+    """Tool.input_schema must be the original MCP schema, not a re-derived one.
+
+    Re-deriving from handler annotations incorrectly marks optional params as
+    required (no FieldInfo default -> added to required list by build_tool_schema).
+    Passing input_schema directly via Tool(schema=...) preserves the MCP contract.
+    """
+    from types import MappingProxyType
+
+    from axio.tool import Tool
 
     session = _make_mock_session()
-    schema: dict[str, Any] = {
+    mcp_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "required_field": {"type": "string"},
@@ -133,11 +140,22 @@ def test_optional_param_without_schema_default_has_no_default_key() -> None:
         },
         "required": ["required_field"],
     }
-    handler = build_handler("test__defaults", "defaults", "Default test", schema, session)
-    json_schema = build_tool_schema(handler)
-    props: dict[str, Any] = json_schema["properties"]
+    handler = build_handler("test__defaults", "defaults", "Default test", mcp_schema, session)
+    tool: Tool[Any] = Tool(
+        name="test__defaults",
+        description="Default test",
+        handler=handler,
+        schema=MappingProxyType(mcp_schema),
+    )
+    props: dict[str, Any] = tool.input_schema["properties"]
+    required: list[str] = tool.input_schema.get("required", [])
 
-    # optional param with no default in schema must not have 'default' key
+    # required list must match MCP schema exactly
+    assert required == ["required_field"]
+    assert "optional_no_default" not in required
+    assert "optional_with_default" not in required
+
+    # optional param with no default must not have 'default' key
     assert "default" not in props["optional_no_default"]
-    # optional param with an explicit default must surface it
+    # optional param with explicit default must surface it
     assert props["optional_with_default"].get("default") == "hello"
