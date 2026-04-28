@@ -57,10 +57,11 @@ from axio_tui.plugin import (
 )
 from axio_tui.transport_registry import RoleBinding, TransportRegistry
 
+from . import tools as _tools
 from .prompt import LAST_ITERATION_MESSAGE, SYSTEM_PROMPT
 from .screens import ModelSelectScreen, PluginHubScreen, QuitDialog, SessionSelectScreen, ToolDetailScreen
 from .sqlite_config import GLOBAL_PROJECT, ProjectConfig, connect_config
-from .tools import SUBAGENT_SYSTEM_PROMPT, Confirm, StatusLine, SubAgent, VisionAnalyze, _short
+from .tools import SUBAGENT_SYSTEM_PROMPT, _short, confirm
 
 logger = logging.getLogger(__name__)
 
@@ -443,8 +444,8 @@ class AgentApp(App[None]):
         logging.getLogger().addHandler(handler)
         self._log_handler = handler
 
-        StatusLine._callback = self._on_agent_status
-        SubAgent._factory = self._make_subagent
+        _tools.status_line_callback = self._on_agent_status
+        _tools.subagent_factory = self._make_subagent
 
         self._session = aiohttp.ClientSession()
 
@@ -489,7 +490,7 @@ class AgentApp(App[None]):
             )
 
             if not self._transports.available:
-                await self._write_meta("[red]No transports available — set an API key env variable[/]")
+                await self._write_meta("[red]No transports available - set an API key env variable[/]")
                 return
 
             # Resolve model for each role from persisted config
@@ -530,7 +531,7 @@ class AgentApp(App[None]):
 
             if ModelRole.VISION in self._role_bindings:
                 vb = self._role_bindings[ModelRole.VISION]
-                VisionAnalyze._transport = self._transports.make_transport(vb.transport, vb.model)
+                _tools.vision_transport = self._transports.make_transport(vb.transport, vb.model)
 
             self._chat_transport = chat_transport
 
@@ -593,7 +594,7 @@ class AgentApp(App[None]):
             await self._show_welcome()
         except Exception:
             logger.error("Initialization failed", exc_info=True)
-            await self._write_meta("[red]Initialization failed — see logs[/]")
+            await self._write_meta("[red]Initialization failed - see logs[/]")
         finally:
             self.ready.set()
             inp = self.query_one("#input", Input)
@@ -618,7 +619,7 @@ class AgentApp(App[None]):
                 lines.append(f"- {t.name} ({len(t.models)} models)")
             else:
                 label = name.replace("-", " ").title()
-                lines.append(f"- ~~{label}~~ — no API key")
+                lines.append(f"- ~~{label}~~ - no API key")
 
         # Model roles
         lines.append("")
@@ -672,9 +673,9 @@ class AgentApp(App[None]):
         if self._log_handler is not None:
             logging.getLogger().removeHandler(self._log_handler)
             self._log_handler = None
-        StatusLine._callback = None
-        SubAgent._factory = None
-        VisionAnalyze._transport = None
+        _tools.status_line_callback = None
+        _tools.subagent_factory = None
+        _tools.vision_transport = None
         for plugin in self._tools_plugins.values():
             try:
                 await plugin.close()
@@ -692,8 +693,16 @@ class AgentApp(App[None]):
     async def _make_subagent(self) -> tuple[Agent, ContextStore]:
         context = await MemoryContextStore.from_context(self._chat_context)
         assert self._agent is not None
-        sub_tools = [
-            Tool(name=t.name, description=t.description, handler=t.handler)
+        sub_tools: list[Tool[Any]] = [
+            Tool(
+                name=t.name,
+                description=t.description,
+                handler=t.handler,
+                guards=t.guards,
+                schema=t.schema,
+                context=t.context,
+                concurrency=t.concurrency,
+            )
             for t in self._agent.tools
             if t.name != "subagent"
         ]
@@ -826,7 +835,7 @@ class AgentApp(App[None]):
 
                 guard_agent = Agent(
                     system="You review tool calls for safety. Use the confirm tool to classify.",
-                    tools=[Tool(name="confirm", description="Classify tool call", handler=Confirm)],
+                    tools=[Tool(name="confirm", handler=confirm)],
                     transport=guard_transport,
                 )
                 guard_context = _MemCtx()
@@ -899,7 +908,7 @@ class AgentApp(App[None]):
                 self._model_name = spec.id
                 self.sub_title = spec.id
             case ModelRole.VISION:
-                VisionAnalyze._transport = self._transports.make_transport(transport_name, spec)
+                _tools.vision_transport = self._transports.make_transport(transport_name, spec)
             case ModelRole.GUARD:
                 # Re-instantiate LLMGuard with the new transport so it uses the chosen model.
                 if "llm" in self._guard_classes and "llm" not in self._disabled_guards:
@@ -965,7 +974,7 @@ class AgentApp(App[None]):
                 texts = [b.text for b in msg.content if isinstance(b, TextBlock)]
                 if texts:
                     await scroll.mount(Static(f"[bold]You:[/] {texts[0]}", classes="user-msg"))
-                # Tool results rendered as part of assistant tool summary — skip here
+                # Tool results rendered as part of assistant tool summary - skip here
             else:
                 texts = [b.text for b in msg.content if isinstance(b, TextBlock)]
                 if texts:
@@ -1132,7 +1141,7 @@ class AgentApp(App[None]):
 
         if ModelRole.VISION in self._role_bindings and self._role_bindings[ModelRole.VISION].transport == name:
             vb = self._role_bindings[ModelRole.VISION]
-            VisionAnalyze._transport = self._transports.make_transport(name, vb.model)
+            _tools.vision_transport = self._transports.make_transport(name, vb.model)
 
         label = self._transports.get_transport(name).name
         await self._write_meta(f"[green]{label} activated[/]")
@@ -1148,7 +1157,7 @@ class AgentApp(App[None]):
                     if self._agent is not None:
                         self._agent.transport = self._chat_transport
                 case ModelRole.VISION:
-                    VisionAnalyze._transport = self._transports.make_transport(name, binding.model)
+                    _tools.vision_transport = self._transports.make_transport(name, binding.model)
         label = self._transports.get_transport(name).name
         await self._write_meta(f"[dim]{label} settings updated[/]")
 

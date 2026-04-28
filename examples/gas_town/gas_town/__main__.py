@@ -1,10 +1,10 @@
-"""Gas Town — Mayor + Polecats + Witness + Refinery convoy system.
+"""Gas Town - Mayor + Polecats + Witness + Refinery convoy system.
 
 Usage:
     uv run python -m gas_town "Build a Python rate limiter library"
     uv run python -m gas_town --workspace /tmp/my_project "Design a REST API for a blog"
 
-Requires NEBIUS_API_KEY in the environment (Nebius AI Studio — TokenFactory).
+Requires NEBIUS_API_KEY in the environment (Nebius AI Studio - TokenFactory).
 To adjust which model each role uses, edit the role_models dict in main().
 """
 
@@ -17,19 +17,17 @@ from types import TracebackType
 from typing import Any
 
 import aiohttp
-from axio.events import (
-    Error,
+from axio import (
     IterationEnd,
-    ReasoningDelta,
-    SessionEndEvent,
+    PermissionGuard,
     StreamEvent,
     TextDelta,
+    Tool,
     ToolResult,
     ToolUseStart,
 )
+from axio.events import Error, ReasoningDelta, SessionEndEvent
 from axio.models import ModelSpec
-from axio.permission import PermissionGuard
-from axio.tool import ToolHandler
 from axio_tools_docker.sandbox import DockerSandbox
 from axio_transport_openai.nebius import NebiusTransport
 from rich.console import Console, ConsoleRenderable
@@ -103,15 +101,14 @@ def fence(content: str, tool_name: str, tool_input: dict[str, Any]) -> str:
 class RoleGuard(PermissionGuard):
     """Logs tool inputs to the renderer before execution."""
 
-    def __init__(self, role: str, tool_name: str, renderer: "GastownRenderer") -> None:
+    def __init__(self, role: str, renderer: "GastownRenderer") -> None:
         self._role = role
-        self._tool_name = tool_name
         self._renderer = renderer
 
-    async def check(self, handler: ToolHandler[Any]) -> ToolHandler[Any]:
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
         async with self._renderer._lock:
-            self._renderer._print_tool_call(self._role, self._tool_name, handler)
-        return handler
+            self._renderer._print_tool_call(self._role, tool.name, kwargs)
+        return kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +164,8 @@ class GastownRenderer:
     ) -> None:
         self._live.__exit__(exc_type, exc_val, exc_tb)
 
-    def make_guard(self, role: str, tool_name: str) -> RoleGuard:
-        return RoleGuard(role=role, tool_name=tool_name, renderer=self)
+    def make_guard(self, role: str) -> RoleGuard:
+        return RoleGuard(role=role, renderer=self)
 
     async def on_event(self, role: str, event: StreamEvent) -> None:  # noqa: C901
         async with self._lock:
@@ -231,7 +228,7 @@ class GastownRenderer:
                 u = event.total_usage
                 self._print(
                     f"[dim][{style}]{self._role_title(role)}[/{style}] "
-                    f"done — ↑{u.input_tokens} ↓{u.output_tokens} tokens total[/dim]",
+                    f"done - ↑{u.input_tokens} ↓{u.output_tokens} tokens total[/dim]",
                     highlight=False,
                 )
 
@@ -272,10 +269,10 @@ class GastownRenderer:
         self._print(Rule(Text(title, style=style)))
         self._header_printed.add(role)
 
-    def _print_tool_call(self, role: str, tool_name: str, handler: ToolHandler) -> None:
+    def _print_tool_call(self, role: str, tool_name: str, kwargs: dict[str, Any]) -> None:
         style = self._role_style(role)
         self._print(f"  [{style}]▶ {tool_name}[/{style}]", highlight=False)
-        for key, value in handler.model_dump().items():
+        for key, value in kwargs.items():
             v_str = str(value)
             if len(v_str) > 200:
                 v_str = v_str[:197] + "…"
@@ -346,7 +343,7 @@ async def main() -> None:
         await transport.fetch_models()
 
         # ------------------------------------------------------------------
-        # Model selection — edit here to change which model each role uses.
+        # Model selection - edit here to change which model each role uses.
         # ------------------------------------------------------------------
         role_models: dict[str, ModelSpec] = {
             "default": transport.models["MiniMaxAI/MiniMax-M2.5"],
@@ -354,7 +351,7 @@ async def main() -> None:
             "polecat": transport.models["Qwen/Qwen3.5-397B-A17B"],
             "witness": transport.models["openai/gpt-oss-120b"],
             "refinery": transport.models["openai/gpt-oss-120b"],
-            # analyst runs many instances in parallel — use a fast model
+            # analyst runs many instances in parallel - use a fast model
             "analyst": transport.models["deepseek-ai/DeepSeek-V3.2"],
         }
 

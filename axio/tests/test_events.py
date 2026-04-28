@@ -1,4 +1,4 @@
-"""Tests for axon.events: all stream event types."""
+"""Tests for axio.events: all stream event types."""
 
 import pytest
 

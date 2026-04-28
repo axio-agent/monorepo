@@ -1,12 +1,12 @@
 [project]
 name = "axio"
-version = "0.2.3"
+version = "0.9.0"  # bumped to the git tag by CI on publish
 description = "Minimal, streaming-first, protocol-driven foundation for LLM-powered agents"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
-keywords = ["llm", "agent", "ai", "async", "streaming", "pydantic", "protocol"]
-dependencies = ["pydantic>=2"]
+keywords = ["llm", "agent", "ai", "async", "streaming", "protocol"]
+dependencies = []
 
 
 [project.urls]
@@ -33,6 +33,7 @@ select = ["E", "F", "I", "UP"]
 [tool.mypy]
 strict = true
 python_version = "3.12"
+
 
 [dependency-groups]
 dev = [

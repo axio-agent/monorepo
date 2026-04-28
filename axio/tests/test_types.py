@@ -1,4 +1,6 @@
-"""Tests for axon.types: Usage, StopReason, ToolName, ToolCallID."""
+"""Tests for axio.types: Usage, StopReason, ToolName, ToolCallID."""
+
+import pytest
 
 from axio.types import StopReason, Usage
 
@@ -20,11 +22,8 @@ class TestUsage:
 
     def test_frozen(self) -> None:
         u = Usage(1, 2)
-        try:
+        with pytest.raises(AttributeError):
             u.input_tokens = 99  # type: ignore[misc]
-            raise AssertionError("Should be frozen")
-        except AttributeError:
-            pass
 
     def test_identity(self) -> None:
         zero = Usage(0, 0)

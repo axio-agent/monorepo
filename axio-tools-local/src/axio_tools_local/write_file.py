@@ -1,30 +1,24 @@
 import asyncio
 import os
-from typing import Any
 
-from axio.tool import ToolHandler
-from pydantic import StrictStr
+from axio.field import StrictStr
 
 
-class WriteFile(ToolHandler[Any]):
+async def write_file(
+    file_path: StrictStr,
+    content: str,
+    mode: int = 0o644,
+) -> str:
     """Create or overwrite a file with the given content. Parent directories
     are created automatically. Use this for new files or full rewrites.
     For partial edits prefer patch_file instead."""
 
-    file_path: StrictStr
-    content: str
-    mode: int = 0o644
-
-    def __repr__(self) -> str:
-        return f"WriteFile(file_path={self.file_path!r}, content=<{len(self.content)} chars>)"
-
-    def _blocking(self) -> str:
-        path = os.path.join(os.getcwd(), self.file_path)
+    def _blocking() -> str:
+        path = os.path.join(os.getcwd(), file_path)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
-            f.write(self.content)
-        os.chmod(path, mode=self.mode)
-        return f"Wrote {len(self.content)} bytes to {self.file_path}"
+            f.write(content)
+        os.chmod(path, mode=mode)
+        return f"Wrote {len(content)} bytes to {file_path}"
 
-    async def __call__(self, context: Any) -> str:
-        return await asyncio.to_thread(self._blocking)
+    return await asyncio.to_thread(_blocking)

@@ -6,17 +6,17 @@
 
 Textual TUI application for [axio](https://github.com/mosquito/axio-agent).
 
-A full-featured terminal chat interface with session management, a plugin system for transports and tools, and a built-in SQLite context store. Pick your LLM backend, load your tools, and start chatting — all from the terminal.
+A full-featured terminal chat interface with session management, a plugin system for transports and tools, and a built-in SQLite context store. Pick your LLM backend, load your tools, and start chatting - all from the terminal.
 
 ## Features
 
-- **Plugin system** — transports, tools, and guards discovered automatically via entry points
-- **Session management** — persistent SQLite-backed conversations; fork, switch, and resume sessions
-- **Streaming UI** — text and tool calls rendered incrementally as they arrive
-- **Multi-transport** — switch between Anthropic, OpenAI, Nebius, Codex, or any registered backend at runtime
-- **Sub-agent support** — the `subagent` tool lets the agent spin up nested agent sessions
-- **Vision** — `vision` tool for image analysis (with compatible models)
-- **Serveable** — `textual-serve` support for browser-based access
+- **Plugin system** - transports, tools, and guards discovered automatically via entry points
+- **Session management** - persistent SQLite-backed conversations; fork, switch, and resume sessions
+- **Streaming UI** - text and tool calls rendered incrementally as they arrive
+- **Multi-transport** - switch between Anthropic, OpenAI, Nebius, Codex, or any registered backend at runtime
+- **Sub-agent support** - the `subagent` tool lets the agent spin up nested agent sessions
+- **Vision** - `vision` tool for image analysis (with compatible models)
+- **Serveable** - `textual-serve` support for browser-based access
 
 ## Installation
 
@@ -62,14 +62,14 @@ On first launch, open **Settings** (`s`) to configure your API key and model. Se
 ```
 axio-tui
 ├── App (Textual)
-│   ├── ChatScreen        — message list, input, streaming
-│   ├── SessionScreen     — session list and management
-│   └── SettingsScreen    — per-plugin configuration
-├── SQLiteContextStore    — persistent conversation history
-├── TransportRegistry     — discovers axio.transport entry points
+│   ├── ChatScreen        - message list, input, streaming
+│   ├── SessionScreen     - session list and management
+│   └── SettingsScreen    - per-plugin configuration
+├── SQLiteContextStore    - persistent conversation history
+├── TransportRegistry     - discovers axio.transport entry points
 └── Plugin system
-    ├── ToolsPlugin       — wraps axio.tools.settings providers
-    └── PermissionGuard   — wraps axio.guards providers
+    ├── ToolsPlugin       - wraps axio.tools.settings providers
+    └── PermissionGuard   - wraps axio.guards providers
 ```
 
 ## Built-in tools

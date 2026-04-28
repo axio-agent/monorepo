@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from axio.agent import Agent
@@ -10,33 +11,30 @@ from axio.context import MemoryContextStore
 from axio.events import SessionEndEvent, StreamEvent, ToolResult
 from axio.permission import PermissionGuard
 from axio.testing import StubTransport, make_text_response, make_tool_use_response
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 
 
-class EchoHandler(ToolHandler[Any]):
-    msg: str
-
-    async def __call__(self, context: Any) -> str:
-        return self.model_dump_json()
+async def _echo(msg: str) -> str:
+    return json.dumps({"msg": msg})
 
 
 class _AllowGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
-        return handler
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+        return kwargs
 
 
 class _DenyGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("test-denied")
 
 
 class _ModifyGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
-        return handler.model_copy(update={"msg": "modified"})
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+        return {**kwargs, "msg": "modified"}
 
 
 class _FailingGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
         raise ValueError("guard crashed")
 
 
@@ -44,14 +42,12 @@ class TestAllowGuard:
     async def test_handler_called_normally(self) -> None:
         calls: list[dict[str, Any]] = []
 
-        class Tracking(ToolHandler[Any]):
-            msg: str
+        async def tracking(msg: str) -> str:
+            data = {"msg": msg}
+            calls.append(data)
+            return json.dumps(data)
 
-            async def __call__(self, context: Any) -> str:
-                calls.append(self.model_dump())
-                return self.model_dump_json()
-
-        tool = Tool(name="echo", description="echo", handler=Tracking, guards=(_AllowGuard(),))
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=tracking, guards=(_AllowGuard(),))
         transport = StubTransport([make_tool_use_response("echo", "c1", {"msg": "hi"}), make_text_response("Done")])
         agent = Agent(system="test", tools=[tool], transport=transport)
         await agent.run("go", MemoryContextStore())
@@ -63,14 +59,12 @@ class TestDenyGuard:
         """C5: deny never crashes, produces ToolResultBlock(is_error=True)."""
         calls: list[dict[str, Any]] = []
 
-        class Tracking(ToolHandler[Any]):
-            msg: str
+        async def tracking(msg: str) -> str:
+            data = {"msg": msg}
+            calls.append(data)
+            return json.dumps(data)
 
-            async def __call__(self, context: Any) -> str:
-                calls.append(self.model_dump())
-                return self.model_dump_json()
-
-        tool = Tool(name="echo", description="echo", handler=Tracking, guards=(_DenyGuard(),))
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=tracking, guards=(_DenyGuard(),))
         transport = StubTransport([make_tool_use_response("echo", "c1", {"msg": "hi"}), make_text_response("Done")])
         ctx = MemoryContextStore()
         agent = Agent(system="test", tools=[tool], transport=transport)
@@ -91,17 +85,15 @@ class TestDenyGuard:
 
 class TestModifyGuard:
     async def test_handler_called_with_modified_input(self) -> None:
-        """C6: handler receives modified_input, not original."""
+        """C6: handler receives modified kwargs, not original."""
         calls: list[dict[str, Any]] = []
 
-        class Tracking(ToolHandler[Any]):
-            msg: str
+        async def tracking(msg: str) -> str:
+            data = {"msg": msg}
+            calls.append(data)
+            return json.dumps(data)
 
-            async def __call__(self, context: Any) -> str:
-                calls.append(self.model_dump())
-                return self.model_dump_json()
-
-        tool = Tool(name="echo", description="echo", handler=Tracking, guards=(_ModifyGuard(),))
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=tracking, guards=(_ModifyGuard(),))
         transport = StubTransport(
             [make_tool_use_response("echo", "c1", {"msg": "original"}), make_text_response("Done")]
         )
@@ -115,14 +107,12 @@ class TestGuardException:
     async def test_treated_as_deny(self) -> None:
         calls: list[dict[str, Any]] = []
 
-        class Tracking(ToolHandler[Any]):
-            msg: str
+        async def tracking(msg: str) -> str:
+            data = {"msg": msg}
+            calls.append(data)
+            return json.dumps(data)
 
-            async def __call__(self, context: Any) -> str:
-                calls.append(self.model_dump())
-                return self.model_dump_json()
-
-        tool = Tool(name="echo", description="echo", handler=Tracking, guards=(_FailingGuard(),))
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=tracking, guards=(_FailingGuard(),))
         transport = StubTransport([make_tool_use_response("echo", "c1", {"msg": "hi"}), make_text_response("Done")])
         agent = Agent(system="test", tools=[tool], transport=transport)
         events: list[StreamEvent] = []
@@ -137,17 +127,15 @@ class TestGuardException:
 
 
 class TestNoGuard:
-    async def test_handler_called_without_guard(self) -> None:
+    async def test_handler_called_without_guards(self) -> None:
         calls: list[dict[str, Any]] = []
 
-        class Tracking(ToolHandler[Any]):
-            msg: str
+        async def tracking(msg: str) -> str:
+            data = {"msg": msg}
+            calls.append(data)
+            return json.dumps(data)
 
-            async def __call__(self, context: Any) -> str:
-                calls.append(self.model_dump())
-                return self.model_dump_json()
-
-        tool = Tool(name="echo", description="echo", handler=Tracking)
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=tracking)
         transport = StubTransport([make_tool_use_response("echo", "c1", {"msg": "hi"}), make_text_response("Done")])
         agent = Agent(system="test", tools=[tool], transport=transport)
         await agent.run("go", MemoryContextStore())

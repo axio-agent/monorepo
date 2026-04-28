@@ -6,14 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from axio.tool import Tool, ToolHandler
+from axio import Tool
 
 
-class _NoOp(ToolHandler[None]):
+async def _noop() -> str:
     """No-op stub handler used to build a test toolbox."""
-
-    async def __call__(self, context: None) -> str:  # type: ignore[override]
-        return ""
+    return ""
 
 
 _STUB_NAMES = ["read_file", "write_file", "patch_file", "list_files", "shell", "run_python"]
@@ -30,7 +28,7 @@ def workspace(tmp_path: Path) -> Path:
 @pytest.fixture
 def stub_toolbox() -> dict[str, Tool[Any]]:
     """Stub toolbox matching the tool names used by specialist TOML roles."""
-    return {n: Tool(name=n, description=f"stub {n}", handler=_NoOp) for n in _STUB_NAMES}
+    return {n: Tool(name=n, handler=_noop) for n in _STUB_NAMES}
 
 
 @pytest.fixture

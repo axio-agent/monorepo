@@ -177,7 +177,7 @@ class TestThreshold:
             _mod.compact_context = original
 
         assert len(seen_ids) == 1
-        # the captured session_id must differ from inner — it was a fork
+        # the captured session_id must differ from inner - it was a fork
         assert seen_ids[0] != inner.session_id
 
     async def test_cumulative_tokens_preserved_after_compact(self) -> None:

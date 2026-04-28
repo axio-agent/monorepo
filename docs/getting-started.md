@@ -1,7 +1,7 @@
 # Getting Started
 
 **Axio** (*Asynchronous eXtensible Intelligent Orchestration*) gives you a minimal
-but complete foundation for building LLM-powered agents — see [Why Axio?](index.md#why-axio)
+but complete foundation for building LLM-powered agents - see [Why Axio?](index.md#why-axio)
 for the story behind the name.
 
 ## Installation
@@ -35,7 +35,7 @@ uv sync --all-packages
 ### Prerequisites
 
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/) — for workspace management and tool installation
+- [uv](https://docs.astral.sh/uv/) - for workspace management and tool installation
 ## Minimal Agent
 
 The smallest possible agent needs three things: a **transport** to talk to an LLM,
@@ -44,8 +44,7 @@ a **context store** to hold conversation history, and an **Agent** to tie them t
 <!-- name: test_minimal_agent -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 
 async def main() -> None:
@@ -66,40 +65,35 @@ assert asyncio.run(main()) == "Hello! I'm a stub agent."
 
 Replace `StubTransport` with real transport like `OpenAITransport` to connect to
 a live LLM. The agent loop, tool dispatch, and streaming all work the same way
-regardless of which transport you use — that's the power of the protocol-driven
+regardless of which transport you use - that's the power of the protocol-driven
 design.
 
 ## Adding Tools
 
-Tools are Pydantic models. Define fields for parameters and implement `__call__`:
+Tools are plain `async def` functions. Define parameters as arguments and return
+a string:
 
 <!--
 name: test_adding_tools
 -->
 <!-- name: test_adding_tools -->
 ```python
-from typing import Any
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore, Tool
 from axio.testing import StubTransport, make_text_response
-from axio.tool import Tool, ToolHandler
 
 # Use real transport in real code; StubTransport is just for example
 transport = StubTransport([make_text_response("ok")])
 context = MemoryContextStore()
 
 
-class Greet(ToolHandler[Any]):
+async def greet(name: str) -> str:
     """Greet someone by name."""
-    name: str
-
-    async def __call__(self, context: Any) -> str:
-        return f"Hello, {self.name}!"
+    return f"Hello, {name}!"
 
 
 agent = Agent(
     system="You are a helpful assistant.",
-    tools=[Tool(name="greet", description="Greet someone", handler=Greet)],
+    tools=[Tool(name="greet", handler=greet)],
     transport=transport,
 )
 ```
@@ -113,10 +107,9 @@ signals as they arrive rather than waiting for the full response.
 <!-- name: test_streaming_example -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
-from axio.events import TextDelta, SessionEndEvent
+from axio import Agent, MemoryContextStore, TextDelta
 from axio.testing import StubTransport, make_text_response
+from axio.events import SessionEndEvent
 
 async def main() -> None:
     transport = StubTransport([
@@ -149,7 +142,7 @@ uv tool run axio
 ```
 
 ```{image} _static/tui-screenshot.svg
-:alt: Axio TUI — terminal interface showing a conversation with tool calls
+:alt: Axio TUI - terminal interface showing a conversation with tool calls
 :width: 100%
 ```
 

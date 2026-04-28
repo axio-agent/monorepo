@@ -1,4 +1,4 @@
-"""Tests for transport protocols — structural protocol verification."""
+"""Tests for transport protocols - structural protocol verification."""
 
 from __future__ import annotations
 

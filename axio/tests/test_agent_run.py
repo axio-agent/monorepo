@@ -10,8 +10,8 @@ from axio.blocks import TextBlock
 from axio.context import MemoryContextStore
 from axio.events import IterationEnd, ReasoningDelta, SessionEndEvent, StreamEvent, TextDelta, ToolResult
 from axio.messages import Message
-from axio.testing import MsgInput, StubTransport, make_text_response, make_tool_use_response
-from axio.tool import Tool, ToolHandler
+from axio.testing import StubTransport, make_echo_tool, make_text_response, make_tool_use_response
+from axio.tool import Tool
 from axio.types import StopReason, Usage
 
 
@@ -34,11 +34,8 @@ class CapturingTransport:
         return self._generate(self._responses[idx])
 
 
-class OkHandler(ToolHandler[Any]):
-    msg: str
-
-    async def __call__(self, context: Any) -> str:
-        return "ok"
+async def _ok(msg: str) -> str:
+    return "ok"
 
 
 class TestRunStream:
@@ -95,7 +92,7 @@ class TestRun:
 
 class TestMultiIteration:
     async def test_tool_use_then_end_turn(self) -> None:
-        tool = Tool(name="echo", description="echo", handler=MsgInput)
+        tool = make_echo_tool()
         transport = StubTransport(
             [
                 make_tool_use_response("echo", "c1", {"msg": "hi"}, 1),
@@ -116,7 +113,7 @@ class TestMultiIteration:
         assert last.stop_reason == StopReason.end_turn
 
     async def test_total_usage_across_iterations(self) -> None:
-        tool = Tool(name="echo", description="echo", handler=MsgInput)
+        tool = make_echo_tool()
         transport = StubTransport(
             [
                 make_tool_use_response("echo", "c1", {"msg": "hi"}, 1, Usage(10, 5)),
@@ -144,7 +141,7 @@ class TestContextTokenTracking:
         assert await context.get_context_tokens() == (10, 5)
 
     async def test_agent_accumulates_context_tokens_across_iterations(self) -> None:
-        tool = Tool(name="echo", description="echo", handler=MsgInput)
+        tool = make_echo_tool()
         transport = StubTransport(
             [
                 make_tool_use_response("echo", "c1", {"msg": "hi"}, 1, Usage(10, 5)),
@@ -199,7 +196,7 @@ class TestReasoningPassthrough:
 class TestMaxIterations:
     async def test_max_iterations_reached(self) -> None:
         """C7: max_iterations emits SessionEndEvent(stop_reason=error)."""
-        tool = Tool(name="echo", description="echo", handler=OkHandler)
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=_ok)
         transport = StubTransport(
             [
                 make_tool_use_response("echo", "c1", {"msg": "hi"}, 1),
@@ -219,7 +216,7 @@ class TestMaxIterations:
 class TestLastIterationMessage:
     async def test_injected_only_on_last_iteration(self) -> None:
         """last_iteration_message is appended to history only on the final iteration."""
-        tool = Tool(name="echo", description="echo", handler=OkHandler)
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=_ok)
         hint = Message(role="system", content=[TextBlock(text="wrap up now")])
         transport = CapturingTransport(
             [
@@ -252,7 +249,7 @@ class TestLastIterationMessage:
 
     async def test_not_stored_in_context(self) -> None:
         """last_iteration_message is injected into the stream but not persisted."""
-        tool = Tool(name="echo", description="echo", handler=OkHandler)
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=_ok)
         hint = Message(role="system", content=[TextBlock(text="wrap up")])
         transport = CapturingTransport(
             [

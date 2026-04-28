@@ -7,10 +7,10 @@
 [![PyPI axio](https://img.shields.io/pypi/v/axio?label=axio&logo=pypi&logoColor=white)](https://pypi.org/project/axio/)
 [![PyPI axio-tui](https://img.shields.io/pypi/v/axio-tui?label=axio-tui&logo=pypi&logoColor=white)](https://pypi.org/project/axio-tui/)
 
-**Axio** (*Asynchronous eXtensible Intelligent Orchestration*) — a minimal but complete
+**Axio** (*Asynchronous eXtensible Intelligent Orchestration*) - a minimal but complete
 foundation for building LLM-powered agents in Python.
 
-Every integration point is a protocol — bring your own transport, context store,
+Every integration point is a protocol - bring your own transport, context store,
 tools, and permission guards.
 
 ::::{grid} 1 1 2 3
@@ -78,21 +78,17 @@ Overview of every package in the monorepo and their entry points.
 <!-- name: test_index_example -->
 ```python
 import aiohttp
-from typing import Any
-from axio.tool import Tool, ToolHandler
+from axio import Tool
 
 
-class Fetch(ToolHandler[Any]):
+async def fetch(url: str) -> str:
     """Fetch the text content of a URL."""
-    url: str
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as r:
+            return (await r.text())[:2000]
 
-    async def __call__(self, context: Any) -> str:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(self.url) as r:
-                return (await r.text())[:2000]
-
-fetch = Tool(name="fetch", description=Fetch.__doc__, handler=Fetch)
-assert fetch.name == "fetch"
+fetch_tool = Tool(name="fetch", handler=fetch)
+assert fetch_tool.name == "fetch"
 ```
 :::
 
@@ -129,15 +125,14 @@ axio_transport_openai.OpenAITransport = lambda: StubTransport([make_text_respons
 <!-- name: test_index_example -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio_transport_openai import OpenAITransport
 
 
 async def main() -> None:
     agent = Agent(
         system="You are a helpful assistant.",
-        tools=[fetch],
+        tools=[fetch_tool],
         transport=OpenAITransport(),
     )
     reply = await agent.run(
@@ -154,31 +149,31 @@ asyncio.run(main())
 
 ## Why Axio?
 
-The name is a backronym — each letter describes what the framework actually does:
+The name is a backronym - each letter describes what the framework actually does:
 
-**A — Asynchronous.**
+**A - Asynchronous.**
 The agent loop is built on `asyncio` end-to-end. Tool calls from a single
 LLM response are dispatched concurrently via `asyncio.gather` so results
 arrive in parallel, not sequentially. Every transport, tool, and context
-store uses `async def` throughout — no thread pools or blocking I/O hidden
+store uses `async def` throughout - no thread pools or blocking I/O hidden
 beneath the surface.
 
-**X — eXtensible.**
+**X - eXtensible.**
 Every integration point is a runtime-checkable `Protocol` or abstract base class.
 You can swap the transport (OpenAI, Anthropic, any custom endpoint), the context
 store (in-memory, SQLite, your own database), the permission guards, and the tools
-without touching a single line of framework code. The plugin system — based on
-Python entry points — lets separate packages register transports, tools, and
+without touching a single line of framework code. The plugin system - based on
+Python entry points - lets separate packages register transports, tools, and
 guards that are discovered automatically at runtime. Extensible is capitalised
 because it is the core design decision from which everything else follows.
 
-**I — Intelligent.**
+**I - Intelligent.**
 The LLM drives the decision loop. Axio stays out of the way: it presents tools
 to the model, faithfully delivers tool results back, and keeps iterating until the
-model decides it is done. No hard-coded routing, no fixed decision trees — the
+model decides it is done. No hard-coded routing, no fixed decision trees - the
 intelligence lives in the model, not the framework.
 
-**O — Orchestration.**
+**O - Orchestration.**
 Axio coordinates agents, tools, context, and permissions into a coherent execution
 flow. Sub-agents can be spawned and composed via the built-in `subagent` tool;
 context stores are shared across agents; permission guards form a composable
@@ -191,15 +186,15 @@ Extensible by design
 
 Streaming by default
 : All LLM I/O flows through typed `StreamEvent` values.
-  No hidden buffering — you see every token, tool call, and result as it happens.
+  No hidden buffering - you see every token, tool call, and result as it happens.
 
-Tools are Pydantic models
-: Define parameters as fields, get JSON schema for free, override `__call__` for execution.
+Tools are plain async functions
+: Define parameters as function arguments, get JSON schema for free, implement the body for execution.
   Guards gate every tool call through a composable permission chain.
 
 Multi-agent orchestration built-in
 : Spawn sub-agents via the `subagent` tool, share context between agents,
-  compose complex workflows — all without external dependencies.
+  compose complex workflows - all without external dependencies.
 
 ### Architecture
 
@@ -210,7 +205,7 @@ flowchart TB
     end
 
     subgraph Core["axio - Core Framework"]
-        B[Tool Handler<br/>Pydantic model]
+        B[Tool Handler<br/>async function]
         C[Permission Guard<br/>Protocol]
         D[StreamEvent<br/>Typed events]
     end
@@ -246,7 +241,7 @@ flowchart TB
 ```
 
 The agent loop:
-1. You configure the agent with tools (Pydantic models) and guards (permission chain)
+1. You configure the agent with tools (async functions) and guards (permission chain)
 2. User sends a message
 3. Agent sends to transport → LLM
 4. LLM responds with text or tool calls
@@ -261,20 +256,20 @@ Here's how Axio compares to other popular Python agent frameworks:
 |---|---|---|---|---|
 | **Architecture** | Minimal core + protocols | Pydantic-native, validation-centric | Heavy abstraction layer | Multi-agent orchestration |
 | **Streaming** | All events typed, full tool visibility | Text streaming works; tool calls and final answer can't stream simultaneously | Added later, inconsistent | Limited |
-| **Tool definition** | Pydantic model subclass | Decorator + function signature → auto JSON schema | Functions + decorators | Class-based agents |
+| **Tool definition** | Plain async function | Decorator + function signature → auto JSON schema | Functions + decorators | Class-based agents |
 | **Transport** | Pluggable protocol; you bring the client | Built-in 20+ providers, trivial to swap | Built-in, harder to swap | Azure OpenAI focused |
 | **Multi-agent** | Built-in (`subagent` tool, shared context stores) | Agent-as-tool pattern; not the primary focus | Via LangGraph | Native |
-| **Learning curve** | Low — ~100 lines for an agent | Low for Pydantic/FastAPI users; moderate otherwise | Medium — many abstractions | High — complex configs |
+| **Learning curve** | Low - ~100 lines for an agent | Low for Pydantic/FastAPI users; moderate otherwise | Medium - many abstractions | High - complex configs |
 | **Scope** | Agent loop + extensions | Agent + structured outputs; no RAG, no built-in memory | Full stack (RAG, chains, etc.) | Multi-agent scenarios |
 | **API stability** | Stable | Beta (v0.x, breaking changes possible) | Stable | Stable |
 
 ### When to choose each
 
 **Choose Axio if:**
-- You want full control over every step of the agent cycle — no hidden magic, no framework opinions baked in
-- You care about a lean dependency tree: every component is a separate PyPI package — install only what you need, fewer dependencies means fewer supply-chain attack risks; `aiohttp` is enough to wire up a transport for any HTTP-compatible LLM endpoint
+- You want full control over every step of the agent cycle - no hidden magic, no framework opinions baked in
+- You care about a lean dependency tree: every component is a separate PyPI package - install only what you need, fewer dependencies means fewer supply-chain attack risks; `aiohttp` is enough to wire up a transport for any HTTP-compatible LLM endpoint
 - You prefer explicit protocols over decorator-driven conventions
-- You need custom tooling and sandboxed execution — first-class from day one, with isolated Docker containers out of the box via [`axio-tools-docker`](guides/docker-sandbox.md)
+- You need custom tooling and sandboxed execution - first-class from day one, with isolated Docker containers out of the box via [`axio-tools-docker`](guides/docker-sandbox.md)
 - You're embedding an agent into a larger system and need to own the event loop, the streaming pipeline, and the permission model
 
 **Choose pydantic-ai if:**
@@ -293,14 +288,14 @@ Here's how Axio compares to other popular Python agent frameworks:
 - You need built-in support for human-in-the-loop
 - You're okay with Azure OpenAI as the primary backend
 
-**Actually — Axio also supports multi-agent:**
+**Actually - Axio also supports multi-agent:**
 - Sub-agents via the built-in `subagent` tool
 - Shared context stores for agent-to-agent communication
 - Composable workflows without external dependencies
 
 Axio's philosophy is thin abstraction over the prompt-completion loop,
 not a full framework with opinions about how you should structure your application.
-If that aligns with your needs — welcome.
+If that aligns with your needs - welcome.
 
 ```{toctree}
 :maxdepth: 2

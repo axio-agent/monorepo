@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from types import MappingProxyType
 from typing import Any
 
 from axio.tool import Tool
@@ -47,10 +48,16 @@ async def load_mcp_tools(
                 tool_name=tool_name,
                 mcp_tool_name=mcp_tool.name,
                 description=description,
-                input_schema=input_schema,
                 session=session,
             )
-            all_tools.append(Tool(name=tool_name, description=description, handler=handler))
+            all_tools.append(
+                Tool(
+                    name=tool_name,
+                    description=description,
+                    handler=handler,
+                    schema=MappingProxyType(input_schema),
+                )
+            )
             logger.info("Loaded MCP tool %r from server %r", tool_name, config.name)
 
     return all_tools, sessions

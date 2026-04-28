@@ -1,4 +1,4 @@
-"""ChatGPT (Codex) transport — Responses API over SSE."""
+"""ChatGPT (Codex) transport - Responses API over SSE."""
 
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ def _convert_messages(messages: list[Message], system: str) -> tuple[str, list[d
                 {
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": "[Tool was not executed — context was interrupted or compacted]",
+                    "output": "[Tool was not executed - context was interrupted or compacted]",
                 }
             )
 
@@ -477,7 +477,7 @@ class CodexTransport(CompletionTransport):
             self.models = ModelRegistry(CODEX_MODELS.values())
             return
 
-        # Parse model list — the WHAM endpoint may return different formats
+        # Parse model list - the WHAM endpoint may return different formats
         model_list = data.get("data", data.get("models", []))
         if not model_list:
             self.models = ModelRegistry(CODEX_MODELS.values())

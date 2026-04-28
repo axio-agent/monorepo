@@ -4,33 +4,38 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .exceptions import GuardError
 
+if TYPE_CHECKING:
+    from .tool import Tool
+
 
 class PermissionGuard(ABC):
-    """Gate for tool calls. Return handler to allow, raise to deny.
+    """Gate for tool calls. Return modified kwargs to allow, raise to deny.
 
-    Tool calls guards via ``await guard(instance)``.
+    Tool invokes guards via ``await guard(tool, **kwargs)``.
 
-    Guards are not limited to access control.  Because ``check()`` receives the
-    fully-parsed ``ToolHandler`` instance before the tool executes, guards are
+    Guards receive the ``Tool`` object and the raw keyword arguments before
+    execution.  Return the (possibly modified) dict to allow; raise
+    ``GuardError`` to deny.  Because guards see all inputs up front, they are
     also the right place for **logging and auditing**::
 
         class AuditGuard(PermissionGuard):
-            async def check(self, handler: Any) -> Any:
-                logger.info("tool=%s args=%s", type(handler).__name__, handler.model_dump())
-                return handler  # always allow
+            async def check(self, tool: Tool, **kwargs: Any) -> dict[str, Any]:
+                logger.info("tool=%s args=%s", tool.name, kwargs)
+                return kwargs  # always allow
 
-    See ``examples/agent_swarm/agent_swarm/__main__.py`` (``RoleGuard``) for a production example.
+    See ``examples/agent_swarm/agent_swarm/__main__.py`` (``RoleGuard``) for a
+    production example.
     """
 
-    async def __call__(self, handler: Any) -> Any:
-        return await self.check(handler)
+    async def __call__(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+        return await self.check(tool, **kwargs)
 
     @abstractmethod
-    async def check(self, handler: Any) -> Any: ...
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]: ...
 
 
 class ConcurrentGuard(PermissionGuard, ABC):
@@ -38,7 +43,7 @@ class ConcurrentGuard(PermissionGuard, ABC):
 
     Subclass and override ``check()``.  ``__call__`` acquires the semaphore
     then delegates to ``check()``.  Set ``concurrency`` to control parallelism
-    (default 1 — one check at a time).
+    (default 1 - one check at a time).
     """
 
     concurrency: int = 1
@@ -46,16 +51,16 @@ class ConcurrentGuard(PermissionGuard, ABC):
     def __init__(self) -> None:
         self._semaphore = asyncio.Semaphore(self.concurrency)
 
-    async def __call__(self, handler: Any) -> Any:
+    async def __call__(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
         async with self._semaphore:
-            return await self.check(handler)
+            return await self.check(tool, **kwargs)
 
 
 class AllowAllGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
-        return handler
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+        return dict(kwargs)
 
 
 class DenyAllGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
         raise GuardError("denied")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from axio.tool import Tool
@@ -71,10 +72,16 @@ class MCPRegistry:
                     tool_name=tool_name,
                     mcp_tool_name=mcp_tool.name,
                     description=description,
-                    input_schema=input_schema,
                     session=session,
                 )
-                tools.append(Tool(name=tool_name, description=description, handler=handler))
+                tools.append(
+                    Tool(
+                        name=tool_name,
+                        description=description,
+                        handler=handler,
+                        schema=MappingProxyType(input_schema),
+                    )
+                )
             self._sessions[config.name] = session
             self._tools[config.name] = tools
             self._errors.pop(config.name, None)
@@ -161,7 +168,7 @@ class MCPRegistry:
             self._configs.pop(name, None)
             await self._delete_config(name)
         elif effective_scope is not old_scope and old_scope is not None:
-            # Scope changed but name didn't — clean up old scope DB
+            # Scope changed but name didn't - clean up old scope DB
             await old_scope.delete_prefix(f"mcp.{name}.")
 
         self._configs[config.name] = config

@@ -12,12 +12,12 @@ on rate-limit and overload errors.
 
 ## Features
 
-- **All Claude models** — Opus, Sonnet, Haiku; configurable via `ANTHROPIC_MODELS`
-- **Prompt caching** — `cache_control: ephemeral` applied automatically to the
+- **All Claude models** - Opus, Sonnet, Haiku; configurable via `ANTHROPIC_MODELS`
+- **Prompt caching** - `cache_control: ephemeral` applied automatically to the
   system prompt and the last tool definition
-- **Extended thinking** — `ReasoningDelta` events emitted for thinking blocks
-- **Retry logic** — automatic backoff on 429 and all 5xx errors; honours `Retry-After` header
-- **TUI integration** — settings screen for API key and model selection
+- **Extended thinking** - `ReasoningDelta` events emitted for thinking blocks
+- **Retry logic** - automatic backoff on 429 and all 5xx errors; honours `Retry-After` header
+- **TUI integration** - settings screen for API key and model selection
 
 ## Installation
 
@@ -77,8 +77,8 @@ export ANTHROPIC_BASE_URL="https://your-proxy.example.com/v1"
 | `claude-opus-4-6` | 1 M | 128 k | Most capable |
 | `claude-sonnet-4-6` | 1 M | 64 k | Balanced (default) |
 | `claude-haiku-4-5-20251001` | 200 k | 64 k | Fastest / cheapest |
-| `claude-opus-4-5` | 200 k | 64 k | — |
-| `claude-sonnet-4-5` | 200 k | 64 k | — |
+| `claude-opus-4-5` | 200 k | 64 k | - |
+| `claude-sonnet-4-5` | 200 k | 64 k | - |
 
 ## Configuration
 

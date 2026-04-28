@@ -10,13 +10,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiochannel import Channel
+from axio import CONTEXT, MemoryContextStore
 from axio.compaction import AutoCompactStore
-from axio.context import MemoryContextStore
 from axio.messages import Message
 from axio.models import ModelSpec
 from axio.testing import StubTransport, make_text_response
 
-from gas_town.beads import DDL, BeadTool, bead_summary, get_bead
+from gas_town.beads import DDL, bead, bead_summary, get_bead
 from gas_town.swarm import make_analyze_tool, make_sling_tool, run_gastown
 
 # =============================================================================
@@ -41,6 +41,13 @@ def mock_model_spec() -> ModelSpec:
     return ModelSpec(id="gpt-4")
 
 
+async def call_bead(db, **kwargs) -> str:  # type: ignore[no-untyped-def]
+    """Call bead() with db set as CONTEXT."""
+
+    CONTEXT.set(db)
+    return await bead(**kwargs)
+
+
 # =============================================================================
 # Test: Agent uses BeadTool to create/update/close beads
 # =============================================================================
@@ -50,30 +57,23 @@ class TestBeadStoreIntegration:
     """Tests verifying agents interact correctly with the bead store."""
 
     async def test_agent_creates_bead_via_tool(self, db_connection) -> None:
-        """Test that an agent can use BeadTool to create a new bead."""
-        create_tool = BeadTool(action="create", title="Test Task")  # type: ignore[call-arg]
-        result = await create_tool(db_connection)
-
+        """Test that an agent can use bead() to create a new bead."""
+        result = await call_bead(db_connection, action="create", title="Test Task")
         assert "Created bead" in result
         assert "Test Task" in result
 
     async def test_agent_updates_bead_status(self, db_connection) -> None:
         """Test that an agent can update an existing bead's status."""
-        create_tool = BeadTool(action="create", title="Initial Task")  # type: ignore[call-arg]
-        await create_tool(db_connection)
-
-        update_tool = BeadTool(action="update", id=1, status="in_progress", assignee="test_agent")  # type: ignore[call-arg]
-        result = await update_tool(db_connection)
-
+        await call_bead(db_connection, action="create", title="Initial Task")
+        result = await call_bead(db_connection, action="update", id=1, status="in_progress", assignee="test_agent")
         assert "updated" in result
         assert "status=in_progress" in result
 
     async def test_agent_closes_bead(self, db_connection) -> None:
         """Test that an agent can close a bead."""
-        await BeadTool(action="create", title="Task to Close")(db_connection)  # type: ignore[call-arg]
-        await BeadTool(action="update", id=1, status="in_progress")(db_connection)  # type: ignore[call-arg]
-
-        result = await BeadTool(action="close", id=1)(db_connection)  # type: ignore[call-arg]
+        await call_bead(db_connection, action="create", title="Task to Close")
+        await call_bead(db_connection, action="update", id=1, status="in_progress")
+        result = await call_bead(db_connection, action="close", id=1)
         assert "closed" in result
 
         row = await get_bead(db_connection, 1)
@@ -83,12 +83,8 @@ class TestBeadStoreIntegration:
 
     async def test_agent_adds_note_to_bead(self, db_connection) -> None:
         """Test that an agent can add notes to a bead."""
-        await BeadTool(action="create", title="Task with Notes")(db_connection)  # type: ignore[call-arg]
-
-        result = await BeadTool(  # type: ignore[call-arg]
-            action="note", id=1, notes="Found an issue during analysis"
-        )(db_connection)
-
+        await call_bead(db_connection, action="create", title="Task with Notes")
+        result = await call_bead(db_connection, action="note", id=1, notes="Found an issue during analysis")
         assert "note appended" in result
 
 
@@ -102,7 +98,7 @@ class TestMultiAgentWorkflow:
 
     async def test_mayor_dispatches_polecat(self, db_connection, mock_model_spec: ModelSpec) -> None:
         """Test Mayor creating a bead for Polecat to work on."""
-        result = await BeadTool(action="create", title="Fix login bug")(db_connection)  # type: ignore[call-arg]
+        result = await call_bead(db_connection, action="create", title="Fix login bug")
         assert "Created bead" in result
 
         row = await get_bead(db_connection, 1)
@@ -111,19 +107,15 @@ class TestMultiAgentWorkflow:
         assert title == "Fix login bug"
         assert status == "open"
 
-        result = await BeadTool(  # type: ignore[call-arg]
-            action="update", id=bead_id, status="in_progress", assignee="polecat#1"
-        )(db_connection)
+        result = await call_bead(
+            db_connection, action="update", id=bead_id, status="in_progress", assignee="polecat#1"
+        )
         assert "updated" in result
 
     async def test_polecat_creates_followup_bead(self, db_connection, mock_model_spec: ModelSpec):
         """Test Polecat discovering additional work and creating a new bead."""
-        await BeadTool(action="create", title="Original Task")(db_connection)  # type: ignore[call-arg]
-
-        result = await BeadTool(  # type: ignore[call-arg]
-            action="create", title="Follow-up: Related bug discovered"
-        )(db_connection)
-
+        await call_bead(db_connection, action="create", title="Original Task")
+        result = await call_bead(db_connection, action="create", title="Follow-up: Related bug discovered")
         assert "Created bead [2]" in result
 
         summary = await bead_summary(db_connection)
@@ -133,11 +125,13 @@ class TestMultiAgentWorkflow:
     async def test_refinery_merges_completed_work(self, db_connection, mock_model_spec: ModelSpec) -> None:
         """Test Refinery processing completed Polecat work."""
         for i in range(3):
-            await BeadTool(action="create", title=f"Polecat Task {i + 1}")(db_connection)  # type: ignore[call-arg]
-            await BeadTool(action="update", id=i + 1, status="in_progress", assignee=f"polecat#{i + 1}")(db_connection)  # type: ignore[call-arg]
-            await BeadTool(action="close", id=i + 1)(db_connection)  # type: ignore[call-arg]
+            await call_bead(db_connection, action="create", title=f"Polecat Task {i + 1}")
+            await call_bead(
+                db_connection, action="update", id=i + 1, status="in_progress", assignee=f"polecat#{i + 1}"
+            )
+            await call_bead(db_connection, action="close", id=i + 1)
 
-        result = await BeadTool(action="list")(db_connection)  # type: ignore[call-arg]
+        result = await call_bead(db_connection, action="list")
         assert "closed" in result.lower()
 
 
@@ -197,7 +191,7 @@ class TestToolGuards:
             queue=queue,
             guard_factory=guard_factory,
         )
-        guard_factory.assert_called_with("mayor", "sling")
+        guard_factory.assert_called_with("mayor")
 
     async def test_witness_has_read_only_bead_access(self) -> None:
         """Test that Witness role has limited bead tool access."""
@@ -222,8 +216,7 @@ class TestErrorHandling:
 
     async def test_invalid_bead_id_returns_not_found(self, db_connection) -> None:
         """Test that operations on invalid bead ID return not found."""
-        tool = BeadTool(action="update", id=99999, status="closed")  # type: ignore[call-arg]
-        result = await tool(db_connection)
+        result = await call_bead(db_connection, action="update", id=99999, status="closed")
         assert "not found" in result
 
 

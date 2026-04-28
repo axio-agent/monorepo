@@ -1,4 +1,4 @@
-"""Tests for WriteFile tool handler."""
+"""Tests for write_file tool handler."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from axio_tools_local.write_file import WriteFile
+from axio_tools_local.write_file import write_file
 
 
 @pytest.fixture()
@@ -22,7 +22,7 @@ def tmp_cwd(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 async def write(filename: str, content: str, **kwargs: Any) -> str:
-    return await WriteFile(file_path=filename, content=content, **kwargs)({})
+    return await write_file(file_path=filename, content=content, **kwargs)
 
 
 class TestWriteFileBasic:
@@ -80,13 +80,6 @@ class TestWriteFilePermissions:
         assert mode == 0o644
 
     async def test_custom_mode(self, tmp_cwd: Path) -> None:
-        await WriteFile(file_path="f.sh", content="#!/bin/sh", mode=0o755)({})
+        await write_file(file_path="f.sh", content="#!/bin/sh", mode=0o755)
         mode = stat.S_IMODE((tmp_cwd / "f.sh").stat().st_mode)
         assert mode == 0o755
-
-
-class TestWriteFileMisc:
-    async def test_repr(self) -> None:
-        h = WriteFile(file_path="f.txt", content="abc")
-        assert "f.txt" in repr(h)
-        assert "3 chars" in repr(h)

@@ -6,16 +6,16 @@
 
 Minimal, streaming-first, protocol-driven foundation for LLM-powered agents.
 
-One dependency (`pydantic`). Three protocols. An agent loop that just works.
+No dependencies. Three protocols. An agent loop that just works.
 
 ## Features
 
-- **Streaming agent loop** — `run_stream()` yields typed events as they arrive; no buffering, no polling
-- **Three clean protocols** — `CompletionTransport`, `ContextStore`, `PermissionGuard`; swap any piece without touching the rest
-- **Concurrent tool dispatch** — all tool calls in a turn run via `asyncio.gather` automatically
-- **Context compaction** — `compact_context()` summarises old history to stay within token limits
-- **Testing helpers** — `StubTransport`, `make_tool_use_response()`, `make_echo_tool()` ship in `axio.testing`
-- **Plugin-ready** — entry-point groups (`axio.tools`, `axio.transport`, `axio.guards`) for drop-in extensions
+- **Streaming agent loop** - `run_stream()` yields typed events as they arrive; no buffering, no polling
+- **Three clean protocols** - `CompletionTransport`, `ContextStore`, `PermissionGuard`; swap any piece without touching the rest
+- **Concurrent tool dispatch** - all tool calls in a turn run via `asyncio.gather` automatically
+- **Context compaction** - `compact_context()` summarises old history to stay within token limits
+- **Testing helpers** - `StubTransport`, `make_tool_use_response()`, `make_echo_tool()` ship in `axio.testing`
+- **Plugin-ready** - entry-point groups (`axio.tools`, `axio.transport`, `axio.guards`) for drop-in extensions
 
 ## Installation
 
@@ -44,17 +44,14 @@ sys.modules["axio_transport_openai"] = _m
 import asyncio
 from axio.agent import Agent
 from axio.context import MemoryContextStore
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 
 # 1. Define a tool
-class Greet(ToolHandler):
+async def greet(name: str) -> str:
     """Return a greeting for the given name."""
-    name: str
+    return f"Hello, {name}!"
 
-    async def __call__(self) -> str:
-        return f"Hello, {self.name}!"
-
-greet_tool = Tool(name="greet", description="Greet someone by name", handler=Greet)
+greet_tool = Tool(name="greet", description="Greet someone by name", handler=greet)
 
 # 2. Wire up the agent (transport comes from an axio-transport-* package)
 from axio_transport_openai import OpenAITransport
@@ -131,9 +128,9 @@ class MyContextStore(ContextStore):
     async def get_history(self) -> list[Message]:
         return list(self._messages)
 
-    # Everything else — session_id, close(), fork(), clear(),
+    # Everything else - session_id, close(), fork(), clear(),
     # get/set_context_tokens(), add_context_tokens(), list_sessions()
-    # — has a default implementation.
+    # - has a default implementation.
 ```
 
 ### PermissionGuard
@@ -145,11 +142,12 @@ class MyContextStore(ContextStore):
 ```python
 from typing import Any
 from axio.permission import PermissionGuard
+from axio.tool import Tool
 
 class MyGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
-        # return handler to allow, raise GuardError to deny
-        return handler
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+        # return kwargs to allow, raise GuardError to deny
+        return kwargs
 ```
 
 ## Stream events
@@ -160,29 +158,25 @@ class MyGuard(PermissionGuard):
 | `ToolUseStart` | Tool call begins (name + id) |
 | `ToolInputDelta` | Streaming JSON fragment for tool arguments |
 | `ToolResult` | Tool execution result |
-| `IterationEnd` | One LLM round complete — carries `Usage` + `StopReason` |
+| `IterationEnd` | One LLM round complete - carries `Usage` + `StopReason` |
 | `Error` | Transport or tool exception |
-| `SessionEndEvent` | Agent loop finished — carries total `Usage` |
+| `SessionEndEvent` | Agent loop finished - carries total `Usage` |
 
 ## Tools
 
 <!-- name: test_readme_tools -->
 ```python
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 
-class Summarise(ToolHandler):
+async def summarise(text: str, max_words: int = 20) -> str:
     """Summarise the given text in one sentence."""
-    text: str
-    max_words: int = 20
-
-    async def __call__(self) -> str:
-        # your implementation
-        return "..."
+    # your implementation
+    return "..."
 
 tool = Tool(
     name="summarise",
     description="Summarise text",   # overrides docstring if set
-    handler=Summarise,
+    handler=summarise,
     concurrency=4,                   # max parallel executions
 )
 ```

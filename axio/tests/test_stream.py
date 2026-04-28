@@ -1,4 +1,4 @@
-"""Tests for axon.stream: AgentStream lifecycle and collectors."""
+"""Tests for axio.stream: AgentStream lifecycle and collectors."""
 
 from __future__ import annotations
 

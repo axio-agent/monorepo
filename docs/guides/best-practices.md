@@ -10,18 +10,17 @@ Each tool should do one thing well. If you find yourself writing "and also...", 
 
 <!-- name: test_focused_tools -->
 ```python
-from typing import Any
-from axio.tool import ToolHandler
+from axio import Tool
 
 
-class FetchUrl(ToolHandler[Any]):
-    url: str
-    async def __call__(self, context: Any) -> str: ...
+async def fetch_url(url: str) -> str:
+    """Fetch a URL and return its content."""
+    ...
 
 
-class ParseJson(ToolHandler[Any]):
-    data: str
-    async def __call__(self, context: Any) -> dict: ...
+async def parse_json(data: str) -> dict:
+    """Parse a JSON string and return a dict."""
+    ...
 ```
 
 ### Use descriptive names and docstrings
@@ -30,69 +29,57 @@ The LLM uses these to decide when to call your tool.
 
 <!-- name: test_descriptive_docstrings -->
 ```python
-from typing import Any
-from axio.tool import ToolHandler
+from axio import Tool
 
 
-class GeoLocate(ToolHandler[Any]):
+async def geo_locate(ip: str = "auto") -> str:
     """Get geographic location from IP address using ip-api.com.
 
     Returns city, country, and coordinates as JSON.
     """
-    ip: str = "auto"
-
-    async def __call__(self, context: Any) -> str:
-        return '{"city": "NYC", "country": "US"}'
+    return '{"city": "NYC", "country": "US"}'
 ```
 
-### Validate inputs with Pydantic
+### Validate inputs with Field
 
-Use Pydantic's built-in validation:
+Use `Annotated` + `Field` from `axio.field` for validation:
 
-<!-- name: test_pydantic_validation -->
+<!-- name: test_field_validation -->
 ```python
-from typing import Any
-from pydantic import Field, field_validator
-from axio.tool import ToolHandler
+from typing import Annotated
+from axio import Tool, Field
 
 
-class FetchUrl(ToolHandler[Any]):
-    url: str = Field(description="HTTP or HTTPS URL")
-    timeout: int = Field(default=10, ge=1, le=60)
-
-    @field_validator("url")
-    @classmethod
-    def validate_url(cls, v: str) -> str:
-        if not v.startswith(("http://", "https://")):
-            raise ValueError("URL must start with http:// or https://")
-        return v
+async def fetch_url(
+    url: Annotated[str, Field(description="HTTP or HTTPS URL")],
+    timeout: Annotated[int, Field(default=10, ge=1, le=60)] = 10,
+) -> str:
+    """Fetch a URL."""
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
+    return f"fetched {url}"
 ```
 
-### Return structured data when appropriate
+### Return structured data as JSON
 
-Don't force everything to string — return dicts for structured results:
+Tool results are always coerced to `str`. Return `json.dumps(...)` for machine-readable output:
 
 <!-- name: test_structured_result -->
 ```python
-from typing import Any
-from axio.tool import ToolHandler
+import json
+from axio import Tool
 
 
-class Calculate(ToolHandler[Any]):
+async def calculate(a: float, b: float, operation: str) -> str:
     """Perform calculations."""
-    a: float
-    b: float
-    operation: str
-
-    async def __call__(self, context: Any) -> dict:
-        ops = {
-            "add": lambda a, b: a + b,
-            "subtract": lambda a, b: a - b,
-            "multiply": lambda a, b: a * b,
-            "divide": lambda a, b: a / b if b != 0 else 0,
-        }
-        result = ops[self.operation](self.a, self.b)
-        return {"result": result, "operation": self.operation}
+    ops = {
+        "add": lambda a, b: a + b,
+        "subtract": lambda a, b: a - b,
+        "multiply": lambda a, b: a * b,
+        "divide": lambda a, b: a / b if b != 0 else 0,
+    }
+    result = ops[operation](a, b)
+    return json.dumps({"result": result, "operation": operation})
 ```
 
 ## Error Handling
@@ -101,20 +88,16 @@ class Calculate(ToolHandler[Any]):
 
 <!-- name: test_handler_error -->
 ```python
-from typing import Any
 from pathlib import Path
-from axio.tool import ToolHandler
-from axio.exceptions import HandlerError
+from axio import Tool, HandlerError
 
 
-class ReadFile(ToolHandler[Any]):
-    path: str
-
-    async def __call__(self, context: Any) -> str:
-        path = Path(self.path)
-        if not path.exists():
-            raise HandlerError(f"File not found: {self.path}")
-        return path.read_text()
+async def read_file(path: str) -> str:
+    """Read a file and return its content."""
+    p = Path(path)
+    if not p.exists():
+        raise HandlerError(f"File not found: {path}")
+    return p.read_text()
 ```
 
 ### Use guards for validation
@@ -124,15 +107,15 @@ Move input validation to guards to keep handlers clean:
 <!-- name: test_guard_validation -->
 ```python
 from typing import Any
-from axio.permission import PermissionGuard
+from axio import PermissionGuard
 
 
 class SanitizeInput(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
-        for field, value in handler.model_dump().items():
-            if isinstance(value, str):
-                setattr(handler, field, value.replace("<script>", ""))
-        return handler
+    async def check(self, tool: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            k: v.replace("<script>", "") if isinstance(v, str) else v
+            for k, v in kwargs.items()
+        }
 ```
 
 ## Testing
@@ -141,22 +124,28 @@ class SanitizeInput(PermissionGuard):
 
 <!-- name: test_isolated_tool -->
 ```python
-from typing import Any
-from axio.tool import ToolHandler
+import asyncio
+from axio import Tool
 
 
-class FetchUrl(ToolHandler[Any]):
-    url: str
-    async def __call__(self, context: Any) -> str:
-        return f"Fetched: {self.url}"
+async def fetch_url(url: str) -> str:
+    """Fetch a URL."""
+    return f"Fetched: {url}"
+
+
+async def test_fetch():
+    tool = Tool(name="fetch_url", handler=fetch_url)
+    result = await tool(url="https://example.com")
+    assert "example.com" in result
+
+asyncio.run(test_fetch())
 ```
 
 ### Use StubTransport for agent tests
 
 <!-- name: test_stub_transport_agent -->
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_tool_use_response, make_text_response
 
 
@@ -174,42 +163,44 @@ async def test_agent_with_tool():
 
 <!-- name: test_guard_testing_separate -->
 ```python
+import asyncio
 import pytest
 from typing import Any
-from axio.tool import ToolHandler
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
+from axio import Tool, PermissionGuard, GuardError
 
 
-class WordCount(ToolHandler[Any]):
-    text: str
-    async def __call__(self, context: Any) -> str:
-        return str(len(self.text.split()))
+async def word_count(text: str) -> str:
+    """Count words."""
+    return str(len(text.split()))
 
 
 class MaxLengthGuard(PermissionGuard):
     def __init__(self, max_length: int = 10000) -> None:
         self.max_length = max_length
 
-    async def check(self, handler: Any) -> Any:
-        for name, value in handler.model_dump().items():
+    async def check(self, tool: Any, **kwargs: Any) -> dict[str, Any]:
+        for name, value in kwargs.items():
             if isinstance(value, str) and len(value) > self.max_length:
                 raise GuardError(f"Field '{name}' exceeds {self.max_length}")
-        return handler
+        return kwargs
+
+
+_tool: Tool[Any] = Tool(name="word_count", handler=word_count)
 
 
 async def test_max_length_guard_allows():
     guard = MaxLengthGuard(max_length=100)
-    handler = WordCount(text="short")
-    result = await guard.check(handler)
-    assert result is handler
+    result = await guard(_tool, text="short")
+    assert result == {"text": "short"}
 
 
 async def test_max_length_guard_denies():
     guard = MaxLengthGuard(max_length=5)
-    handler = WordCount(text="this is way too long")
     with pytest.raises(GuardError):
-        await guard.check(handler)
+        await guard(_tool, text="this is way too long")
+
+asyncio.run(test_max_length_guard_allows())
+asyncio.run(test_max_length_guard_denies())
 ```
 
 ## Configuration
@@ -248,19 +239,17 @@ class AppConfig(BaseSettings):
 
 <!-- name: test_concurrency_limit -->
 ```python
-from typing import Any
-from axio.tool import Tool, ToolHandler
+from axio import Tool
 
 
-class SlowApiHandler(ToolHandler[Any]):
-    async def __call__(self, context: Any) -> str:
-        return "done"
+async def slow_api_call() -> str:
+    """Slow external API call."""
+    return "done"
 
 
 tool = Tool(
     name="slow_api_call",
-    description="Slow API calls",
-    handler=SlowApiHandler,
+    handler=slow_api_call,
     concurrency=2,
 )
 
@@ -273,7 +262,7 @@ Don't create a new context store for each request:
 
 <!-- name: test_reuse_context -->
 ```python
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 
 
 # Bad: new store each time
@@ -296,33 +285,30 @@ async def handle_request_good(msg: str) -> None:
 <!-- name: test_sensitive_tool_guards -->
 ```python
 from typing import Any
-from axio.tool import Tool, ToolHandler
-from axio.permission import PermissionGuard
+from axio import Tool, PermissionGuard
 
 
-class RunSql(ToolHandler[Any]):
-    query: str
-    async def __call__(self, context: Any) -> str:
-        return "result"
+async def run_sql(query: str) -> str:
+    """Execute a SQL query."""
+    return "result"
 
 
 class ApiKeyGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
-        return handler
+    async def check(self, tool: Any, **kwargs: Any) -> dict[str, Any]:
+        return kwargs
 
 
 class RateLimitGuard(PermissionGuard):
     def __init__(self, max_per_minute: int = 10) -> None:
         self.max_per_minute = max_per_minute
 
-    async def check(self, handler: Any) -> Any:
-        return handler
+    async def check(self, tool: Any, **kwargs: Any) -> dict[str, Any]:
+        return kwargs
 
 
 tool = Tool(
     name="exec_sql",
-    description="Execute SQL query",
-    handler=RunSql,
+    handler=run_sql,
     guards=(
         ApiKeyGuard(),
         RateLimitGuard(max_per_minute=10),
@@ -340,19 +326,18 @@ If your tool accesses files, validate paths:
 ```python
 from pathlib import Path
 from typing import Any
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
+from axio import PermissionGuard, GuardError
 
 
 class PathGuard(PermissionGuard):
     allowed_dirs: tuple[str, ...] = ("/tmp",)
 
-    async def check(self, handler: Any) -> Any:
-        path = Path(handler.path).resolve()
+    async def check(self, tool: Any, **kwargs: Any) -> dict[str, Any]:
+        path = Path(kwargs.get("path", "")).resolve()
         allowed = [Path(d).resolve() for d in self.allowed_dirs]
         if not any(path.is_relative_to(a) for a in allowed):
-            raise GuardError(f"Path not allowed: {handler.path}")
-        return handler
+            raise GuardError(f"Path not allowed: {kwargs.get('path')}")
+        return kwargs
 ```
 
 ## Code Organization
@@ -363,16 +348,12 @@ Axio uses strict typing. Type hints help catch errors early:
 
 <!-- name: test_type_hints -->
 ```python
-from typing import Any
-from axio.tool import ToolHandler
+from axio import Tool
 
 
-class MyTool(ToolHandler[Any]):
-    query: str
-    limit: int = 10
-
-    async def __call__(self, context: Any) -> list[dict[str, str]]:
-        return [{"id": 1, "name": "test"}]
+async def my_tool(query: str, limit: int = 10) -> list[dict[str, str]]:
+    """Search and return results."""
+    return [{"id": "1", "name": "test"}]
 ```
 
 ## Production Deployment
@@ -393,7 +374,7 @@ context = SQLiteContextStore(conn, session_id=user_session_id)
 Track usage from `IterationEnd` events:
 
 ```python
-from axio.events import IterationEnd
+from axio import IterationEnd
 
 async for event in agent.run_stream(msg, context):
     if isinstance(event, IterationEnd):

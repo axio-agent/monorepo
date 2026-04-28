@@ -9,8 +9,7 @@ Save and restore conversation history:
 <!-- name: test_memory_context -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 
 
@@ -39,10 +38,8 @@ Build a web API with streaming events:
 
 <!-- name: test_streaming_pattern -->
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore, TextDelta
 from axio.testing import StubTransport, make_text_response
-from axio.events import TextDelta
 
 
 transport = StubTransport([make_text_response("Hello!")])
@@ -60,38 +57,22 @@ Combine retrieval and generation:
 
 <!-- name: test_rag_tools -->
 ```python
-from typing import Any
-from axio.tool import Tool, ToolHandler
+from axio import Tool
 
 
-class RetrieveContext(ToolHandler[Any]):
+async def retrieve_context(query: str) -> str:
     """Retrieve relevant context from a knowledge base."""
-    query: str
-
-    async def __call__(self, context: Any) -> str:
-        return f"Results for: {self.query}"
+    return f"Results for: {query}"
 
 
-class GenerateResponse(ToolHandler[Any]):
+async def generate_response(context: str, question: str) -> str:
     """Generate a response using retrieved context."""
-    context: str
-    question: str
-
-    async def __call__(self, context: Any) -> str:
-        return f"Generated: {self.context[:50]}"
+    return f"Generated: {context[:50]}"
 
 
 # Create tools
-retrieve_tool = Tool(
-    name="retrieve",
-    description="Retrieve relevant context",
-    handler=RetrieveContext,
-)
-generate_tool = Tool(
-    name="generate",
-    description="Generate response using context",
-    handler=GenerateResponse,
-)
+retrieve_tool = Tool(name="retrieve", handler=retrieve_context)
+generate_tool = Tool(name="generate", handler=generate_response)
 ```
 
 ## Multi-agent workflow
@@ -100,8 +81,7 @@ Coordinate multiple agents:
 
 <!-- name: test_multi_agent -->
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 
 
@@ -139,10 +119,8 @@ Transport with exponential backoff:
 <!-- name: test_retry_transport -->
 ```python
 from typing import AsyncIterator
+from axio import Tool, StreamEvent, TextDelta, IterationEnd, StopReason, Usage
 from axio.messages import Message
-from axio.tool import Tool
-from axio.events import StreamEvent, TextDelta, IterationEnd
-from axio.types import StopReason, Usage
 
 
 class RetryTransport:
@@ -169,28 +147,25 @@ class RetryTransport:
 <!-- name: test_rate_limit -->
 ```python
 import asyncio
-from typing import Any, ClassVar
-from axio.tool import ToolHandler
+from axio import Tool, CONTEXT
+
+RATE_LIMIT = 10
+TIME_WINDOW = 60
 
 
-class RateLimitedTool(ToolHandler[Any]):
+async def rate_limited_action(data: str) -> str:
     """Tool with rate limiting."""
-    rate_limit: ClassVar[int] = 10
-    time_window: ClassVar[int] = 60
-    data: str
+    calls: list[float] = CONTEXT.get()
+    now = asyncio.get_event_loop().time()
+    # Prune old calls outside the window
+    calls[:] = [t for t in calls if now - t < TIME_WINDOW]
+    if len(calls) >= RATE_LIMIT:
+        raise RuntimeError(f"Rate limit: {RATE_LIMIT}/{TIME_WINDOW}s")
+    calls.append(now)
+    return "done"
 
-    def __init__(self):
-        self._calls = []
-
-    async def __call__(self, *args, **kwargs):
-        now = asyncio.get_event_loop().time()
-        self._calls = [t for t in self._calls if now - t < self.time_window]
-
-        if len(self._calls) >= self.rate_limit:
-            raise RuntimeError(f"Rate limit: {self.rate_limit}/{self.time_window}s")
-
-        self._calls.append(now)
-        return "done"
+call_log: list[float] = []
+tool = Tool(name="rate_limited_action", handler=rate_limited_action, context=call_log)
 ```
 
 ## API key guard
@@ -201,8 +176,7 @@ Check for required environment variables:
 ```python
 import os
 from typing import Any
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
+from axio import PermissionGuard, GuardError
 
 
 class ApiKeyGuard(PermissionGuard):
@@ -223,26 +197,22 @@ Apply guards to specific tools:
 <!-- name: test_tool_with_guards -->
 ```python
 from typing import Any
-from axio.tool import Tool, ToolHandler
-from axio.permission import PermissionGuard
+from axio import Tool, PermissionGuard
 
 
-class SensitiveTool(ToolHandler[Any]):
-    data: str
-
-    async def __call__(self, context: Any) -> str:
-        return f"Processed: {self.data}"
+async def sensitive_operation(data: str) -> str:
+    """Process sensitive data."""
+    return f"Processed: {data}"
 
 
 class AllowGuard(PermissionGuard):
-    async def check(self, handler: Any) -> Any:
-        return handler
+    async def check(self, tool: Any, **kwargs: Any) -> dict[str, Any]:
+        return kwargs
 
 
 sensitive_tool = Tool(
     name="sensitive_operation",
-    description="Process sensitive data",
-    handler=SensitiveTool,
+    handler=sensitive_operation,
     guards=(AllowGuard(),),
 )
 

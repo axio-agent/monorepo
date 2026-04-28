@@ -15,22 +15,18 @@ from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, To
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 from axio.types import StopReason, Usage
 
-from axio_transport_openai import OPENAI_MODELS, OpenAITransport, ThinkTagParser, _strip_title
+from axio_transport_openai import OPENAI_MODELS, OpenAITransport, ThinkTagParser
 
 # ---------------------------------------------------------------------------
 # Test tool handler
 # ---------------------------------------------------------------------------
 
 
-class GetWeather(ToolHandler[Any]):
-    location: str
-    units: str = "celsius"
-
-    async def __call__(self, context: Any) -> str:
-        return f"Weather in {self.location}: 22{self.units[0]}"
+async def get_weather(location: str, units: str = "celsius") -> str:
+    return f"Weather in {location}: 22{units[0]}"
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +489,7 @@ def test_build_payload_tool_results() -> None:
 
 def test_build_payload_tool_schema() -> None:
     t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
-    tool = Tool(name="get_weather", description="Get weather", handler=GetWeather)
+    tool: Tool[Any] = Tool(name="get_weather", description="Get weather", handler=get_weather)
     payload = t.build_payload([], [tool], "")
     assert len(payload["tools"]) == 1
     fn = payload["tools"][0]
@@ -600,27 +596,6 @@ async def test_http_500(fake_server: tuple[FakeOpenAIServer, str], transport: Op
 
     with pytest.raises(StreamError, match="500"):
         await _collect(transport.stream([], [], ""))
-
-
-# ---------------------------------------------------------------------------
-# _strip_title
-# ---------------------------------------------------------------------------
-
-
-def test_strip_title_recursive() -> None:
-    schema = {
-        "title": "Root",
-        "type": "object",
-        "properties": {
-            "name": {"title": "Name", "type": "string"},
-            "items": {"title": "Items", "type": "array", "items": [{"title": "Item", "type": "string"}]},
-        },
-    }
-    result = _strip_title(schema)
-    assert "title" not in result
-    assert "title" not in result["properties"]["name"]
-    assert "title" not in result["properties"]["items"]
-    assert "title" not in result["properties"]["items"]["items"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -960,6 +935,24 @@ class TestThinkTagParser:
         result = p.feed("<think>\nreasoning\n</think>\nanswer")
         assert result == [("reasoning", "\nreasoning\n"), ("text", "\nanswer")]
 
+    def test_malformed_tag_not_treated_as_think(self) -> None:
+        """A space inside '<thi nk>' must not be parsed as an opening tag."""
+        p = ThinkTagParser()
+        result = p.feed("<thi nk>some content</think>")
+        # No think tag opened, so everything is plain text (including the bad close tag)
+        text = "".join(t for _, t in result)
+        assert "some content" in text
+        assert not any(k == "reasoning" for k, _ in result)
+
+    def test_multiple_think_blocks(self) -> None:
+        """Two sequential <think>...</think> blocks separated by text."""
+        p = ThinkTagParser()
+        result = p.feed("<think>first</think>middle<think>second</think>end")
+        kinds = [k for k, _ in result]
+        texts = {k: "".join(t for k2, t in result if k2 == k) for k in set(kinds)}
+        assert texts.get("reasoning", "") == "firstsecond"
+        assert texts.get("text", "") == "middleend"
+
 
 # ---------------------------------------------------------------------------
 # SSE integration: reasoning deltas
@@ -1241,7 +1234,7 @@ async def test_sse_buffer_flush(
     # Build SSE where the final usage chunk has no trailing \n
     sse = _sse_chunk({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}]})
     sse += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
-    # Usage chunk without trailing \n\n — just "data: {...}" with no newline
+    # Usage chunk without trailing \n\n - just "data: {...}" with no newline
     usage_data = json.dumps({"choices": [], "usage": {"prompt_tokens": 42, "completion_tokens": 7}})
     sse += f"data: {usage_data}"  # no trailing \n
 

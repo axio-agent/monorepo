@@ -1,4 +1,4 @@
-"""Tests for axon.blocks: all content block types."""
+"""Tests for axio.blocks: all content block types."""
 
 import pytest
 

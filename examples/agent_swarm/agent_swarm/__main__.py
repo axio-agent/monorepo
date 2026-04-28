@@ -1,10 +1,10 @@
-"""Agent Swarm — a team of specialist AI agents tackling a task from idea to delivery.
+"""Agent Swarm - a team of specialist AI agents tackling a task from idea to delivery.
 
 Usage:
     uv run python main.py "Build a Python rate limiter library"
     uv run python main.py --workspace /tmp/my_project "Design a REST API for a blog"
 
-Requires NEBIUS_API_KEY in the environment (Nebius AI Studio — TokenFactory).
+Requires NEBIUS_API_KEY in the environment (Nebius AI Studio - TokenFactory).
 To adjust which model each role uses, edit the role_models dict in main().
 """
 
@@ -19,19 +19,17 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from axio.events import (
-    Error,
+from axio import (
     IterationEnd,
-    ReasoningDelta,
-    SessionEndEvent,
+    PermissionGuard,
     StreamEvent,
     TextDelta,
+    Tool,
     ToolResult,
     ToolUseStart,
 )
+from axio.events import Error, ReasoningDelta, SessionEndEvent
 from axio.models import ModelSpec
-from axio.permission import PermissionGuard
-from axio.tool import ToolHandler
 from axio_tools_docker.sandbox import DockerSandbox
 from axio_transport_openai.nebius import NebiusTransport
 from rich.console import Console, ConsoleRenderable
@@ -78,7 +76,7 @@ def save_sandbox_name(workspace: Path, name: str) -> None:
 def pick_sandbox_name(workspace: Path) -> str:
     """Return the container name to use this run.
 
-    Reuses the saved name if one exists — DockerSandbox will attach to the
+    Reuses the saved name if one exists - DockerSandbox will attach to the
     running container automatically, or create a fresh one if it's gone.
     """
     saved = load_sandbox_name(workspace)
@@ -121,7 +119,7 @@ ROLE_TITLES: dict[str, str] = {
     "analyst": "Analyst",
 }
 
-# Tools whose output is file content — wrap in a fenced code block for display
+# Tools whose output is file content - wrap in a fenced code block for display
 FILE_CONTENT_TOOLS = {"read_file", "run_python", "shell"}
 
 EXT_LANG: dict[str, str] = {
@@ -165,20 +163,16 @@ class RoleGuard(PermissionGuard):
     """PermissionGuard that logs tool inputs to the SwarmRenderer before execution.
 
     Acquires the renderer's lock so concurrent delegate outputs don't interleave.
-    This replaces manual ToolFieldStart / ToolFieldDelta / ToolFieldEnd handling
-    in the event loop — the guard receives the fully-parsed ToolHandler instance
-    and can render all fields at once.
     """
 
-    def __init__(self, role: str, tool_name: str, renderer: "SwarmRenderer") -> None:
+    def __init__(self, role: str, renderer: "SwarmRenderer") -> None:
         self._role = role
-        self._tool_name = tool_name
         self._renderer = renderer
 
-    async def check(self, handler: ToolHandler) -> ToolHandler:
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
         async with self._renderer._lock:
-            self._renderer._print_tool_call(self._role, self._tool_name, handler)
-        return handler
+            self._renderer._print_tool_call(self._role, tool.name, kwargs)
+        return kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -251,12 +245,12 @@ class SwarmRenderer:
     def _print(self, *args: object, **kwargs: object) -> None:
         self._live.console.print(*args, **kwargs)  # type: ignore[arg-type]
 
-    def make_guard(self, role: str, tool_name: str) -> RoleGuard:
+    def make_guard(self, role: str) -> RoleGuard:
         """Factory passed to run_swarm so every tool gets a logging guard."""
-        return RoleGuard(role=role, tool_name=tool_name, renderer=self)
+        return RoleGuard(role=role, renderer=self)
 
     # ------------------------------------------------------------------
-    # Public callback — handles stream events from the agent loop
+    # Public callback - handles stream events from the agent loop
     # ------------------------------------------------------------------
 
     async def on_event(self, role: str, event: StreamEvent) -> None:  # noqa: C901
@@ -320,7 +314,7 @@ class SwarmRenderer:
                 u = event.total_usage
                 self._print(
                     f"[dim][{style}]{self._role_title(role)}[/{style}] "
-                    f"done — ↑{u.input_tokens} ↓{u.output_tokens} tokens total[/dim]",
+                    f"done - ↑{u.input_tokens} ↓{u.output_tokens} tokens total[/dim]",
                     highlight=False,
                 )
 
@@ -365,11 +359,11 @@ class SwarmRenderer:
         self._print(Rule(Text(title, style=style)))
         self._header_printed.add(role)
 
-    def _print_tool_call(self, role: str, tool_name: str, handler: ToolHandler) -> None:
+    def _print_tool_call(self, role: str, tool_name: str, kwargs: dict[str, Any]) -> None:
         """Called by RoleGuard before each tool execution."""
         style = self._role_style(role)
         self._print(f"  [{style}]▶ {tool_name}[/{style}]", highlight=False)
-        for key, value in handler.model_dump().items():
+        for key, value in kwargs.items():
             v_str = str(value)
             if len(v_str) > 200:
                 v_str = v_str[:197] + "…"
@@ -420,7 +414,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", default="python:3.12-slim", help="Docker image for the sandbox")
     parser.add_argument("--memory", default="512m", help="Container memory limit (default: 512m)")
     parser.add_argument("--cpus", type=float, default=2.0, help="Container CPU limit (default: 2.0)")
-    parser.add_argument("--network", action="store_true", help="Enable network access inside the container")
+    parser.add_argument("--no-network", action="store_true", help="Disable network access inside the container")
     return parser.parse_args()
 
 
@@ -439,7 +433,7 @@ async def main() -> None:
         await transport.fetch_models()
 
         # ------------------------------------------------------------------
-        # Model selection — edit here to change which model each role uses.
+        # Model selection - edit here to change which model each role uses.
         #
         # transport.models is a ModelRegistry populated from the Nebius API.
         # Use .search("substring") to find models, then .first() to pick one.
@@ -472,7 +466,7 @@ async def main() -> None:
                 image=args.image,
                 memory=args.memory,
                 cpus=str(args.cpus),
-                network=args.network,
+                network=not args.no_network,
                 volumes={"/workspace": str(workspace)},
                 workdir="/workspace",
                 name=sandbox_name,

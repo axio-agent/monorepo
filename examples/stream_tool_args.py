@@ -1,5 +1,5 @@
 """Minimal CLI demonstrating incremental streaming of tool call arguments
-with partial JSON decoding — field values appear as they stream in.
+with partial JSON decoding - field values appear as they stream in.
 
 Run:
     uv run --extra examples python examples/stream_tool_args.py "your prompt here"
@@ -17,69 +17,49 @@ import sys
 import aiohttp
 from partial_json_parser import loads as partial_json_loads
 
-from axio.agent import Agent
-from axio.context import MemoryContextStore
-from axio.events import (
-    Error,
+from axio import (
+    Agent,
     IterationEnd,
-    SessionEndEvent,
+    MemoryContextStore,
     TextDelta,
+    Tool,
     ToolInputDelta,
     ToolResult,
     ToolUseStart,
 )
-from axio.tool import Tool, ToolHandler
+from axio.events import Error, SessionEndEvent
 from axio_transport_openai import OPENAI_MODELS, OpenAITransport
 
 # ── Tools ────────────────────────────────────────────────────────────
 
 
-class EditFile(ToolHandler):
+async def edit_file(file_path: str, old_string: str, new_string: str) -> str:
     """Replace old_string with new_string in a file."""
-
-    file_path: str
-    old_string: str
-    new_string: str
-
-    async def __call__(self) -> str:
-        p = Path(self.file_path)
-        text = p.read_text()
-        if self.old_string not in text:
-            raise ValueError(f"old_string not found in {self.file_path}")
-        p.write_text(text.replace(self.old_string, self.new_string, 1))
-        return f"Replaced content in {self.file_path}"
+    p = Path(file_path)
+    text = p.read_text()
+    if old_string not in text:
+        raise ValueError(f"old_string not found in {file_path}")
+    p.write_text(text.replace(old_string, new_string, 1))
+    return f"Replaced content in {file_path}"
 
 
-class WriteFile(ToolHandler):
+async def write_file(file_path: str, content: str) -> str:
     """Write content to a file."""
-
-    file_path: str
-    content: str
-
-    async def __call__(self) -> str:
-        p = Path(self.file_path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(self.content)
-        return f"Wrote {len(self.content)} chars to {self.file_path}"
+    p = Path(file_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    return f"Wrote {len(content)} chars to {file_path}"
 
 
-class ReadFile(ToolHandler):
+async def read_file(file_path: str) -> str:
     """Read content of a file."""
-
-    file_path: str
-
-    async def __call__(self) -> str:
-        return Path(self.file_path).read_text()
+    return Path(file_path).read_text()
 
 
 TOOLS = [
-    Tool(
-        name="edit_file",
-        description="Replace old_string with new_string in a file.",
-        handler=EditFile,
-    ),
-    Tool(name="write_file", description="Write content to a file.", handler=WriteFile),
-    Tool(name="read_file", description="Read content of a file.", handler=ReadFile),
+    Tool(name="edit_file", handler=edit_file),
+    Tool(name="write_file", handler=write_file),
+    Tool(name="read_file", handler=read_file),
 ]
 
 # ── ANSI helpers ─────────────────────────────────────────────────────

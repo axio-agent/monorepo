@@ -124,7 +124,7 @@ class TestAutoCompactWithSQLite:
 
         assert forked.session_id != store.session_id
 
-        # append to fork — parent unaffected
+        # append to fork - parent unaffected
         await forked.append(_msg(text="extra"))
         assert len(await store.get_history()) == 6
         assert len(await forked.get_history()) == 7

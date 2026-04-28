@@ -5,8 +5,7 @@ import sys
 from collections.abc import Callable
 from typing import Annotated
 
-from axio.tool import Tool, ToolHandler
-from pydantic import Field
+from axio import CONTEXT, Field, Tool
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.rule import Rule
@@ -18,24 +17,24 @@ def _default_prompt() -> str:
     return input("> ").strip() or "(no answer)"
 
 
-class AskUser(ToolHandler[PromptFn]):
+async def ask_user(
+    question: Annotated[str, Field(description="Question to ask the user, formatted as Markdown")],
+) -> str:
     """Ask the user a question and return their answer.
     Use this when a decision requires human input before proceeding.
     The `question` field MUST be formatted as Markdown."""
+    fn: PromptFn = CONTEXT.get()
 
-    question: Annotated[str, Field(description="Question to ask the user, formatted as Markdown")]
-
-    async def __call__(self, context: PromptFn) -> str:
-        return await asyncio.to_thread(self._blocking, context)
-
-    def _blocking(self, fn: PromptFn) -> str:
+    def _blocking() -> str:
         console = Console(stderr=True)
         console.print(Rule("[bold yellow]Question for you[/bold yellow]"))
-        console.print(Markdown(self.question))
+        console.print(Markdown(question))
         console.print(Rule())
         sys.stderr.flush()
         prompt = fn if fn is not None else _default_prompt
         return prompt()
+
+    return await asyncio.to_thread(_blocking)
 
 
 def make_ask_user_tool(prompt_fn: PromptFn = None, guards: tuple = ()) -> Tool:
@@ -45,8 +44,7 @@ def make_ask_user_tool(prompt_fn: PromptFn = None, guards: tuple = ()) -> Tool:
     """
     return Tool(
         name="ask_user",
-        description=AskUser.__doc__ or "",
-        handler=AskUser,
+        handler=ask_user,
         context=prompt_fn,
         guards=guards,
     )

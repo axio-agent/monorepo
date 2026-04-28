@@ -68,10 +68,10 @@ Press system shortcut to configure:
 ## Plugins
 
 Auto-discovers via entry points:
-- `axio.transport` — LLM backends
-- `axio.tools` — Tools
-- `axio.tools.settings` — Tools with config UI
-- `axio.guards` — Permission guards
+- `axio.transport` - LLM backends
+- `axio.tools` - Tools
+- `axio.tools.settings` - Tools with config UI
+- `axio.guards` - Permission guards
 
 ## Serve over HTTP
 

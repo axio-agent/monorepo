@@ -10,7 +10,7 @@ from textual.widgets import Button, Input, Static
 
 
 class PathGuardDialog(ModalScreen[str]):
-    """Modal dialog for path access permission — buttons only."""
+    """Modal dialog for path access permission - buttons only."""
 
     BINDINGS = [
         Binding("a", "allow", "Allow", show=False),
@@ -85,7 +85,7 @@ class PathGuardDialog(ModalScreen[str]):
 
 
 class LLMGuardDialog(ModalScreen[str]):
-    """Modal dialog for LLM safety review — buttons + text input."""
+    """Modal dialog for LLM safety review - buttons + text input."""
 
     BINDINGS = [
         Binding("escape", "deny", "Deny", show=False),

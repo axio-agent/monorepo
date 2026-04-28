@@ -6,14 +6,14 @@
 
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) bridge for [axio](https://github.com/mosquito/axio-agent).
 
-Connect any MCP server to your axio agent. Tools exposed by MCP servers are discovered at runtime and become first-class axio `Tool` instances — no manual wiring required.
+Connect any MCP server to your axio agent. Tools exposed by MCP servers are discovered at runtime and become first-class axio `Tool` instances - no manual wiring required.
 
 ## Features
 
-- **Dynamic tool discovery** — connects to MCP servers and converts their tools into axio `Tool` instances automatically
-- **Multiple servers** — configure and run several MCP servers simultaneously
-- **Lifecycle management** — handles server startup, shutdown, and reconnection
-- **TUI integration** — ships a settings screen for managing MCP server configuration from within `axio-tui`
+- **Dynamic tool discovery** - connects to MCP servers and converts their tools into axio `Tool` instances automatically
+- **Multiple servers** - configure and run several MCP servers simultaneously
+- **Lifecycle management** - handles server startup, shutdown, and reconnection
+- **TUI integration** - ships a settings screen for managing MCP server configuration from within `axio-tui`
 
 ## Installation
 
@@ -53,7 +53,7 @@ async def main() -> None:
     tools = registry.all_tools   # list[axio.Tool]
     print(f"Loaded {len(tools)} tools from MCP servers")
 
-    # Pass any CompletionTransport — e.g. OpenAITransport, AnthropicTransport
+    # Pass any CompletionTransport - e.g. OpenAITransport, AnthropicTransport
     agent = Agent(
         system="You are a helpful assistant.",
         tools=tools,
@@ -76,7 +76,7 @@ Two transport types are supported, selected by which field is set in the server 
 | **stdio** | `command` | Spawns a subprocess; communicates over stdin/stdout (MCP stdio transport) |
 | **HTTP** | `url` | Connects to a running HTTP server using the MCP Streamable HTTP transport (`httpx`) |
 
-Exactly one of `command` or `url` must be set per server — providing both or neither raises a `ValueError`.
+Exactly one of `command` or `url` must be set per server - providing both or neither raises a `ValueError`.
 
 For stdio servers, stderr output from the subprocess is forwarded to the Python logger as warnings under the `mcp:<server-name>` prefix.
 
@@ -88,7 +88,7 @@ Tools from MCP servers are named using the pattern `<server_name>__<tool_name>`.
 
 ## Error handling
 
-When an MCP server fails to connect or start, the error is logged at `ERROR` level and the server is skipped — no exception is raised to the caller. `registry.all_tools` will simply not include any tools from the failed server. The error message is accessible via `registry.server_status(name)` (returns `"error"`) and the raw error string is stored internally.
+When an MCP server fails to connect or start, the error is logged at `ERROR` level and the server is skipped - no exception is raised to the caller. `registry.all_tools` will simply not include any tools from the failed server. The error message is accessible via `registry.server_status(name)` (returns `"error"`) and the raw error string is stored internally.
 
 ## Lifecycle: `close()`
 

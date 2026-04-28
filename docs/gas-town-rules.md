@@ -3,7 +3,7 @@
 Gas Town is an orchestration system for managing large numbers of concurrent coding agents
 (Claude Code instances and compatible CLIs). It treats AI agent work as structured,
 git-backed data. Every action is attributed, every agent has a persistent identity, and
-every piece of work has provenance tracked through Beads — the universal git-backed data
+every piece of work has provenance tracked through Beads - the universal git-backed data
 plane that underpins the entire system.
 
 This document is a comprehensive reference for the Gas Town methodology: its roles, work
@@ -13,7 +13,7 @@ units, communication protocols, lifecycle patterns, and key anti-patterns.
 
 ## 1. Philosophy and When to Use Gas Town
 
-Gas Town is an "industrialized coding factory" — an opinionated system for running 10–30
+Gas Town is an "industrialized coding factory" - an opinionated system for running 10–30
 coding agents simultaneously on sustained workloads. It is designed for developers at
 Stage 7+ of the AI-assisted coding evolution: people who already manage multiple concurrent
 CLI agent sessions and are pushing the limits of hand-management.
@@ -48,7 +48,7 @@ CLI agent sessions and are pushing the limits of hand-management.
 
 ## 2. The GUPP Principle
 
-GUPP — the Gas Town Universal Propulsion Principle — is the single most important rule
+GUPP - the Gas Town Universal Propulsion Principle - is the single most important rule
 in the system:
 
 > **If there is work on your hook, YOU RUN IT.**
@@ -59,7 +59,7 @@ it executes immediately.
 
 ### How GUPP Works
 
-Every Gas Town agent has a **hook** — a special pinned bead where work is hung via
+Every Gas Town agent has a **hook** - a special pinned bead where work is hung via
 `gt sling`. On startup, an agent checks its hook. If work is present, it begins
 execution with no confirmation step, no announcement, no waiting.
 
@@ -90,7 +90,7 @@ Agent restarts with work on hook
 ### The GUPP Nudge
 
 Claude Code is "miserably polite" and sometimes waits for user input despite GUPP
-prompting. Gas Town works around this with `gt nudge` — a zero-cost tmux notification
+prompting. Gas Town works around this with `gt nudge` - a zero-cost tmux notification
 sent 30–60 seconds after startup. The nudge content does not matter ("hi", "do your
 job", anything). The agent's strict role prompting causes it to ignore the text and
 simply check its hook and mail.
@@ -149,7 +149,7 @@ land. It operates from the town level with visibility across all rigs.
 ### 😺 Polecats
 
 Ephemeral per-rig workers that spin up on demand. Polecats are the workhorses of Gas
-Town — they swarm issues, produce merge requests, and hand them to the merge queue.
+Town - they swarm issues, produce merge requests, and hand them to the merge queue.
 After merge, polecats go idle and their sandboxes are preserved for reuse.
 
 **Key characteristics:**
@@ -164,7 +164,7 @@ After merge, polecats go idle and their sandboxes are preserved for reuse.
 
 The per-rig monitor. The Witness watches polecats, nudges them toward completion,
 verifies clean git state before kills, and escalates stuck workers. Critically, the
-Witness is NOT an implementer — it does oversight, not coding.
+Witness is NOT an implementer - it does oversight, not coding.
 
 **Responsibilities:**
 - Monitor polecat health and progress
@@ -192,7 +192,7 @@ requests on failure.
 
 ### 🐺 Deacon
 
-The daemon beacon — a town-level patrol agent that runs a continuous loop. The Gas
+The daemon beacon - a town-level patrol agent that runs a continuous loop. The Gas
 Town daemon pings the Deacon every couple of minutes with a "do your job" signal.
 The Deacon propagates this signal downward to other workers, ensuring the town
 stays active.
@@ -249,7 +249,7 @@ workflow you previously used.
 
 ## 4. The MEOW Stack
 
-MEOW — Molecular Expression of Work — is the layered system for decomposing, tracking,
+MEOW - Molecular Expression of Work - is the layered system for decomposing, tracking,
 and executing work in Gas Town.
 
 ### Beads
@@ -314,7 +314,7 @@ description = "Run quality gates"
 
 ### Wisps
 
-Ephemeral beads — the "vapor phase" of Gas Town work. Wisps exist in the database and
+Ephemeral beads - the "vapor phase" of Gas Town work. Wisps exist in the database and
 get hash IDs but are NOT written to the JSONL file and NOT persisted to git. At the end
 of their run, wisps are "burned" (destroyed). Optionally they can be squashed into a
 single-line summary.
@@ -402,12 +402,12 @@ gt convoy list
 | Concept | Persistent? | Description |
 |---------|-------------|-------------|
 | Convoy | Yes (`hq-cv-*`) | Tracking unit you create, monitor, get notified about |
-| Swarm | No | Ephemeral — "the polecats currently working on this convoy's issues" |
+| Swarm | No | Ephemeral - "the polecats currently working on this convoy's issues" |
 
 ### Reactive Feeding
 
 Convoys can receive additional issues after creation. Adding issues to a closed convoy
-reopens it automatically. Multiple swarms can "attack" a convoy before it finishes —
+reopens it automatically. Multiple swarms can "attack" a convoy before it finishes -
 the Witness keeps recycling polecats and pushing them on open issues.
 
 ### Auto-Convoy on Sling
@@ -450,7 +450,7 @@ gt nudge gastown/witness "Polecat health check needed"
 ### `gt mail send` (Persistent, Protocol Only)
 
 - Creates a wisp bead in Dolt with a permanent commit
-- Persists across session restarts — survives agent death
+- Persists across session restarts - survives agent death
 - Expensive: every mail = permanent Dolt commit
 
 ```bash
@@ -542,7 +542,7 @@ gt done
 ### Completion Protocol (MANDATORY)
 
 ```
-[ ] 1. Run quality gates (lint, format, tests — ALL must pass)
+[ ] 1. Run quality gates (lint, format, tests - ALL must pass)
 [ ] 2. Stage changes:     git add <files>
 [ ] 3. Commit changes:    git commit -m "msg (issue-id)"
 [ ] 4. Self-clean:        gt done   ← MANDATORY FINAL STEP
@@ -564,7 +564,7 @@ running `gt done`. There is no approval step. If you have finished your implemen
 work, your ONLY next action is `gt done`.
 
 Do NOT:
-- Sit idle waiting for more work (there is no more work — you're done)
+- Sit idle waiting for more work (there is no more work - you're done)
 - Say "work complete" without running `gt done`
 - Wait for confirmation or approval
 - Try `gt unsling` or other commands (only `gt done` signals completion)
@@ -600,15 +600,15 @@ exponential backoff: agents gradually sleep longer when no work is found.
 ### Witness Patrol
 
 Steps in sequence:
-1. **inbox-check** — Process POLECAT_DONE, MERGED, HELP, escalations
-2. **process-cleanups** — Handle cleanup wisps from dead polecats
-3. **check-refinery** — Verify refinery is alive
-4. **survey-workers** — Check all active polecats for health/progress
-5. **check-timer-gates** — Evaluate elapsed timer gates
-6. **check-swarm** — Track convoy completion
-7. **patrol-cleanup** — Close completed patrol wisps
-8. **context-check** — If context full, handoff for fresh session
-9. **loop-or-exit** — Report and spawn next cycle
+1. **inbox-check** - Process POLECAT_DONE, MERGED, HELP, escalations
+2. **process-cleanups** - Handle cleanup wisps from dead polecats
+3. **check-refinery** - Verify refinery is alive
+4. **survey-workers** - Check all active polecats for health/progress
+5. **check-timer-gates** - Evaluate elapsed timer gates
+6. **check-swarm** - Track convoy completion
+7. **patrol-cleanup** - Close completed patrol wisps
+8. **context-check** - If context full, handoff for fresh session
+9. **loop-or-exit** - Report and spawn next cycle
 
 ### Deacon Patrol
 
@@ -648,14 +648,14 @@ When patrols find no work, the wait between cycles increases. Any mutating `gt` 
 
 ## 10. Handoff and Session Cycling
 
-Session cycling is normal operation, not failure. The agent continues working — only
+Session cycling is normal operation, not failure. The agent continues working - only
 the Claude context window refreshes.
 
 ### When to Handoff
 
-- **Context filling** — slow responses, forgetting earlier context
-- **Logical chunk done** — good checkpoint between molecule steps
-- **Stuck** — need a fresh perspective
+- **Context filling** - slow responses, forgetting earlier context
+- **Logical chunk done** - good checkpoint between molecule steps
+- **Stuck** - need a fresh perspective
 
 ### How Handoff Works
 
@@ -702,7 +702,7 @@ All work is expressed as molecules. Each component is persistent:
 
 If a session crashes mid-step, the next session finds the molecule on the hook,
 determines which step it was on, figures out the right fix, and moves on. The path
-is fully nondeterministic — the agent might take different actions each time — but
+is fully nondeterministic - the agent might take different actions each time - but
 the outcome eventually converges on the workflow's acceptance criteria.
 
 ### Comparison to Temporal
@@ -734,7 +734,7 @@ it is still working, and the system stalls.
 ### Pushing to Main
 
 Polecats NEVER push directly to main. All polecat work goes through the merge queue.
-The Refinery is the only role that writes to main. Do NOT create GitHub PRs either —
+The Refinery is the only role that writes to main. Do NOT create GitHub PRs either -
 the merge queue handles everything.
 
 ### Closing Foreign Wisps (Swim Lane Rule)
@@ -788,7 +788,7 @@ understand: **Dolt is git, not Postgres.** Every `bd` write command and every
 - **Close your beads promptly.** Open beads that linger become pollution.
 - **Don't retry `bd` commands in a loop** when Dolt is slow or down. Check `gt health`
   and nudge the Deacon.
-- **Don't file beads about Dolt trouble** — someone is already handling it.
+- **Don't file beads about Dolt trouble** - someone is already handling it.
 
 ### Cost Model
 
@@ -822,8 +822,8 @@ systems optimize for fundamentally different things.
 Kubernetes asks: **"Is it running?"**
 Gas Town asks: **"Is it done?"**
 
-Kubernetes optimizes for uptime — keep N replicas alive, restart crashed pods,
-maintain the desired state indefinitely. Gas Town optimizes for completion — finish
+Kubernetes optimizes for uptime - keep N replicas alive, restart crashed pods,
+maintain the desired state indefinitely. Gas Town optimizes for completion - finish
 the work, land the convoy, nuke the worker, and move on.
 
 Kubernetes pods are anonymous cattle. Gas Town polecats are credited workers whose

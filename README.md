@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)](https://python.org)
 
-Monorepo for **axio** (*Asynchronous eXtensible Intelligent Orchestration*) — a minimal,
+Monorepo for **axio** (*Asynchronous eXtensible Intelligent Orchestration*) - a minimal,
 streaming-first, protocol-driven foundation for LLM-powered agents.
 
 ---
@@ -64,7 +64,7 @@ The `axio` CLI entry point is provided by `axio-tui`.
 ### Prerequisites
 
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/) — used for the workspace, virtual environments, and running tools
+- [uv](https://docs.astral.sh/uv/) - used for the workspace, virtual environments, and running tools
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -78,7 +78,7 @@ cd axio-agent
 uv sync --all-packages
 ```
 
-`uv sync --all-packages` installs every workspace member and their dev dependencies into a single shared virtual environment at `.venv/`. All local packages resolve to their workspace sources automatically — no `pip install -e` needed.
+`uv sync --all-packages` installs every workspace member and their dev dependencies into a single shared virtual environment at `.venv/`. All local packages resolve to their workspace sources automatically - no `pip install -e` needed.
 
 ### How the uv workspace works
 
@@ -150,7 +150,7 @@ Hidden setup blocks (stubs that shouldn't appear in the rendered docs):
 <!--
 name: test_my_example
 ```python
-# hidden setup code — not visible in rendered docs
+# hidden setup code - not visible in rendered docs
 ```
 -->
 ```
@@ -168,7 +168,7 @@ name: test_my_example
 
 ```
 axio-agent/
-├── pyproject.toml          # workspace root — members + shared uv.sources
+├── pyproject.toml          # workspace root - members + shared uv.sources
 ├── uv.lock                 # single lockfile for the whole workspace
 ├── Makefile                # lint / type / test targets
 ├── examples/               # runnable example scripts

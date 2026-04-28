@@ -64,6 +64,7 @@ Auto-generated documentation from source docstrings.
    :show-inheritance:
 ```
 
+
 ## Data Types
 
 ```{eval-rst}
@@ -94,10 +95,31 @@ Auto-generated documentation from source docstrings.
    :show-inheritance:
 ```
 
+```{eval-rst}
+.. automodule:: axio.field
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
+```{eval-rst}
+.. automodule:: axio.schema
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
 ## Utilities
 
 ```{eval-rst}
 .. automodule:: axio.stream
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
+```{eval-rst}
+.. automodule:: axio.agent_loader
    :members:
    :undoc-members:
    :show-inheritance:

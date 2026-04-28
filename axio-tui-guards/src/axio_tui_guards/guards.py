@@ -5,7 +5,7 @@ import json
 import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from axio.agent import Agent
 from axio.blocks import TextBlock, ToolUseBlock
@@ -13,6 +13,10 @@ from axio.context import ContextStore
 from axio.exceptions import GuardError
 from axio.messages import Message
 from axio.permission import PermissionGuard
+
+if TYPE_CHECKING:
+    from axio.tool import Tool
+
 from axio_tui.tools import Confirm
 
 type PromptFn = Callable[[str], Awaitable[str]]
@@ -28,11 +32,10 @@ class PathGuard(PermissionGuard):
         self.denied: set[str] = set()
         self._prompt = prompt_fn or ask_user
 
-    def _extract_path(self, handler: Any) -> tuple[str | None, str | None]:
-        data = handler.model_dump()
+    def _extract_path(self, kwargs: dict[str, Any]) -> tuple[str | None, str | None]:
         for name in self.PATH_FIELDS:
-            if name in data:
-                return str(data[name]), name
+            if name in kwargs:
+                return str(kwargs[name]), name
         return None, None
 
     @staticmethod
@@ -47,10 +50,10 @@ class PathGuard(PermissionGuard):
     def _is_denied(self, path: str) -> bool:
         return path in self.denied
 
-    async def check(self, handler: Any) -> Any:
-        path, field = self._extract_path(handler)
+    async def check(self, tool: "Tool[Any]", **kwargs: Any) -> dict[str, Any]:
+        path, field = self._extract_path(kwargs)
         if path is None or self._is_allowed(path):
-            return handler
+            return kwargs
         if self._is_denied(path):
             raise GuardError(f"Path denied: {field}={path!r}")
 
@@ -62,9 +65,9 @@ class PathGuard(PermissionGuard):
             raise GuardError(f"Path denied: {field}={path!r}")
         if not answer or answer.lower() == "n":
             raise GuardError(f"Path access denied: {field}={path!r}")
-        # "y" or anything else — allow this directory for future calls
+        # "y" or anything else - allow this directory for future calls
         self.allowed.add(directory)
-        return handler
+        return kwargs
 
 
 class LLMGuard(PermissionGuard):
@@ -84,17 +87,17 @@ class LLMGuard(PermissionGuard):
                 for block in msg.content:
                     if isinstance(block, ToolUseBlock) and block.name == "confirm":
                         try:
-                            return Confirm.model_validate(block.input)
+                            return Confirm(**block.input)
                         except Exception:
                             return Confirm(verdict="RISKY", reason="Unparseable", category="unknown")
         return Confirm(verdict="SAFE", reason="No verdict provided", category="unknown")
 
-    async def check(self, handler: Any) -> Any:
-        args_str = json.dumps(handler.model_dump(), default=str)
+    async def check(self, tool: "Tool[Any]", **kwargs: Any) -> dict[str, Any]:
+        args_str = json.dumps(kwargs, default=str)
         if len(args_str) > 2000:
             args_str = args_str[:2000] + "..."
 
-        description = f"Tool: {type(handler).__name__}\nArguments: {args_str}"
+        description = f"Tool: {tool.name}\nArguments: {args_str}"
         if self.allowed:
             description += "\n\nAuto-approved categories (classify as SAFE): " + ", ".join(sorted(self.allowed))
 
@@ -106,18 +109,18 @@ class LLMGuard(PermissionGuard):
         confirm = await self.extract_confirm(forked)
 
         if confirm.verdict == "SAFE":
-            return handler
+            return kwargs
         if confirm.verdict == "DENY":
             raise GuardError(f"DENIED: {confirm.reason}")
 
-        # RISKY — ask user
+        # RISKY - ask user
         if confirm.category in self.allowed:
-            return handler
+            return kwargs
 
-        handler_repr = repr(handler)
-        if len(handler_repr) > 2000:
-            handler_repr = handler_repr[:2000] + "..."
-        msg = f"{handler_repr}\n\n{confirm.reason}"
+        args_repr = json.dumps(kwargs, default=repr)
+        if len(args_repr) > 2000:
+            args_repr = args_repr[:2000] + "..."
+        msg = f"{tool.name}({args_repr})\n\n{confirm.reason}"
         answer = (await self._prompt(msg)).strip()
 
         if not answer or answer.lower() == "n":
@@ -132,7 +135,7 @@ class LLMGuard(PermissionGuard):
             # Persist the user note in original context for future checks
             await self.context.append(Message(role="user", content=[TextBlock(text=answer)]))
 
-        return handler
+        return kwargs
 
 
 # Helper function for user input

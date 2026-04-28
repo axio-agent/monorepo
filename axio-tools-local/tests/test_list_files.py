@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from axio_tools_local.list_files import ListFiles
+from axio_tools_local.list_files import list_files
 
 
 @pytest.fixture()
@@ -20,7 +20,7 @@ def tmp_cwd(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 async def ls(directory: str = ".") -> str:
-    return await ListFiles(directory=directory)({})
+    return await list_files(directory=directory)
 
 
 class TestListFilesBasic:
@@ -106,9 +106,3 @@ class TestListFilesSymlinks:
         assert "good.txt" in result
         assert "bad_link" in result
         assert "[broken symlink]" in result
-
-
-class TestListFilesMisc:
-    async def test_repr(self) -> None:
-        assert "." in repr(ListFiles())
-        assert "src" in repr(ListFiles(directory="src"))

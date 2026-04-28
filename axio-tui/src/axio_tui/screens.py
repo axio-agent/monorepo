@@ -160,7 +160,7 @@ class SessionSelectScreen(ModalScreen[SessionInfo | None]):
 
 
 class TransportSelectScreen(ModalScreen[set[str] | None]):
-    """axio.transport — enable/disable transports and reload model catalogues."""
+    """axio.transport - enable/disable transports and reload model catalogues."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
@@ -237,7 +237,7 @@ class TransportSelectScreen(ModalScreen[set[str] | None]):
 
 
 class ToolSelectScreen(ModalScreen[set[str] | None]):
-    """axio.tools — toggle tools grouped by package / plugin."""
+    """axio.tools - toggle tools grouped by package / plugin."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
     CSS = """
@@ -561,8 +561,8 @@ class GuardSelectScreen(ModalScreen[tuple[set[str], dict[str, set[str]]] | None]
         desc = self._guard_names[name]
         tool_count = len(self._guard_tool_map.get(name, set()))
         if name in self._disabled_guards:
-            return f"[ ] {name:<12} — {desc} (disabled)"
-        return f"[*] {name:<12} — {desc} ({tool_count} tools)"
+            return f"[ ] {name:<12} - {desc} (disabled)"
+        return f"[*] {name:<12} - {desc} ({tool_count} tools)"
 
     def compose(self) -> ComposeResult:
         with Container(id="guard-select"):
@@ -646,7 +646,7 @@ class GuardToolsScreen(ModalScreen[tuple[bool, set[str]] | None]):
 
     def compose(self) -> ComposeResult:
         with Container(id="guard-tools"):
-            yield Static(f"[bold]Guard: {self._guard_name}[/] — {self._guard_description}")
+            yield Static(f"[bold]Guard: {self._guard_name}[/] - {self._guard_description}")
             yield OptionList(*self._format_entries(), id="guard-tools-list")
 
     def on_mount(self) -> None:

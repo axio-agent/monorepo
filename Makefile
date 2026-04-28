@@ -13,10 +13,10 @@ typing pytest: $(PACKAGES)
 
 $(PACKAGES):
 	@uv run --directory $@ mypy .
-	@uv run --directory $@ pytest -vv
+	@uv run --directory $@ pytest -q
 
 test-docs:
-	@uv run --directory docs pytest -v .
+	@uv run --directory docs pytest -q .
 
 test: pytest
 tests: pytest

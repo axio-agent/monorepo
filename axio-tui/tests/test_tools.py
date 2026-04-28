@@ -1,4 +1,4 @@
-"""Tests for axio-tui — TUI-specific tool handlers."""
+"""Tests for axio-tui - TUI-specific tool handlers."""
 
 from __future__ import annotations
 
@@ -15,25 +15,37 @@ from axio.messages import Message
 from axio.testing import StubTransport, make_text_response, make_tool_use_response
 from axio.tool import Tool
 
-from axio_tui.tools import Confirm, StatusLine, SubAgent, VisionAnalyze
+import axio_tui.tools as _tools
+from axio_tui.tools import confirm, status_line, subagent, vision_analyze
 
 
 class TestStatusLine:
     async def test_returns_ok(self) -> None:
-        handler = StatusLine(message="working")
-        assert await handler({}) == "ok"
+        assert await status_line(message="working") == "ok"
+
+    async def test_calls_callback(self) -> None:
+        received: list[str] = []
+        _tools.status_line_callback = received.append
+        try:
+            await status_line(message="hello")
+            assert received == ["hello"]
+        finally:
+            _tools.status_line_callback = None
+
+    async def test_no_callback_ok(self) -> None:
+        _tools.status_line_callback = None
+        assert await status_line(message="anything") == "ok"
 
 
 class TestConfirm:
     async def test_returns_verdict(self) -> None:
-        handler = Confirm(verdict="SAFE", reason="harmless", category="read")
-        assert await handler({}) == "SAFE"
+        assert await confirm(verdict="SAFE", reason="harmless", category="read") == "SAFE"
 
-    async def test_repr(self) -> None:
-        handler = Confirm(verdict="DENY", reason="bad", category="exec")
-        r = repr(handler)
-        assert "DENY" in r
-        assert "exec" in r
+    async def test_deny_verdict(self) -> None:
+        assert await confirm(verdict="DENY", reason="bad", category="exec") == "DENY"
+
+    async def test_risky_verdict(self) -> None:
+        assert await confirm(verdict="RISKY", reason="maybe", category="write") == "RISKY"
 
 
 class TestSubAgent:
@@ -47,18 +59,16 @@ class TestSubAgent:
         async def factory() -> tuple[Agent, MemoryContextStore]:
             return agent, MemoryContextStore()
 
-        SubAgent._factory = factory
+        _tools.subagent_factory = factory
         try:
-            handler = SubAgent(task="do something")
-            result = await handler({})
+            result = await subagent(task="do something")
             assert result == "sub-result"
         finally:
-            SubAgent._factory = None
+            _tools.subagent_factory = None
 
     async def test_no_factory_returns_error(self) -> None:
-        SubAgent._factory = None
-        handler = SubAgent(task="do something")
-        result = await handler({})
+        _tools.subagent_factory = None
+        result = await subagent(task="do something")
         assert result == "SubAgent is not configured"
 
     async def test_context_forking(self) -> None:
@@ -78,29 +88,27 @@ class TestSubAgent:
             received_context.append(ctx)
             return agent, ctx
 
-        SubAgent._factory = factory
+        _tools.subagent_factory = factory
         try:
-            handler = SubAgent(task="check context")
-            await handler({})
+            await subagent(task="check context")
             assert len(received_context) == 1
             history = await received_context[0].get_history()
             assert history[0].content[0].text == "hello"  # type: ignore[attr-defined]
             parent_history = await parent.get_history()
             assert len(parent_history) == 1
         finally:
-            SubAgent._factory = None
+            _tools.subagent_factory = None
 
     async def test_error_propagates(self) -> None:
         async def factory() -> tuple[Agent, MemoryContextStore]:
             raise RuntimeError("factory failed")
 
-        SubAgent._factory = factory
+        _tools.subagent_factory = factory
         try:
-            handler = SubAgent(task="boom")
             with pytest.raises(RuntimeError, match="factory failed"):
-                await handler({})
+                await subagent(task="boom")
         finally:
-            SubAgent._factory = None
+            _tools.subagent_factory = None
 
     async def test_integration_full_loop(self) -> None:
         """Parent agent calls subagent tool via full agent loop."""
@@ -110,7 +118,7 @@ class TestSubAgent:
         async def factory() -> tuple[Agent, MemoryContextStore]:
             return sub_agent, MemoryContextStore()
 
-        SubAgent._factory = factory
+        _tools.subagent_factory = factory
         try:
             parent_transport = StubTransport(
                 [
@@ -122,22 +130,17 @@ class TestSubAgent:
                     make_text_response("Final answer based on sub-agent"),
                 ]
             )
-            subagent_tool = Tool(
+            subagent_tool: Tool[Any] = Tool(
                 name="subagent",
                 description="Delegate a task",
-                handler=SubAgent,
+                handler=subagent,
                 concurrency=3,
             )
             parent_agent = self._make_agent(parent_transport, tools=[subagent_tool])
             result = await parent_agent.run("delegate something", MemoryContextStore())
             assert result == "Final answer based on sub-agent"
         finally:
-            SubAgent._factory = None
-
-    async def test_repr(self) -> None:
-        handler = SubAgent(task="analyze the logs")
-        r = repr(handler)
-        assert "analyze the logs" in r
+            _tools.subagent_factory = None
 
 
 # Minimal valid 1x1 red PNG (67 bytes)
@@ -151,49 +154,44 @@ _TINY_PNG = (
 
 class TestVisionAnalyze:
     async def test_no_transport_returns_error(self) -> None:
-        VisionAnalyze._transport = None
-        handler = VisionAnalyze(path="img.png")
-        result = await handler({})
+        _tools.vision_transport = None
+        result = await vision_analyze(path="img.png")
         assert "not configured" in result
 
     async def test_file_not_found(self, tmp_path: Path) -> None:
-        VisionAnalyze._transport = StubTransport([make_text_response("ok")])
+        _tools.vision_transport = StubTransport([make_text_response("ok")])
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            handler = VisionAnalyze(path="missing.png")
-            result = await handler({})
+            result = await vision_analyze(path="missing.png")
             assert "File not found" in result
         finally:
             os.chdir(old_cwd)
-            VisionAnalyze._transport = None
+            _tools.vision_transport = None
 
     async def test_unsupported_format(self, tmp_path: Path) -> None:
         (tmp_path / "file.bmp").write_bytes(b"\x00")
-        VisionAnalyze._transport = StubTransport([make_text_response("ok")])
+        _tools.vision_transport = StubTransport([make_text_response("ok")])
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            handler = VisionAnalyze(path="file.bmp")
-            result = await handler({})
+            result = await vision_analyze(path="file.bmp")
             assert "Unsupported image format" in result
         finally:
             os.chdir(old_cwd)
-            VisionAnalyze._transport = None
+            _tools.vision_transport = None
 
     async def test_streams_vision_result(self, tmp_path: Path) -> None:
         (tmp_path / "photo.png").write_bytes(_TINY_PNG)
-        transport = StubTransport([make_text_response("A red pixel")])
-        VisionAnalyze._transport = transport
+        _tools.vision_transport = StubTransport([make_text_response("A red pixel")])
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            handler = VisionAnalyze(path="photo.png", prompt="What is this?")
-            result = await handler({})
+            result = await vision_analyze(path="photo.png", prompt="What is this?")
             assert result == "A red pixel"
         finally:
             os.chdir(old_cwd)
-            VisionAnalyze._transport = None
+            _tools.vision_transport = None
 
     async def test_constructs_image_message(self, tmp_path: Path) -> None:
         """Verify that the transport receives a message with TextBlock + ImageBlock."""
@@ -209,13 +207,11 @@ class TestVisionAnalyze:
                 captured.append(messages)
                 return super().stream(messages, tools, system)
 
-        transport = CapturingTransport([make_text_response("desc")])
-        VisionAnalyze._transport = transport
+        _tools.vision_transport = CapturingTransport([make_text_response("desc")])
         old_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            handler = VisionAnalyze(path="test.jpg", prompt="Describe it")
-            await handler({})
+            await vision_analyze(path="test.jpg", prompt="Describe it")
             assert len(captured) == 1
             msg = captured[0][0]
             assert len(msg.content) == 2
@@ -225,8 +221,4 @@ class TestVisionAnalyze:
             assert msg.content[1].media_type == "image/jpeg"
         finally:
             os.chdir(old_cwd)
-            VisionAnalyze._transport = None
-
-    async def test_repr(self) -> None:
-        handler = VisionAnalyze(path="image.png")
-        assert "image.png" in repr(handler)
+            _tools.vision_transport = None

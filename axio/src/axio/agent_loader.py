@@ -46,7 +46,7 @@ are comma-separated.
 
 Custom sources
 --------------
-Subclass :class:`AgentLoader` and implement :meth:`~AgentLoader.load` — the
+Subclass :class:`AgentLoader` and implement :meth:`~AgentLoader.load` - the
 base :meth:`~AgentLoader.load_file` will handle reading the file and calling
 your implementation automatically::
 
@@ -68,12 +68,11 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, TypedDict
 
-from pydantic import Field
-
 from .agent import Agent
 from .context import ContextStore, MemoryContextStore
 from .events import StreamEvent, TextDelta
-from .tool import Tool, ToolHandler
+from .field import Field
+from .tool import CONTEXT, Tool
 from .transport import CompletionTransport, DummyCompletionTransport
 
 
@@ -91,7 +90,7 @@ class AgentSpec:
     def to_agent(self, toolbox: Mapping[str, Tool[Any]] = MappingProxyType({})) -> Agent:
         """Return a prototype Agent with *toolbox* tools attached.
 
-        The agent uses :class:`~axio.transport.DummyCompletionTransport` —
+        The agent uses :class:`~axio.transport.DummyCompletionTransport` -
         call ``agent.copy(transport=real_transport)`` before running it.
 
         Raises :exc:`KeyError` if any name in ``self.tools`` is absent from
@@ -114,7 +113,7 @@ class AgentLoader:
     """Base class for format-specific agent loaders.
 
     Subclasses implement :meth:`load` to parse a raw string.  The source of
-    that string is entirely up to the caller — files, databases, HTTP, etc.
+    that string is entirely up to the caller - files, databases, HTTP, etc.
     :meth:`load_file` is provided on the base class and calls :meth:`load`
     automatically.
     """
@@ -276,7 +275,7 @@ def load_agents(
 ) -> dict[str, tuple[str, Agent]]:
     """Scan *directory* for ``.toml``, ``.json``, and ``.ini`` agent files.
 
-    Returns ``dict[name, (description, agent)]`` — same shape as the
+    Returns ``dict[name, (description, agent)]`` - same shape as the
     ``AGENTS`` registry used in ``agent_swarm`` and similar examples.
 
     Example::
@@ -300,25 +299,19 @@ class AgentContext(TypedDict):
     on_event: Callable[[str, StreamEvent], None] | None
 
 
-class AgentTool(ToolHandler[AgentContext]):
-    """Handler for a single delegate agent — receives runtime deps via Tool.context."""
-
-    task: Annotated[str, Field(description="Full task instructions.")]
-
-    async def __call__(
-        self,
-        context: AgentContext,
-    ) -> str:
-        agent = context["proto"].copy(transport=context["transport"])
-        ctx = context["context_factory"]()
-        if context["on_event"] is None:
-            return await agent.run(self.task, ctx)
-        parts: list[str] = []
-        async for event in agent.run_stream(self.task, ctx):
-            context["on_event"](context["agent_name"], event)
-            if isinstance(event, TextDelta):
-                parts.append(event.delta)
-        return "".join(parts)
+async def agent_tool(task: Annotated[str, Field(description="Full task instructions.")]) -> str:
+    """Delegate a task to a sub-agent."""
+    context: AgentContext = CONTEXT.get()
+    agent = context["proto"].copy(transport=context["transport"])
+    ctx = context["context_factory"]()
+    if context["on_event"] is None:
+        return await agent.run(task, ctx)
+    parts: list[str] = []
+    async for event in agent.run_stream(task, ctx):
+        context["on_event"](context["agent_name"], event)
+        if isinstance(event, TextDelta):
+            parts.append(event.delta)
+    return "".join(parts)
 
 
 def make_agent_tools(
@@ -337,7 +330,7 @@ def make_agent_tools(
     Parameters
     ----------
     agents:
-        ``dict[name, (description, prototype_agent)]`` — e.g. the value
+        ``dict[name, (description, prototype_agent)]`` - e.g. the value
         returned by :func:`load_agents`.
     transport:
         Transport assigned to the selected agent via ``agent.copy()``.
@@ -364,7 +357,7 @@ def make_agent_tools(
         tool = Tool(
             name=f"{agent_name_prefix}{agent_name}",
             description=desc,
-            handler=AgentTool,
+            handler=agent_tool,
             context=AgentContext(
                 proto=proto,
                 transport=transport,

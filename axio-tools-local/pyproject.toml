@@ -9,12 +9,12 @@ keywords = ["llm", "agent", "ai", "tools", "filesystem", "shell"]
 dependencies = ["axio"]
 
 [project.entry-points."axio.tools"]
-shell = "axio_tools_local.shell:Shell"
-run_python = "axio_tools_local.run_python:RunPython"
-write_file = "axio_tools_local.write_file:WriteFile"
-patch_file = "axio_tools_local.patch_file:PatchFile"
-read_file = "axio_tools_local.read_file:ReadFile"
-list_files = "axio_tools_local.list_files:ListFiles"
+shell = "axio_tools_local.shell:shell"
+run_python = "axio_tools_local.run_python:run_python"
+write_file = "axio_tools_local.write_file:write_file"
+patch_file = "axio_tools_local.patch_file:patch_file"
+read_file = "axio_tools_local.read_file:read_file"
+list_files = "axio_tools_local.list_files:list_files"
 
 
 [project.urls]
@@ -42,6 +42,7 @@ select = ["E", "F", "I", "UP"]
 strict = true
 python_version = "3.12"
 
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -51,4 +52,3 @@ dev = [
     "pytest-cov>=7.1.0",
     "markdown-pytest>=0.6.0",
 ]
-

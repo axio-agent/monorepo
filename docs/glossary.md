@@ -60,8 +60,8 @@ Terms used throughout Axio documentation.
 **Protocol**
 : Runtime-checkable interface (Python `Protocol` or ABC). Axio uses protocols for pluggability.
 
-**Pydantic Model**
-: Validation layer. Tool handlers are defined as Pydantic models with fields as parameters.
+**Parameter annotation**
+: Type hint on a tool handler parameter. Axio reads annotations to build the JSON schema sent to the LLM. Use `Annotated[T, Field(...)]` from `axio.field` to attach descriptions, defaults, or numeric bounds.
 
 ## R
 
@@ -84,8 +84,8 @@ Terms used throughout Axio documentation.
 **Tool**
 : A callable that the LLM can invoke. Combines a name, description, handler, and optional guards.
 
-**ToolHandler**
-: The executable logic for a tool. A Pydantic model where fields are parameters and `__call__` is execution.
+**Tool handler**
+: The executable logic for a tool. A plain `async def` function whose parameters define the input schema and whose body implements execution.
 
 **ToolUseStart**
 : Event signaling the start of a tool call. Contains tool name and unique ID.

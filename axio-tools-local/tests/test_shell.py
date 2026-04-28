@@ -1,15 +1,15 @@
-"""Tests for Shell tool handler."""
+"""Tests for shell tool handler."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from axio_tools_local.shell import Shell
+from axio_tools_local.shell import shell
 
 
 async def sh(command: str, **kwargs: Any) -> str:
-    return await Shell(command=command, **kwargs)({})
+    return await shell(command=command, **kwargs)
 
 
 class TestShellBasic:
@@ -47,7 +47,6 @@ class TestShellCwd:
 
     async def test_relative_default_cwd(self) -> None:
         result = await sh("pwd")
-        # default cwd="." so pwd should return a non-empty path
         assert "/" in result
 
 
@@ -76,13 +75,3 @@ class TestShellTimeout:
     async def test_fast_command_not_timed_out(self) -> None:
         result = await sh("echo quick", timeout=5)
         assert "quick" in result
-
-
-class TestShellMisc:
-    async def test_repr_contains_command(self) -> None:
-        assert "echo hi" in repr(Shell(command="echo hi"))
-
-    async def test_repr_truncates_long_command(self) -> None:
-        long_cmd = "x" * 100
-        r = repr(Shell(command=long_cmd))
-        assert len(r) < 200

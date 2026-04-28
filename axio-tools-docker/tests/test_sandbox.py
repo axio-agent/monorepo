@@ -76,11 +76,11 @@ def mock_docker_factory(
         return mock_container
 
     mock_containers.create = create_container
-    # Default: no named container exists — callers can override per test.
+    # Default: no named container exists - callers can override per test.
     mock_containers.get = AsyncMock(side_effect=aiodocker.exceptions.DockerError(404, "Not found"))
 
     mock_images = MagicMock()
-    mock_images.inspect = AsyncMock()  # image present by default — no pull needed
+    mock_images.inspect = AsyncMock()  # image present by default - no pull needed
     mock_images.pull = AsyncMock()
 
     mock_system = MagicMock()
@@ -156,7 +156,7 @@ async def test_client_closed_on_exit() -> None:
 
 
 async def test_named_existing_container_attaches() -> None:
-    """name= reuses an existing container — no create, no start."""
+    """name= reuses an existing container - no create, no start."""
     cls, client, container = mock_docker_factory()
     client.containers.get = AsyncMock(return_value=container)
     with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
@@ -376,6 +376,71 @@ async def test_volumes_binds() -> None:
             pass
     config = client._captured_config[0]
     assert "/host/path:/container/path" in config["HostConfig"]["Binds"]
+
+
+async def test_named_volumes_binds() -> None:
+    cls, client, container = mock_docker_factory()
+    with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
+        async with DockerSandbox(named_volumes={"/data": "myvolume"}):
+            pass
+    config = client._captured_config[0]
+    assert "myvolume:/data" in config["HostConfig"]["Binds"]
+
+
+async def test_named_volumes_combined_with_bind_mounts() -> None:
+    cls, client, container = mock_docker_factory()
+    with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
+        async with DockerSandbox(
+            volumes={"/app": "/host/app"},
+            named_volumes={"/data": "myvolume"},
+        ):
+            pass
+    config = client._captured_config[0]
+    binds = config["HostConfig"]["Binds"]
+    assert "/host/app:/app" in binds
+    assert "myvolume:/data" in binds
+
+
+async def test_volumes_remove_deletes_named_volumes_on_exit() -> None:
+    cls, client, container = mock_docker_factory()
+    mock_volume = MagicMock()
+    mock_volume.delete = AsyncMock()
+    client.volumes = MagicMock()
+    client.volumes.get = AsyncMock(return_value=mock_volume)
+    with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
+        async with DockerSandbox(named_volumes={"/data": "myvolume"}, volumes_remove=True):
+            pass
+    client.volumes.get.assert_awaited_once_with("myvolume")
+    mock_volume.delete.assert_awaited_once()
+
+
+async def test_volumes_remove_not_called_when_attached() -> None:
+    cls, client, container = mock_docker_factory()
+    client.containers.get = AsyncMock(return_value=container)
+    mock_volume = MagicMock()
+    mock_volume.delete = AsyncMock()
+    client.volumes = MagicMock()
+    client.volumes.get = AsyncMock(return_value=mock_volume)
+    with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
+        async with DockerSandbox(
+            name="existing",
+            named_volumes={"/data": "myvolume"},
+            volumes_remove=True,
+        ):
+            pass
+    mock_volume.delete.assert_not_awaited()
+
+
+async def test_volumes_remove_false_does_not_delete() -> None:
+    cls, client, container = mock_docker_factory()
+    mock_volume = MagicMock()
+    mock_volume.delete = AsyncMock()
+    client.volumes = MagicMock()
+    client.volumes.get = AsyncMock(return_value=mock_volume)
+    with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
+        async with DockerSandbox(named_volumes={"/data": "myvolume"}, volumes_remove=False):
+            pass
+    mock_volume.delete.assert_not_awaited()
 
 
 async def test_network_mode_none_when_disabled() -> None:
@@ -803,7 +868,7 @@ async def test_devices_full_format() -> None:
 
 
 async def test_devices_short_format() -> None:
-    """Just the host path — maps to same container path with rwm."""
+    """Just the host path - maps to same container path with rwm."""
     cls, client, container = mock_docker_factory()
     with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
         async with DockerSandbox(devices=["/dev/net/tun"]):

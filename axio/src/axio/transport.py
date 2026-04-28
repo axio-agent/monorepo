@@ -1,6 +1,6 @@
 """Transport protocols: completion, image gen, TTS, STT.
 
-Transports should be stateless — all request state lives in the arguments
+Transports should be stateless - all request state lives in the arguments
 passed to each method call.  This allows multiple agents to share a single
 transport instance and call it concurrently without interference.
 
@@ -70,7 +70,7 @@ class DummyTransport:
     @staticmethod
     def _do_fail() -> None:
         logger.warning(
-            "DummyCompletionTransport.stream() called — this agent has no real transport. "
+            "DummyCompletionTransport.stream() called - this agent has no real transport. "
             "Use agent.copy(transport=<real_transport>) before running."
         )
         raise RuntimeError(

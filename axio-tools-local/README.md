@@ -6,18 +6,18 @@
 
 Core filesystem and shell tool handlers for [axio](https://github.com/mosquito/axio-agent).
 
-Gives your agent the ability to read, write, and patch files, run shell commands, execute Python snippets, and browse directory trees — the essential toolkit for a coding assistant.
+Gives your agent the ability to read, write, and patch files, run shell commands, execute Python snippets, and browse directory trees - the essential toolkit for a coding assistant.
 
 ## Tools
 
-| Tool | Entry point | Description |
+| Function | Entry point | Description |
 |---|---|---|
-| `Shell` | `shell` | Run any shell command with configurable timeout, cwd, and stdin |
-| `RunPython` | `run_python` | Execute a Python snippet in a subprocess |
-| `ReadFile` | `read_file` | Read a file, optionally with line range |
-| `WriteFile` | `write_file` | Write or overwrite a file |
-| `PatchFile` | `patch_file` | Replace a range of lines in an existing file (1-indexed, both ends inclusive) |
-| `ListFiles` | `list_files` | List files matching a glob pattern |
+| `shell` | `shell` | Run any shell command with configurable timeout, cwd, and stdin |
+| `run_python` | `run_python` | Execute a Python snippet in a subprocess |
+| `read_file` | `read_file` | Read a file, optionally with line range |
+| `write_file` | `write_file` | Write or overwrite a file |
+| `patch_file` | `patch_file` | Replace a range of lines in an existing file (1-indexed, both ends inclusive) |
+| `list_files` | `list_files` | List files in a directory |
 
 ## Installation
 
@@ -34,17 +34,17 @@ pip install axio-tools-local
 from axio.agent import Agent
 from axio.context import MemoryContextStore
 from axio_transport_openai import OpenAITransport, OPENAI_MODELS
-from axio_tools_local.shell import Shell
-from axio_tools_local.read_file import ReadFile
-from axio_tools_local.write_file import WriteFile
-from axio_tools_local.list_files import ListFiles
+from axio_tools_local.shell import shell
+from axio_tools_local.read_file import read_file
+from axio_tools_local.write_file import write_file
+from axio_tools_local.list_files import list_files
 from axio.tool import Tool
 
 tools = [
-    Tool(name="shell",      description=Shell.__doc__ or "",     handler=Shell),
-    Tool(name="read_file",  description=ReadFile.__doc__ or "",  handler=ReadFile),
-    Tool(name="write_file", description=WriteFile.__doc__ or "", handler=WriteFile),
-    Tool(name="list_files", description=ListFiles.__doc__ or "", handler=ListFiles),
+    Tool(name="shell",      handler=shell),
+    Tool(name="read_file",  handler=read_file),
+    Tool(name="write_file", handler=write_file),
+    Tool(name="list_files", handler=list_files),
 ]
 
 agent = Agent(
@@ -58,107 +58,79 @@ agent = Agent(
 
 ```bash
 pip install "axio-tui[local]"
-uv run axio   # Shell, ReadFile, WriteFile, PatchFile, ListFiles, RunPython appear automatically
+uv run axio   # shell, read_file, write_file, patch_file, list_files, run_python appear automatically
 ```
 
 ## Tool details
 
-### Shell
+### shell
 
-<!--
-name: test_readme_shell
-```python
-from axio_tools_local.shell import Shell
-```
--->
 <!-- name: test_readme_shell -->
 ```python
-Shell(command="git log --oneline -5", cwd="/path/to/repo", timeout=30)
-Shell(command="python -m pytest", stdin=None)
+import asyncio
+from axio_tools_local.shell import shell
+
+asyncio.run(shell(command="echo hello", cwd=".", timeout=30))
+asyncio.run(shell(command="cat", stdin="hello"))
 ```
 
 Parameters: `command: str`, `timeout: int = 5`, `cwd: str = "."`, `stdin: str | None = None`
 
-### PatchFile
+### patch_file
 
-Replaces a range of lines in an existing file — safe for surgical edits without
+Replaces a range of lines in an existing file - safe for surgical edits without
 rewriting the whole file. Lines are 1-indexed and both `from_line` and `to_line`
 are inclusive. To insert without deleting any existing lines, set
 `to_line = from_line - 1`. Always read the file first with `line_numbers=True` to
 get correct line numbers.
 
-<!--
-name: test_readme_patch_file
-```python
-from axio_tools_local.patch_file import PatchFile
-```
--->
 <!-- name: test_readme_patch_file -->
 ```python
-# Replace line 5 with a new function signature
-PatchFile(
-    file_path="src/main.py",
-    from_line=5,
-    to_line=5,
-    content="def foo(x: int) -> int:",
-)
+import asyncio
+import tempfile, os
+from axio_tools_local.patch_file import patch_file
 
-# Replace lines 2-4 (both inclusive) with two new lines
-PatchFile(
-    file_path="src/main.py",
-    from_line=2,
-    to_line=4,
-    content="line_a\nline_b",
-)
+with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+    f.write("line1\nline2\nline3\n")
+    name = f.name
 
-# Insert before line 3 (no lines deleted)
-PatchFile(
-    file_path="src/main.py",
-    from_line=3,
-    to_line=2,
-    content="# inserted comment",
-)
+# Replace line 2
+asyncio.run(patch_file(file_path=name, from_line=2, to_line=2, content="replaced\n"))
+os.unlink(name)
 ```
 
 Parameters: `file_path: str`, `from_line: int`, `to_line: int`, `content: str`, `mode: int = 0o644`
 
-### ListFiles
+### list_files
 
-<!--
-name: test_readme_list_files
-```python
-from axio_tools_local.list_files import ListFiles
-```
--->
 <!-- name: test_readme_list_files -->
 ```python
-ListFiles(pattern="src/**/*.py")
-ListFiles(pattern="tests/test_*.py")
+import asyncio
+from axio_tools_local.list_files import list_files
+
+asyncio.run(list_files(directory="."))
 ```
 
-### RunPython
+### run_python
 
-<!--
-name: test_readme_run_python
-```python
-from axio_tools_local.run_python import RunPython
-```
--->
 <!-- name: test_readme_run_python -->
 ```python
-RunPython(code="import sys; print(sys.version)")
+import asyncio
+from axio_tools_local.run_python import run_python
+
+asyncio.run(run_python(code="import sys; print(sys.version)"))
 ```
 
 ## Plugin registration
 
 ```toml
 [project.entry-points."axio.tools"]
-shell      = "axio_tools_local.shell:Shell"
-run_python = "axio_tools_local.run_python:RunPython"
-write_file = "axio_tools_local.write_file:WriteFile"
-patch_file = "axio_tools_local.patch_file:PatchFile"
-read_file  = "axio_tools_local.read_file:ReadFile"
-list_files = "axio_tools_local.list_files:ListFiles"
+shell      = "axio_tools_local.shell:shell"
+run_python = "axio_tools_local.run_python:run_python"
+write_file = "axio_tools_local.write_file:write_file"
+patch_file = "axio_tools_local.patch_file:patch_file"
+read_file  = "axio_tools_local.read_file:read_file"
+list_files = "axio_tools_local.list_files:list_files"
 ```
 
 ## Part of the axio ecosystem

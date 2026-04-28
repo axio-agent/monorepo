@@ -1,10 +1,10 @@
 """Agent swarm: orchestrator + specialist team powered by Axio.
 
 Specialist roles are loaded from TOML files at runtime once the shared toolbox
-is ready — each role's ``tools`` list is resolved against the toolbox.  The
+is ready - each role's ``tools`` list is resolved against the toolbox.  The
 Orchestrator is the only agent declared in Python (in roles/__init__.py).
 
-Transport setup lives in main.py — swarm.py only uses what it is given.
+Transport setup lives in main.py - swarm.py only uses what it is given.
 """
 
 from __future__ import annotations
@@ -15,16 +15,21 @@ from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
 import aiosqlite
-from axio.agent import Agent
+from axio import (
+    CONTEXT,
+    Agent,
+    CompletionTransport,
+    Field,
+    MemoryContextStore,
+    PermissionGuard,
+    StreamEvent,
+    TextDelta,
+    Tool,
+)
 from axio.agent_loader import load_agents
 from axio.compaction import AutoCompactStore
-from axio.context import MemoryContextStore
-from axio.events import StreamEvent, TextDelta
 from axio.models import ModelSpec
-from axio.permission import PermissionGuard
-from axio.tool import Tool, ToolHandler
-from axio.transport import CompletionTransport, DummyCompletionTransport
-from pydantic import Field
+from axio.transport import DummyCompletionTransport
 
 from .ask_user import make_ask_user_tool
 from .notes import make_notes_tool
@@ -33,9 +38,24 @@ from .todo import DDL as TODO_DDL
 from .todo import make_todo_tool
 
 OnEventCallback = Callable[[str, StreamEvent], Awaitable[None]]
-GuardFactory = Callable[[str, str], PermissionGuard]
+GuardFactory = Callable[[str], PermissionGuard]
 
 WORKDIR = "/workspace"
+
+SANDBOX_CONTEXT = """\
+Sandbox environment
+-------------------
+You are running inside an isolated Docker container. The only path shared with
+the host is /workspace - all project reads and writes happen there.
+Paths inside the container differ from host paths; do not assume they match.
+You have full root access inside this sandbox: install any packages, compilers,
+or CLI tools you need via shell (apt, pip, npm, cargo, …). Modify system files
+freely. This container is yours - treat it that way.
+
+Tool discipline
+---------------
+Only call tools that are declared in your tool definitions.
+Never guess or invent a tool name. If a tool is not in your list, it does not exist."""
 
 # ---------------------------------------------------------------------------
 # Read-only analyst prototype
@@ -43,10 +63,20 @@ WORKDIR = "/workspace"
 
 ANALYST = Agent(
     system="""\
-You are a read-only analyst. Your only job is to read files in the workspace and
-produce a concise, well-structured report answering the question you are given.
-You must not create, modify, or delete any files. Never use write_file or patch_file.
-Return your findings as plain text — the caller will use them directly.""",
+You are a read-only analyst. Your job is to read files in the workspace and produce
+a thorough, precise report answering the question you are given. Other specialists
+will make decisions based solely on your output - omitting details is worse than
+being verbose.
+
+Precision rules:
+- Every claim must cite its source: filename and line number (e.g. `auth.py:42`).
+- Quote the exact lines when they matter; do not paraphrase code or config.
+- If something is absent or you could not find it, say so explicitly: which files you
+  checked and what you searched for. Never invent or guess - "not found" is a valid
+  and valuable answer.
+- Cover edge cases, surprises, and anything that contradicts the obvious interpretation.
+
+You must not create, modify, or delete any files. Never use write_file or patch_file.""",
     transport=DummyCompletionTransport(),
 )
 
@@ -69,42 +99,42 @@ def transport_for(
 
 
 # ---------------------------------------------------------------------------
-# Analyze tool — top-level handler, context carries all runtime deps
+# Analyze tool
 # ---------------------------------------------------------------------------
 
 
 class AnalyzeContext(TypedDict):
-    toolbox: dict[str, Tool[Any]]  # shared toolbox; analyst uses list_files + read_file
+    toolbox: dict[str, Tool[Any]]
     on_event: OnEventCallback
     transport: CompletionTransport
     role_models: dict[str, ModelSpec]
     guard_factory: GuardFactory | None
-    counter: list[int]  # [0] holds the mutable call count
+    counter: list[int]
 
 
-class Analyze(ToolHandler[AnalyzeContext]):
+async def analyze(
+    task: Annotated[str, Field(description="Question or analysis task for the analyst")],
+) -> str:
     """Spawn a read-only analyst subagent to investigate a question and return a report.
-    The analyst can only read files — it cannot modify anything.
+    The analyst can only read files - it cannot modify anything.
     Safe to call many times in parallel; use one per file or question."""
+    context: AnalyzeContext = CONTEXT.get()
+    context["counter"][0] += 1
+    n = context["counter"][0]
+    agent_id = f"analyst#{n}:{task[:40]}"
 
-    task: Annotated[str, Field(description="Question or analysis task for the analyst")]
-
-    async def __call__(self, context: AnalyzeContext) -> str:
-        context["counter"][0] += 1
-        n = context["counter"][0]
-        agent_id = f"analyst#{n}:{self.task[:40]}"
-
-        analyst_transport = transport_for("analyst", context["transport"], context["role_models"])
-        tb = context["toolbox"]
-        read_tools = [tb[k] for k in ("list_files", "read_file") if k in tb]
-        analyst = ANALYST.copy(transport=analyst_transport, tools=read_tools, max_iterations=10)
-        stream = analyst.run_stream(f"Workspace: {WORKDIR}\n\n{self.task}", MemoryContextStore())
-        parts: list[str] = []
-        async for event in stream:
-            await context["on_event"](agent_id, event)
-            if isinstance(event, TextDelta):
-                parts.append(event.delta)
-        return "".join(parts)
+    analyst_transport = transport_for("analyst", context["transport"], context["role_models"])
+    tb = context["toolbox"]
+    read_tools = [tb[k] for k in ("list_files", "read_file") if k in tb]
+    analyst_system = f"Workspace root: {WORKDIR}\n\n---\n\n{ANALYST.system}"
+    analyst = ANALYST.copy(transport=analyst_transport, tools=read_tools, max_iterations=10, system=analyst_system)
+    stream = analyst.run_stream(task, MemoryContextStore())
+    parts: list[str] = []
+    async for event in stream:
+        await context["on_event"](agent_id, event)
+        if isinstance(event, TextDelta):
+            parts.append(event.delta)
+    return "".join(parts)
 
 
 def make_analyze_tool(
@@ -115,11 +145,10 @@ def make_analyze_tool(
     caller_role: str = "specialist",
     guard_factory: GuardFactory | None = None,
 ) -> Tool[AnalyzeContext]:
-    guards: tuple[PermissionGuard, ...] = (guard_factory(caller_role, "analyze"),) if guard_factory else ()
+    guards: tuple[PermissionGuard, ...] = (guard_factory(caller_role),) if guard_factory else ()
     return Tool(
         name="analyze",
-        description=Analyze.__doc__ or "",
-        handler=Analyze,
+        handler=analyze,
         context=AnalyzeContext(
             toolbox=toolbox,
             on_event=on_event,
@@ -133,7 +162,7 @@ def make_analyze_tool(
 
 
 # ---------------------------------------------------------------------------
-# Delegate tool — top-level handler, context carries all runtime deps
+# Delegate tool
 # ---------------------------------------------------------------------------
 
 
@@ -141,49 +170,45 @@ class DelegateContext(TypedDict):
     on_event: OnEventCallback
     transport: CompletionTransport
     role_models: dict[str, ModelSpec]
-    roles: dict[str, tuple[str, Agent]]  # runtime-loaded roles with tools
+    roles: dict[str, tuple[str, Agent]]
     guard_factory: GuardFactory | None
     counters: dict[str, int]
 
 
-class Delegate(ToolHandler[DelegateContext]):
-    """Delegate a task to a specialist team member.
-    The specialist reads the workspace, does the work, and writes output back.
-    Returns the specialist's final response text."""
-
+async def delegate(
     role: Annotated[
         str,
-        Field(
-            description=f"Which specialist to delegate to. One of: {', '.join(ROLE_NAMES)}",
-            json_schema_extra={"enum": ROLE_NAMES},
-        ),
-    ]
+        Field(description=f"Which specialist to delegate to. One of: {', '.join(ROLE_NAMES)}"),
+    ],
     topic: Annotated[
         str,
         Field(description="Short label for this task, e.g. 'auth middleware'. Shown in the status bar."),
-    ]
-    task: Annotated[str, Field(description="Specific instructions for the specialist")]
+    ],
+    task: Annotated[str, Field(description="Specific instructions for the specialist")],
+) -> str:
+    """Delegate a task to a specialist team member.
+    The specialist reads the workspace, does the work, and writes output back.
+    Returns the specialist's final response text."""
+    context: DelegateContext = CONTEXT.get()
+    context["counters"][role] = context["counters"].get(role, 0) + 1
+    n = context["counters"][role]
+    base_id = role if n == 1 else f"{role}#{n}"
+    agent_id = f"{base_id}:{topic}" if topic else base_id
 
-    async def __call__(self, context: DelegateContext) -> str:
-        context["counters"][self.role] = context["counters"].get(self.role, 0) + 1
-        n = context["counters"][self.role]
-        base_id = self.role if n == 1 else f"{self.role}#{n}"
-        agent_id = f"{base_id}:{self.topic}" if self.topic else base_id
-
-        description, proto = context["roles"][self.role]
-        role_transport = transport_for(self.role, context["transport"], context["role_models"])
-        specialist = proto.copy(transport=role_transport)
-        specialist_ctx = AutoCompactStore(MemoryContextStore(), role_transport, keep_recent=6)
-        stream = specialist.run_stream(
-            f"Workspace: {WORKDIR}\n\n{self.task}",
-            specialist_ctx,
-        )
-        parts: list[str] = []
-        async for event in stream:
-            await context["on_event"](agent_id, event)
-            if isinstance(event, TextDelta):
-                parts.append(event.delta)
-        return "".join(parts)
+    description, proto = context["roles"][role]
+    role_transport = transport_for(role, context["transport"], context["role_models"])
+    specialist = proto.copy(transport=role_transport)
+    specialist_ctx = AutoCompactStore(MemoryContextStore(), role_transport, keep_recent=6)
+    stream = specialist.run_stream(
+        f"Workspace: {WORKDIR}\n\n{task}",
+        specialist_ctx,
+    )
+    parts: list[str] = []
+    async for event in stream:
+        await context["on_event"](agent_id, event)
+        if isinstance(event, TextDelta):
+            parts.append(event.delta)
+    return "".join(parts)
 
 
 def make_delegate_tool(
@@ -193,11 +218,10 @@ def make_delegate_tool(
     roles: dict[str, tuple[str, Agent]],
     guard_factory: GuardFactory | None = None,
 ) -> Tool[DelegateContext]:
-    guards: tuple[PermissionGuard, ...] = (guard_factory("orchestrator", "delegate"),) if guard_factory else ()
+    guards: tuple[PermissionGuard, ...] = (guard_factory("orchestrator"),) if guard_factory else ()
     return Tool(
         name="delegate",
-        description=Delegate.__doc__ or "",
-        handler=Delegate,
+        handler=delegate,
         context=DelegateContext(
             on_event=on_event,
             transport=transport,
@@ -231,7 +255,7 @@ async def run_swarm(
         task:          What to build.
         workspace:     Directory where agents read and write files (host path).
         on_event:      Callback for every StreamEvent emitted by any agent.
-        transport:     Base transport — shared session, per-role model applied via copy().
+        transport:     Base transport - shared session, per-role model applied via copy().
         role_models:   Maps role names (and "default") to ModelSpec.
                        Every role not listed falls back to role_models["default"].
         toolbox:       Mapping of tool name → Tool, typically from a DockerSandbox.
@@ -244,7 +268,7 @@ async def run_swarm(
     workspace.mkdir(parents=True, exist_ok=True)
 
     def og(name: str) -> tuple[PermissionGuard, ...]:
-        return (guard_factory("orchestrator", name),) if guard_factory else ()
+        return (guard_factory("orchestrator"),) if guard_factory else ()
 
     todo_path = workspace / ".axio-swarm" / "todos.db"
     todo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,7 +278,6 @@ async def run_swarm(
         await todo_db.execute(TODO_DDL)
         await todo_db.commit()
 
-        # Extend the toolbox with runtime-only tools (analyze, notes).
         toolbox = dict(toolbox)
         toolbox["analyze"] = make_analyze_tool(
             toolbox,
@@ -266,7 +289,11 @@ async def run_swarm(
         )
         toolbox["notes"] = make_notes_tool(workspace)
 
-        roles = load_agents(ROLES_DIR, toolbox=toolbox)
+        raw_roles = load_agents(ROLES_DIR, toolbox=toolbox)
+        roles = {
+            name: (desc, agent.copy(system=f"{SANDBOX_CONTEXT}\n\n---\n\n{agent.system}"))
+            for name, (desc, agent) in raw_roles.items()
+        }
 
         orch_analyze = make_analyze_tool(
             toolbox,
@@ -276,7 +303,7 @@ async def run_swarm(
             caller_role="orchestrator",
             guard_factory=guard_factory,
         )
-        delegate = make_delegate_tool(
+        delegate_tool = make_delegate_tool(
             on_event,
             transport,
             role_models,
@@ -288,14 +315,13 @@ async def run_swarm(
         orch_notes_tool = make_notes_tool(workspace, guards=og("notes"))
 
         orch_transport = transport_for("orchestrator", transport, role_models)
-        roster = "\n".join(f"  {name:20s} — {desc}" for name, (desc, _) in roles.items())
-        orchestrator = make_orchestrator(roster).copy(
+        roster = "\n".join(f"  {name:20s} - {desc}" for name, (desc, _) in roles.items())
+        orchestrator = make_orchestrator(roster, sandbox_context=SANDBOX_CONTEXT).copy(
             transport=orch_transport,
-            tools=[delegate, ask_user_tool, todo_tool, orch_analyze, orch_notes_tool],
+            tools=[delegate_tool, ask_user_tool, todo_tool, orch_analyze, orch_notes_tool],
         )
         orch_ctx = AutoCompactStore(MemoryContextStore(), orch_transport, keep_recent=10)
 
-        # Inject AGENTS.md into the orchestrator's initial message if it exists.
         agents_md = workspace / "AGENTS.md"
         full_task = task
         if agents_md.is_file() and not agents_md.is_symlink():

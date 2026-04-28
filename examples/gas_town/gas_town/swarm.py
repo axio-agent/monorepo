@@ -1,7 +1,7 @@
 """Gas Town swarm: Mayor + Polecats + Witness + Refinery powered by Axio.
 
 Architecture:
-  - Mayor decomposes work into Beads, slingspolecats at them (fire-and-forget),
+  - Mayor decomposes work into Beads, slings polecats at them (fire-and-forget),
     then calls await_beads() to block until all polecats finish.
   - Polecats are a pre-spawned worker pool: N coroutines pulling bead IDs from
     a Channel, each working one bead at a time and looping for more.
@@ -16,7 +16,7 @@ which creates a ``DockerSandbox`` and passes ``{t.name: t for t in sandbox.tools
 The function adds runtime tools (``bead``, ``analyze``) to the toolbox, then calls
 ``load_agents()`` to wire tools into each role from its TOML declaration.
 
-Transport setup lives in __main__.py — swarm.py only uses what it is given.
+Transport setup lives in __main__.py - swarm.py only uses what it is given.
 """
 
 from __future__ import annotations
@@ -29,16 +29,21 @@ from typing import Annotated, Any, TypedDict
 
 import aiosqlite
 from aiochannel import Channel
-from axio.agent import Agent
+from axio import (
+    CONTEXT,
+    Agent,
+    CompletionTransport,
+    Field,
+    MemoryContextStore,
+    PermissionGuard,
+    StreamEvent,
+    TextDelta,
+    Tool,
+)
 from axio.agent_loader import load_agents
 from axio.compaction import AutoCompactStore
-from axio.context import MemoryContextStore
-from axio.events import StreamEvent, TextDelta
 from axio.models import ModelSpec
-from axio.permission import PermissionGuard
-from axio.tool import Tool, ToolHandler
-from axio.transport import CompletionTransport, DummyCompletionTransport
-from pydantic import Field
+from axio.transport import DummyCompletionTransport
 
 from .beads import DDL as BEAD_DDL
 from .beads import (
@@ -52,16 +57,24 @@ from .beads import (
 from .roles import MAYOR
 
 OnEventCallback = Callable[[str, StreamEvent], Awaitable[None]]
-GuardFactory = Callable[[str, str], PermissionGuard]
+GuardFactory = Callable[[str], PermissionGuard]
 
 ROLES_DIR = Path(__file__).parent / "roles"
 
-# Container workspace path — all agents use this path in task messages.
 WORKDIR = "/workspace"
 
+SANDBOX_CONTEXT = """\
+Sandbox environment
+-------------------
+You are running inside an isolated Docker container. The only path shared with
+the host is /workspace - all project reads and writes happen there.
+Paths inside the container differ from host paths; do not assume they match.
+You have full root access inside this sandbox: install any packages, compilers,
+or CLI tools you need via shell (apt, pip, npm, cargo, …). Modify system files
+freely. This container is yours - treat it that way."""
 
 # ---------------------------------------------------------------------------
-# Read-only analyst prototype (tools injected per-call from toolbox)
+# Read-only analyst prototype
 # ---------------------------------------------------------------------------
 
 ANALYST = Agent(
@@ -69,7 +82,7 @@ ANALYST = Agent(
 You are a read-only analyst. Your only job is to read files in the workspace and
 produce a concise, well-structured report answering the question you are given.
 You must not create, modify, or delete any files.
-Return your findings as plain text — the caller will use them directly.""",
+Return your findings as plain text - the caller will use them directly.""",
     transport=DummyCompletionTransport(),
 )
 
@@ -101,33 +114,33 @@ class AnalyzeContext(TypedDict):
     transport: CompletionTransport
     role_models: dict[str, ModelSpec]
     guard_factory: GuardFactory | None
-    counter: list[int]  # [0] holds the mutable call count
-    toolbox: dict[str, Tool[Any]]  # shared toolbox; analyst uses list_files + read_file
+    counter: list[int]
+    toolbox: dict[str, Tool[Any]]
 
 
-class Analyze(ToolHandler[AnalyzeContext]):
+async def analyze(
+    task: Annotated[str, Field(description="Question or analysis task for the analyst")],
+) -> str:
     """Spawn a read-only analyst subagent to investigate a question and return a report.
-    The analyst can only read files — it cannot modify anything.
+    The analyst can only read files - it cannot modify anything.
     Safe to call many times in parallel; use one per file or question."""
+    context: AnalyzeContext = CONTEXT.get()
+    context["counter"][0] += 1
+    n = context["counter"][0]
+    agent_id = f"analyst#{n}:{task[:40]}"
 
-    task: Annotated[str, Field(description="Question or analysis task for the analyst")]
-
-    async def __call__(self, context: AnalyzeContext) -> str:
-        context["counter"][0] += 1
-        n = context["counter"][0]
-        agent_id = f"analyst#{n}:{self.task[:40]}"
-
-        analyst_transport = transport_for("analyst", context["transport"], context["role_models"])
-        tb = context["toolbox"]
-        read_tools = [tb[k] for k in ("list_files", "read_file") if k in tb]
-        analyst = ANALYST.copy(transport=analyst_transport, tools=read_tools, max_iterations=10)
-        stream = analyst.run_stream(f"Workspace: {WORKDIR}\n\n{self.task}", MemoryContextStore())
-        parts: list[str] = []
-        async for event in stream:
-            await context["on_event"](agent_id, event)
-            if isinstance(event, TextDelta):
-                parts.append(event.delta)
-        return "".join(parts)
+    analyst_transport = transport_for("analyst", context["transport"], context["role_models"])
+    tb = context["toolbox"]
+    read_tools = [tb[k] for k in ("list_files", "read_file") if k in tb]
+    analyst_system = f"{SANDBOX_CONTEXT}\n\n---\n\n{ANALYST.system}"
+    analyst = ANALYST.copy(transport=analyst_transport, tools=read_tools, max_iterations=10, system=analyst_system)
+    stream = analyst.run_stream(f"Workspace: {WORKDIR}\n\n{task}", MemoryContextStore())
+    parts: list[str] = []
+    async for event in stream:
+        await context["on_event"](agent_id, event)
+        if isinstance(event, TextDelta):
+            parts.append(event.delta)
+    return "".join(parts)
 
 
 def make_analyze_tool(
@@ -139,11 +152,10 @@ def make_analyze_tool(
     guard_factory: GuardFactory | None = None,
 ) -> Tool:
     """Create an analyze tool backed by *toolbox* read tools."""
-    guards: tuple[PermissionGuard, ...] = (guard_factory(caller_role, "analyze"),) if guard_factory else ()
+    guards: tuple[PermissionGuard, ...] = (guard_factory(caller_role),) if guard_factory else ()
     return Tool(
         name="analyze",
-        description=Analyze.__doc__ or "",
-        handler=Analyze,
+        handler=analyze,
         context=AnalyzeContext(
             on_event=on_event,
             transport=transport,
@@ -157,7 +169,7 @@ def make_analyze_tool(
 
 
 # ---------------------------------------------------------------------------
-# Sling — fire-and-forget polecat dispatch (Mayor's tool)
+# Sling - fire-and-forget polecat dispatch (Mayor's tool)
 # ---------------------------------------------------------------------------
 
 
@@ -166,24 +178,23 @@ class SlingContext(TypedDict):
     queue: Channel[int]
 
 
-class Sling(ToolHandler[SlingContext]):
-    """Sling a polecat at a bead — fire-and-forget, returns immediately.
+async def sling(
+    bead_id: Annotated[int, Field(description="ID of the bead to work on")],
+    topic: Annotated[str, Field(description="Short label for the status bar, e.g. 'auth middleware'")],
+) -> str:
+    """Sling a polecat at a bead - fire-and-forget, returns immediately.
     The polecat picks it up from the pool and works it in the background.
     Sling multiple polecats in one response for parallel execution.
     After slinging all beads for a phase, call await_beads() to wait for completion."""
-
-    bead_id: Annotated[int, Field(description="ID of the bead to work on")]
-    topic: Annotated[str, Field(description="Short label for the status bar, e.g. 'auth middleware'")]
-
-    async def __call__(self, context: SlingContext) -> str:
-        db = context["db"]
-        row = await get_bead(db, self.bead_id)
-        if row is None:
-            return f"Bead {self.bead_id} not found"
-        bead_id, title, *_ = row
-        await mark_in_progress(db, bead_id, assignee=f"polecat:{self.topic}")
-        await context["queue"].put(bead_id)
-        return f"[{bead_id}] {title} → slung to polecat pool"
+    context: SlingContext = CONTEXT.get()
+    db = context["db"]
+    row = await get_bead(db, bead_id)
+    if row is None:
+        return f"Bead {bead_id} not found"
+    bid, title, *_ = row
+    await mark_in_progress(db, bid, assignee=f"polecat:{topic}")
+    await context["queue"].put(bid)
+    return f"[{bid}] {title} → slung to polecat pool"
 
 
 def make_sling_tool(
@@ -191,18 +202,17 @@ def make_sling_tool(
     queue: Channel[int],
     guard_factory: GuardFactory | None = None,
 ) -> Tool[SlingContext]:
-    guards: tuple[PermissionGuard, ...] = (guard_factory("mayor", "sling"),) if guard_factory else ()
+    guards: tuple[PermissionGuard, ...] = (guard_factory("mayor"),) if guard_factory else ()
     return Tool(
         name="sling",
-        description=Sling.__doc__ or "",
-        handler=Sling,
+        handler=sling,
         context=SlingContext(db=db, queue=queue),
         guards=guards,
     )
 
 
 # ---------------------------------------------------------------------------
-# AwaitBeads — block Mayor until all active beads are done
+# AwaitBeads - block Mayor until all active beads are done
 # ---------------------------------------------------------------------------
 
 
@@ -210,42 +220,40 @@ class AwaitBeadsContext(TypedDict):
     db: aiosqlite.Connection
 
 
-class AwaitBeads(ToolHandler[AwaitBeadsContext]):
+async def await_beads(
+    timeout: Annotated[int, Field(default=3600, description="Max seconds to wait (default 3600)")] = 3600,
+) -> str:
     """Wait until all active (open/in_progress) beads are closed or timeout expires.
     Call this after sling()ing all polecats to wait for the convoy phase to complete."""
-
-    timeout: Annotated[int, Field(default=3600, description="Max seconds to wait (default 3600)")]
-
-    async def __call__(self, context: AwaitBeadsContext) -> str:
-        db = context["db"]
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.timeout
-        while True:
-            if not await has_active_beads(db):
-                summary = await bead_summary(db)
-                return f"All beads complete.\n\n{summary}"
-            if loop.time() >= deadline:
-                summary = await bead_summary(db)
-                return f"Timeout ({self.timeout}s). Some beads still active.\n\n{summary}"
-            await asyncio.sleep(5.0)
+    context: AwaitBeadsContext = CONTEXT.get()
+    db = context["db"]
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        if not await has_active_beads(db):
+            summary = await bead_summary(db)
+            return f"All beads complete.\n\n{summary}"
+        if loop.time() >= deadline:
+            summary = await bead_summary(db)
+            return f"Timeout ({timeout}s). Some beads still active.\n\n{summary}"
+        await asyncio.sleep(5.0)
 
 
 def make_await_beads_tool(
     db: aiosqlite.Connection,
     guard_factory: GuardFactory | None = None,
 ) -> Tool[AwaitBeadsContext]:
-    guards: tuple[PermissionGuard, ...] = (guard_factory("mayor", "await_beads"),) if guard_factory else ()
+    guards: tuple[PermissionGuard, ...] = (guard_factory("mayor"),) if guard_factory else ()
     return Tool(
         name="await_beads",
-        description=AwaitBeads.__doc__ or "",
-        handler=AwaitBeads,
+        handler=await_beads,
         context=AwaitBeadsContext(db=db),
         guards=guards,
     )
 
 
 # ---------------------------------------------------------------------------
-# Polecat worker — pre-spawned coroutine, pulls bead IDs from the channel
+# Polecat worker - pre-spawned coroutine, pulls bead IDs from the channel
 # ---------------------------------------------------------------------------
 
 
@@ -286,11 +294,11 @@ async def polecat_worker(
         except asyncio.CancelledError:
             raise
         except Exception:
-            pass  # bead stays in_progress; Witness will flag it on next patrol
+            pass
 
 
 # ---------------------------------------------------------------------------
-# SpawnCrew — long-lived human-facing workers, Mayor's tool
+# SpawnCrew - long-lived human-facing workers, Mayor's tool
 # ---------------------------------------------------------------------------
 
 
@@ -303,31 +311,30 @@ class SpawnCrewContext(TypedDict):
     crew_names: dict[str, int]
 
 
-class SpawnCrew(ToolHandler[SpawnCrewContext]):
-    """Spawn a Crew member — a long-lived coding agent for interactive or complex work.
+async def spawn_crew(
+    name: Annotated[str, Field(description="Name for this Crew member, e.g. 'alice' or 'dom'")],
+    task: Annotated[str, Field(description="Task or context for the Crew member")],
+) -> str:
+    """Spawn a Crew member - a long-lived coding agent for interactive or complex work.
     Unlike polecats, Crew are not bound to a single bead and are not managed by Witness.
     Use for design work, explorations, or tasks requiring sustained back-and-forth.
     Returns the Crew member's output when the session ends."""
+    context: SpawnCrewContext = CONTEXT.get()
+    context["crew_names"][name] = context["crew_names"].get(name, 0) + 1
+    n = context["crew_names"][name]
+    agent_id = f"crew#{n}:{name}" if n > 1 else f"crew:{name}"
 
-    name: Annotated[str, Field(description="Name for this Crew member, e.g. 'alice' or 'dom'")]
-    task: Annotated[str, Field(description="Task or context for the Crew member")]
-
-    async def __call__(self, context: SpawnCrewContext) -> str:
-        context["crew_names"][self.name] = context["crew_names"].get(self.name, 0) + 1
-        n = context["crew_names"][self.name]
-        agent_id = f"crew#{n}:{self.name}" if n > 1 else f"crew:{self.name}"
-
-        crew_transport = transport_for("crew", context["transport"], context["role_models"])
-        member = context["proto"].copy(transport=crew_transport)
-        crew_ctx = AutoCompactStore(MemoryContextStore(), crew_transport, keep_recent=10)
-        task_msg = f"Workspace: {WORKDIR}\n\nYou are {self.name}, a Crew member.\n\n{self.task}"
-        stream = member.run_stream(task_msg, crew_ctx)
-        parts: list[str] = []
-        async for event in stream:
-            await context["on_event"](agent_id, event)
-            if isinstance(event, TextDelta):
-                parts.append(event.delta)
-        return "".join(parts)
+    crew_transport = transport_for("crew", context["transport"], context["role_models"])
+    member = context["proto"].copy(transport=crew_transport)
+    crew_ctx = AutoCompactStore(MemoryContextStore(), crew_transport, keep_recent=10)
+    task_msg = f"Workspace: {WORKDIR}\n\nYou are {name}, a Crew member.\n\n{task}"
+    stream = member.run_stream(task_msg, crew_ctx)
+    parts: list[str] = []
+    async for event in stream:
+        await context["on_event"](agent_id, event)
+        if isinstance(event, TextDelta):
+            parts.append(event.delta)
+    return "".join(parts)
 
 
 def make_spawn_crew_tool(
@@ -338,11 +345,10 @@ def make_spawn_crew_tool(
     db: aiosqlite.Connection,
     guard_factory: GuardFactory | None = None,
 ) -> Tool[SpawnCrewContext]:
-    guards: tuple[PermissionGuard, ...] = (guard_factory("mayor", "spawn_crew"),) if guard_factory else ()
+    guards: tuple[PermissionGuard, ...] = (guard_factory("mayor"),) if guard_factory else ()
     return Tool(
         name="spawn_crew",
-        description=SpawnCrew.__doc__ or "",
-        handler=SpawnCrew,
+        handler=spawn_crew,
         context=SpawnCrewContext(
             on_event=on_event,
             transport=transport,
@@ -356,7 +362,7 @@ def make_spawn_crew_tool(
 
 
 # ---------------------------------------------------------------------------
-# Patrol loops — background asyncio tasks, not tool handlers
+# Patrol loops - background asyncio tasks, not tool handlers
 # ---------------------------------------------------------------------------
 
 
@@ -379,11 +385,7 @@ async def witness_patrol(
     start_delay: float = 30.0,
     max_delay: float = 300.0,
 ) -> None:
-    """Periodically spawn a Witness to monitor polecat health.
-
-    Backs off exponentially when there is no active work, resets on activity.
-    Exits when *stop* is set.
-    """
+    """Periodically spawn a Witness to monitor polecat health."""
     delay = start_delay
     n = 0
     while True:
@@ -405,7 +407,7 @@ async def witness_patrol(
         )
         async for event in witness.run_stream(task_msg, MemoryContextStore()):
             await on_event(f"witness#{n}", event)
-        delay = start_delay  # reset backoff after active patrol
+        delay = start_delay
 
 
 async def refinery_patrol(
@@ -418,11 +420,7 @@ async def refinery_patrol(
     start_delay: float = 45.0,
     max_delay: float = 300.0,
 ) -> None:
-    """Periodically spawn a Refinery to integrate closed polecat work.
-
-    Runs when there are closed beads not yet reviewed.  Backs off when idle.
-    Exits when *stop* is set.
-    """
+    """Periodically spawn a Refinery to integrate closed polecat work."""
     delay = start_delay
     n = 0
     while True:
@@ -447,7 +445,7 @@ async def refinery_patrol(
         )
         async for event in refinery.run_stream(task_msg, MemoryContextStore()):
             await on_event(f"refinery#{n}", event)
-        delay = start_delay  # reset backoff after active patrol
+        delay = start_delay
 
 
 # ---------------------------------------------------------------------------
@@ -463,31 +461,17 @@ async def run_gastown(
     role_models: dict[str, ModelSpec],
     toolbox: dict[str, Tool[Any]],
     guard_factory: GuardFactory | None = None,
-    prompt_fn: Callable[[], str] | None = None,  # noqa: F841  (reserved for future ask_user)
+    prompt_fn: Callable[[], str] | None = None,  # noqa: F841
     num_polecats: int = 5,
 ) -> str:
-    """Run a Gas Town convoy on *task*.
-
-    Args:
-        task:          What to build or accomplish.
-        workspace:     Host-side directory used for the DB path (.gas-town/).
-        on_event:      Callback for every StreamEvent emitted by any agent.
-        transport:     Base transport — shared session, per-role model applied via copy().
-        role_models:   Maps role names (and "default") to ModelSpec.
-                       Recognised roles: "mayor", "polecat", "witness", "refinery", "crew", "analyst".
-        toolbox:       Pre-built file-system tools from the caller (typically from DockerSandbox.tools).
-                       Must contain at minimum: shell, read_file, write_file, list_files, patch_file.
-        guard_factory: Optional ``(role, tool_name) -> PermissionGuard`` factory.
-        prompt_fn:     Reserved for future ask_user integration (not used yet).
-        num_polecats:  Number of pre-spawned polecat workers in the pool (default 5).
-    """
+    """Run a Gas Town convoy on *task*."""
     assert "default" in role_models, "role_models must contain a 'default' key"
 
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 
     def og(name: str) -> tuple[PermissionGuard, ...]:
-        return (guard_factory("mayor", name),) if guard_factory else ()
+        return (guard_factory("mayor"),) if guard_factory else ()
 
     db_path = workspace / ".gas-town" / "beads.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -497,8 +481,6 @@ async def run_gastown(
         await db.execute(BEAD_DDL)
         await db.commit()
 
-        # Extend the sandbox toolbox with runtime tools (bead + analyze).
-        # toolbox is a local copy — mutations do not affect the caller.
         toolbox = dict(toolbox)
         toolbox["bead"] = make_bead_tool(db)
         toolbox["analyze"] = make_analyze_tool(
@@ -509,9 +491,12 @@ async def run_gastown(
             caller_role="specialist",
             guard_factory=None,
         )
-        roles = load_agents(ROLES_DIR, toolbox=toolbox)
+        raw_roles = load_agents(ROLES_DIR, toolbox=toolbox)
+        roles = {
+            name: (desc, agent.copy(system=f"{SANDBOX_CONTEXT}\n\n---\n\n{agent.system}"))
+            for name, (desc, agent) in raw_roles.items()
+        }
 
-        # Polecat worker pool — pre-spawned coroutines pulling from channel.
         polecat_queue: Channel[int] = Channel()
         worker_tasks = [
             asyncio.create_task(
@@ -528,7 +513,6 @@ async def run_gastown(
             for i in range(num_polecats)
         ]
 
-        # Start background patrol tasks.
         stop = asyncio.Event()
         patrol_tasks = [
             asyncio.create_task(
@@ -553,11 +537,10 @@ async def run_gastown(
             ),
         ]
 
-        # Mayor's tools: bead + sling/await_beads + crew + analyze + read tools.
         mayor_bead = make_bead_tool(db, guards=og("bead"))
         sling_tool = make_sling_tool(db, polecat_queue, guard_factory)
         await_beads_tool = make_await_beads_tool(db, guard_factory)
-        spawn_crew = make_spawn_crew_tool(
+        spawn_crew_tool = make_spawn_crew_tool(
             on_event=on_event,
             transport=transport,
             role_models=role_models,
@@ -581,13 +564,14 @@ async def run_gastown(
 
         mayor_transport = transport_for("mayor", transport, role_models)
         mayor = MAYOR.copy(
+            system=f"{SANDBOX_CONTEXT}\n\n---\n\n{MAYOR.system}",
             transport=mayor_transport,
             max_iterations=200,
             tools=[
                 mayor_bead,
                 sling_tool,
                 await_beads_tool,
-                spawn_crew,
+                spawn_crew_tool,
                 mayor_analyze,
                 *mayor_read_tools,
             ],
@@ -602,11 +586,8 @@ async def run_gastown(
                 if isinstance(event, TextDelta):
                     parts.append(event.delta)
         finally:
-            # Close the channel — workers exit their async-for loop cleanly.
             polecat_queue.close()
             await asyncio.gather(*worker_tasks, return_exceptions=True)
-
-            # Signal patrols to stop and wait for them to exit cleanly.
             stop.set()
             await asyncio.gather(*patrol_tasks, return_exceptions=True)
 

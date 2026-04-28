@@ -223,7 +223,7 @@ class TestBroken:
             "42",  # not an object
             "null",
             "{{{{",
-            '{"k": "v"} extra',  # trailing garbage — first field already complete
+            '{"k": "v"} extra',  # trailing garbage - first field already complete
         ],
     )
     def test_no_exception(self, payload: str) -> None:
@@ -596,7 +596,7 @@ class TestComplexEscapes:
             assert text == "\u4e2d", f"wrong at split={split}"
 
     def test_surrogate_pair_split_at_every_position(self) -> None:
-        r"""\\uD83D\\uDE00 (😀) — chunk boundary at every byte."""
+        r"""\\uD83D\\uDE00 (😀) - chunk boundary at every byte."""
         full = r'{"s": "\uD83D\uDE00"}'
         for split in range(len(full)):
             s = ToolArgStream("c")
@@ -620,7 +620,7 @@ class TestComplexEscapes:
         assert text == "😀"
 
     def test_many_unicode_escapes(self) -> None:
-        """1000 unicode escape sequences — correctness and no quadratic cost."""
+        """1000 unicode escape sequences - correctness and no quadratic cost."""
         chars = "ABCDEFGHIJ"
         escaped = "".join(f"\\u{ord(c):04X}" for c in chars * 100)
         payload = f'{{"s": "{escaped}"}}'
@@ -688,7 +688,7 @@ class TestPerf:
         calls = _step_calls(payload)
         # Each comma/} ending a raw value triggers one reprocess → at most 2×
         assert calls <= 2 * len(payload), f"super-linear: {calls} calls for {len(payload)} chars"
-        # In practice close to 1× — ratio must be sane
+        # In practice close to 1× - ratio must be sane
         assert calls / len(payload) < 1.5, f"too many reprocess calls: {calls / len(payload):.2f}×"
 
     def test_step_calls_scale_linearly(self) -> None:
@@ -727,7 +727,7 @@ class TestPerf:
         assert chunked_calls == batch_calls, f"chunk_size={chunk_size}: chunked={chunked_calls} != batch={batch_calls}"
 
     def test_many_short_fields(self) -> None:
-        """100 fields — correctness + call count stays linear."""
+        """100 fields - correctness + call count stays linear."""
         obj = {f"field_{i:03d}": f"value number {i}" for i in range(100)}
         payload = json.dumps(obj)
         got = collect(payload)

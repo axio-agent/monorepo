@@ -121,7 +121,7 @@ async def test_large_message_compressed_on_disk(db_path: Path) -> None:
     finally:
         await c.close()
 
-    # Inspect raw bytes on disk — should start with gzip:
+    # Inspect raw bytes on disk - should start with gzip:
     async with aiosqlite.connect(str(db_path)) as raw:
         async with raw.execute("SELECT content FROM axio_context_messages") as cur:
             row = await cur.fetchone()

@@ -1,4 +1,4 @@
-"""Tests for AnthropicTransport — KV cache and rate-limit handling."""
+"""Tests for AnthropicTransport - KV cache and rate-limit handling."""
 
 from __future__ import annotations
 
@@ -15,17 +15,14 @@ from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 from axio.types import StopReason
 
 from axio_transport_anthropic import ANTHROPIC_MODELS, AnthropicTransport, _convert_messages
 
 
-class GetWeather(ToolHandler[Any]):
-    location: str
-
-    async def __call__(self, context: Any) -> str:
-        return f"Weather in {self.location}"
+async def get_weather(location: str) -> str:
+    return f"Weather in {location}"
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +188,8 @@ class TestKVCache:
 
     def test_last_tool_has_cache_control(self) -> None:
         t = AnthropicTransport(model=ANTHROPIC_MODELS["claude-sonnet-4-6"])
-        tool_a = Tool(name="tool_a", description="A", handler=GetWeather)
-        tool_b = Tool(name="tool_b", description="B", handler=GetWeather)
+        tool_a: Tool[Any] = Tool(name="tool_a", description="A", handler=get_weather)
+        tool_b: Tool[Any] = Tool(name="tool_b", description="B", handler=get_weather)
         payload = t.build_payload([], [tool_a, tool_b], "")
         tools = payload["tools"]
         assert "cache_control" not in tools[0]
@@ -200,7 +197,7 @@ class TestKVCache:
 
     def test_single_tool_has_cache_control(self) -> None:
         t = AnthropicTransport(model=ANTHROPIC_MODELS["claude-sonnet-4-6"])
-        tool = Tool(name="my_tool", description="desc", handler=GetWeather)
+        tool: Tool[Any] = Tool(name="my_tool", description="desc", handler=get_weather)
         payload = t.build_payload([], [tool], "")
         assert payload["tools"][0]["cache_control"] == {"type": "ephemeral"}
 
@@ -216,7 +213,7 @@ class TestKVCache:
     ) -> None:
         server, _ = fake_server
         server.responses.append(_text_sse("ok"))
-        tool = Tool(name="my_tool", description="desc", handler=GetWeather)
+        tool: Tool[Any] = Tool(name="my_tool", description="desc", handler=get_weather)
         await _collect(transport.stream([], [tool], "Be helpful."))
         payload = server.received_payloads[0]
         assert payload["system"][0]["cache_control"] == {"type": "ephemeral"}
@@ -393,7 +390,7 @@ class TestMessageConversion:
 
 
 # ---------------------------------------------------------------------------
-# SSE streaming — tool calls and reasoning
+# SSE streaming - tool calls and reasoning
 # ---------------------------------------------------------------------------
 
 

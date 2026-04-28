@@ -6,17 +6,17 @@
 
 ChatGPT OAuth transport for [axio](https://github.com/mosquito/axio-agent) using the OpenAI Responses API.
 
-Authenticates via the same OAuth2 PKCE flow used by the ChatGPT desktop client — no API key purchase required; your ChatGPT subscription covers usage. Implements the OpenAI Responses API (not the legacy chat completions endpoint).
+Authenticates via the same OAuth2 PKCE flow used by the ChatGPT desktop client - no API key purchase required; your ChatGPT subscription covers usage. Implements the OpenAI Responses API (not the legacy chat completions endpoint).
 
 ## Features
 
-- **No API key purchase** — authenticates with your ChatGPT account via OAuth2 PKCE
-- **Responses API** — uses OpenAI's newer Responses endpoint (`/backend-api/codex/responses`)
-- **Automatic token refresh** — access tokens are silently refreshed before expiry; callers notified via `on_auth_refresh`
-- **Full streaming** — incremental text, reasoning, and tool-call events via SSE
-- **Tool calling** — works with all axio tool handlers; parallel tool calls enabled
-- **Retry logic** — automatic backoff on 429 and 5xx responses; honours `Retry-After` header
-- **aiohttp-based** — non-blocking I/O throughout
+- **No API key purchase** - authenticates with your ChatGPT account via OAuth2 PKCE
+- **Responses API** - uses OpenAI's newer Responses endpoint (`/backend-api/codex/responses`)
+- **Automatic token refresh** - access tokens are silently refreshed before expiry; callers notified via `on_auth_refresh`
+- **Full streaming** - incremental text, reasoning, and tool-call events via SSE
+- **Tool calling** - works with all axio tool handlers; parallel tool calls enabled
+- **Retry logic** - automatic backoff on 429 and 5xx responses; honours `Retry-After` header
+- **aiohttp-based** - non-blocking I/O throughout
 
 ## Installation
 

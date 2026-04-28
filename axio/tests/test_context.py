@@ -1,4 +1,4 @@
-"""Tests for ContextStore — MemoryContextStore, ABC classmethods, compact_context."""
+"""Tests for ContextStore - MemoryContextStore, ABC classmethods, compact_context."""
 
 from __future__ import annotations
 

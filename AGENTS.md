@@ -8,14 +8,14 @@ Guidance for AI coding agents working in this repository.
 
 This is a **uv workspace** monorepo. Each subdirectory is an independent Python package with its own `pyproject.toml`, `src/` layout, and `tests/`. They share a single `uv.lock` and a single `.venv`.
 
-- `axio/` — core library; start here when unsure
-- `axio-tui/` — TUI application and plugin discovery
-- `axio-transport-*/` — transport implementations
-- `axio-tools-*/` — tool providers
-- `axio-context-sqlite/` — SQLite context store
-- `axio-tui-guards/` — permission guard plugins
-- `docs/` — Sphinx sources and markdown-pytest doc tests
-- `examples/` — runnable example scripts
+- `axio/` - core library; start here when unsure
+- `axio-tui/` - TUI application and plugin discovery
+- `axio-transport-*/` - transport implementations
+- `axio-tools-*/` - tool providers
+- `axio-context-sqlite/` - SQLite context store
+- `axio-tui-guards/` - permission guard plugins
+- `docs/` - Sphinx sources and markdown-pytest doc tests
+- `examples/` - runnable example scripts
 
 | Package | Purpose |
 |---|---|
@@ -72,7 +72,7 @@ cd axio-agent
 uv sync --all-packages   # installs all workspace members + dev deps into .venv
 ```
 
-After sync, all local packages resolve to their workspace sources via `[tool.uv.sources]` — no `pip install -e` or PYTHONPATH hacks needed.
+After sync, all local packages resolve to their workspace sources via `[tool.uv.sources]` - no `pip install -e` or PYTHONPATH hacks needed.
 
 ---
 
@@ -91,19 +91,23 @@ Always run `make linter` and `make typing` before considering a task done.
 
 ## Architecture
 
-### Key invariant: `axio/__init__.py` is empty
+### Public API (`axio/__init__.py`)
 
-Never import from `axio` directly. Always use submodules:
+Common symbols are importable directly from `axio`:
 
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
-from axio.tool import Tool, ToolHandler
-from axio.transport import CompletionTransport
-from axio.events import TextDelta, ToolUseStart, ToolInputDelta, IterationEnd, SessionEndEvent
-from axio.types import StopReason, Usage
-from axio.exceptions import GuardError, HandlerError
+from axio import Agent, Tool, Field, PermissionGuard, IterationEnd
+from axio import StopReason, Usage, GuardError, HandlerError
+from axio import ContextStore, MemoryContextStore, CompletionTransport
+```
+
+Submodule-only (not re-exported at top level):
+
+```python
 from axio.testing import StubTransport, make_text_response, make_tool_use_response
+from axio.schema import build_tool_schema
+from axio.agent_loader import AgentSpec, load_agents
+from axio.compaction import AutoCompactStore, CompactionStrategy
 ```
 
 ### Types (`axio/types.py`)
@@ -198,7 +202,7 @@ class CompletionTransport(Protocol):
 
 Contract:
 - The stream **must** end with exactly one `IterationEnd` event
-- Do not suppress exceptions — let them propagate as `Error` events or raise naturally
+- Do not suppress exceptions - let them propagate as `Error` events or raise naturally
 - `messages` contains the full conversation history except the current user input (already appended)
 - `tools` is the Tool definitions from the Agent's registry
 
@@ -218,8 +222,8 @@ class Agent:
 ```
 
 Public API:
-- `agent.run_stream(user_message, context) -> AgentStream` — streaming entry point, returns an async iterator that yields `StreamEvent` plus `SessionEndEvent`
-- `await agent.run(user_message, context) -> str` — convenience wrapper, returns final text
+- `agent.run_stream(user_message, context) -> AgentStream` - streaming entry point, returns an async iterator that yields `StreamEvent` plus `SessionEndEvent`
+- `await agent.run(user_message, context) -> str` - convenience wrapper, returns final text
 
 **Loop per iteration**:
 1. Call `transport.stream(history, tools, system)` → `AsyncIterator[StreamEvent]`
@@ -238,35 +242,33 @@ Tool dispatch happens **before** appending to context. This prevents orphaned `T
 
 ### Tool system (`axio/tool.py`)
 
-`ToolHandler` is a **Pydantic v2 `BaseModel`**. Fields declare the tool's input JSON schema. Override `async def __call__(self) -> str` for execution.
+A tool handler is a plain `async def` function. Parameters become the input JSON schema; the docstring becomes the description. Use `Annotated` + `Field` from `axio.field` to add per-parameter descriptions, defaults, or numeric bounds.
 
 ```python
-class MyTool(ToolHandler):
-    path: str
-    content: str
-
-    async def __call__(self) -> str:
-        Path(self.path).write_text(self.content)
-        return f"wrote {len(self.content)} bytes"
+async def write_file(path: str, content: str) -> str:
+    """Write content to a file at the given path."""
+    Path(path).write_text(content)
+    return f"wrote {len(content)} bytes"
 ```
 
 `Tool` is a `dataclass(frozen=True, slots=True)`:
 
 ```python
 @dataclass(frozen=True, slots=True)
-class Tool:
-    name: ToolName                     # Unique identifier
-    description: str                   # Shown to LLM
-    handler: type[ToolHandler]         # Pydantic BaseModel subclass
+class Tool[T]:
+    name: ToolName                         # Unique identifier
+    handler: Callable[..., Awaitable[str]] # Plain async function
+    description: str = ""                  # Defaults to handler.__doc__
     guards: tuple[PermissionGuard, ...] = ()  # Run sequentially; any GuardError denies
-    concurrency: int | None = None     # Optional per-tool semaphore limit
+    concurrency: int | None = None         # Optional per-tool semaphore limit
+    context: T = ...                       # Runtime state for CONTEXT.get()
 ```
 
 `Tool.__call__(**kwargs)` pipeline:
 1. Acquire semaphore (if `concurrency` is set)
-2. `handler.model_validate(kwargs)` — Pydantic validation
-3. Guards run **sequentially**: each receives the handler instance; raise `GuardError` to deny
-4. `await instance()` — execute handler
+2. Field validation from type hints / `FieldInfo`
+3. Guards run **sequentially**: each receives `(tool, **kwargs)` and returns modified kwargs or raises `GuardError`
+4. `await handler(**kwargs)` - execute handler
 
 ### ContextStore (`axio/context.py`)
 
@@ -286,8 +288,8 @@ class ContextStore(ABC):
 ```
 
 **Implementations**:
-- `MemoryContextStore` — in-process, ephemeral storage
-- `axio-context-sqlite` — `SQLiteContextStore` for persistence across sessions
+- `MemoryContextStore` - in-process, ephemeral storage
+- `axio-context-sqlite` - `SQLiteContextStore` for persistence across sessions
 
 ### PermissionGuard (`axio/permission.py`)
 
@@ -296,25 +298,23 @@ class ContextStore(ABC):
 ```python
 class PermissionGuard(ABC):
     @abstractmethod
-    async def check(self, handler: ToolHandler) -> ToolHandler:
-        """Return handler to allow, raise GuardError to deny."""
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+        """Return (possibly modified) kwargs to allow, raise GuardError to deny."""
         ...
 ```
 
-Guards are not limited to access control. Because `check()` receives the **fully-parsed
-`ToolHandler` instance** (all Pydantic fields validated) before the tool executes, guards
-are also the right place for **logging, auditing, and display**:
+Guards are not limited to access control. Because `check()` receives the `Tool` object
+and the raw kwargs before the handler executes, guards are also the right place for
+**logging, auditing, and display**:
 
 ```python
 class AuditGuard(PermissionGuard):
-    async def check(self, handler: ToolHandler) -> ToolHandler:
-        logger.info("tool=%s args=%s", type(handler).__name__, handler.model_dump())
-        return handler  # always allow; raise GuardError to deny
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+        logger.info("tool=%s args=%s", tool.name, kwargs)
+        return kwargs  # always allow; raise GuardError to deny
 ```
 
-See `examples/agent_swarm/main.py` (`RoleGuard`) for a production example: the swarm
-attaches one guard per tool to print each call to the Rich console — replacing custom
-`ToolFieldStart`/`ToolFieldDelta`/`ToolFieldEnd` event handling with a single guard.
+See `examples/agent_swarm/agent_swarm/__main__.py` (`RoleGuard`) for a production example.
 
 **ConcurrentGuard**: Use as base when the guard itself must be rate-limited (e.g. LLM-based approval). Provides internal semaphore management.
 
@@ -350,7 +350,7 @@ Helper classes and functions for testing:
 | `make_tool_use_response(tool_name, tool_id, tool_input, iteration, usage)` | `list[StreamEvent]` | Build a tool_use response sequence |
 | `make_stub_transport()` | `StubTransport` | Pre-configured with "Hello world" text response |
 | `make_ephemeral_context()` | `MemoryContextStore` | Fresh empty context |
-| `make_echo_tool()` | `Tool` | Tool with `MsgInput` handler |
+| `make_echo_tool()` | `Tool` | Tool with a plain async handler that returns its `msg` arg as JSON |
 
 ```python
 # Example: StubTransport with multiple responses
@@ -370,7 +370,7 @@ Plugins register via `pyproject.toml` entry points and are discovered by `axio-t
 
 | Group | Registers |
 |---|---|
-| `axio.tools` | `ToolHandler` subclasses |
+| `axio.tools` | plain async handler functions |
 | `axio.tools.settings` | `ToolsPlugin` (dynamic tool sets, e.g. MCP) |
 | `axio.transport` | `CompletionTransport` implementations |
 | `axio.transport.settings` | TUI settings screens (Textual `Screen` subclasses) |
@@ -454,9 +454,8 @@ uv run --directory docs pytest -v guides/writing-transports.md
 
 ## What not to do
 
-- **Do not** import from `axio` top-level (`from axio import Agent` is always wrong — `axio/__init__.py` is intentionally empty).
-- **Do not** run `uv run pytest` or `ruff` from the repo root — use `make`.
-- **Do not** add dependencies to the root `pyproject.toml` — it is a workspace manifest only.
-- **Do not** edit `uv.lock` manually — it is generated by `uv sync`.
-- **Do not** use `asyncio_mode = "auto"` in ad-hoc scripts — it is only for pytest.
+- **Do not** run `uv run pytest` or `ruff` from the repo root - use `make`.
+- **Do not** add dependencies to the root `pyproject.toml` - it is a workspace manifest only.
+- **Do not** edit `uv.lock` manually - it is generated by `uv sync`.
+- **Do not** use `asyncio_mode = "auto"` in ad-hoc scripts - it is only for pytest.
 - **Do not** add a guard's blocking I/O in the hot path without subclassing `ConcurrentGuard`.

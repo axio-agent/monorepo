@@ -6,18 +6,18 @@
 
 OpenAI-compatible streaming transport for [axio](https://github.com/mosquito/axio-agent).
 
-Works with any API that speaks the OpenAI chat completions format — OpenAI itself, local models via Ollama/vLLM/LM Studio, Nebius AI Studio, OpenRouter, and any other compatible provider.
+Works with any API that speaks the OpenAI chat completions format - OpenAI itself, local models via Ollama/vLLM/LM Studio, Nebius AI Studio, OpenRouter, and any other compatible provider.
 
 ## Features
 
-- **Full SSE streaming** — parses `data:` chunks incrementally; no waiting for full responses
-- **Automatic retry** — configurable backoff on 429 and 5xx responses; honours `Retry-After` header
-- **Tool calling** — streams tool-use JSON fragments as `ToolInputDelta` events; parallel tool calls supported
-- **Reasoning support** — `<think>...</think>` blocks emitted as `ReasoningDelta` events
-- **Embeddings** — `embed()` method for models that support `/v1/embeddings`
-- **Sub-transports** — `NebiusTransport`, `OpenRouterTransport`, and `OpenAICompatibleTransport` for common providers
-- **aiohttp-based** — zero blocking I/O
-- **Optional TUI settings screen** — install with `[tui]` extra for a Textual configuration UI
+- **Full SSE streaming** - parses `data:` chunks incrementally; no waiting for full responses
+- **Automatic retry** - configurable backoff on 429 and 5xx responses; honours `Retry-After` header
+- **Tool calling** - streams tool-use JSON fragments as `ToolInputDelta` events; parallel tool calls supported
+- **Reasoning support** - `<think>...</think>` blocks emitted as `ReasoningDelta` events
+- **Embeddings** - `embed()` method for models that support `/v1/embeddings`
+- **Sub-transports** - `NebiusTransport`, `OpenRouterTransport`, and `OpenAICompatibleTransport` for common providers
+- **aiohttp-based** - zero blocking I/O
+- **Optional TUI settings screen** - install with `[tui]` extra for a Textual configuration UI
 
 ## Installation
 
@@ -232,7 +232,7 @@ transport = OpenAICompatibleTransport(
 )
 ```
 
-`fetch_models()` is a no-op for this transport — the model list is provided at construction time.
+`fetch_models()` is a no-op for this transport - the model list is provided at construction time.
 
 The JSON configuration format used by the TUI is:
 

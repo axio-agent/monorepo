@@ -1,4 +1,4 @@
-"""Tests for RunPython tool handler."""
+"""Tests for run_python tool handler."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from typing import Any
 
 import pytest
 
-from axio_tools_local.run_python import RunPython
+from axio_tools_local.run_python import run_python
 
 
 async def run(code: str, **kwargs: Any) -> str:
-    return await RunPython(code=code, **kwargs)({})
+    return await run_python(code=code, **kwargs)
 
 
 class TestRunPythonBasic:
@@ -100,13 +100,3 @@ class TestRunPythonCleanup:
         monkeypatch.setenv("TMPDIR", str(tmp_path))
         await run("import time; time.sleep(10)", timeout=1)
         assert list(tmp_path.glob("*.py")) == []
-
-
-class TestRunPythonMisc:
-    async def test_repr_contains_code(self) -> None:
-        assert "x = 1" in repr(RunPython(code="x = 1"))
-
-    async def test_repr_truncates_long_code(self) -> None:
-        long_code = "x = " + "1" * 100
-        r = repr(RunPython(code=long_code))
-        assert len(r) < 200

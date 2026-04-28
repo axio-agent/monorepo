@@ -1,4 +1,4 @@
-"""Tests for CodexTransport — message conversion, SSE parsing, token refresh."""
+"""Tests for CodexTransport - message conversion, SSE parsing, token refresh."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from axio.events import (
 )
 from axio.exceptions import StreamError
 from axio.messages import Message
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 from axio.types import StopReason, Usage
 
 from axio_transport_codex.transport import (
@@ -38,12 +38,8 @@ from axio_transport_codex.transport import (
 # ---------------------------------------------------------------------------
 
 
-class GetWeather(ToolHandler[Any]):
-    location: str
-    units: str = "celsius"
-
-    async def __call__(self, context: Any) -> str:
-        return f"Weather in {self.location}: 22{self.units[0]}"
+async def get_weather(location: str, units: str = "celsius") -> str:
+    return f"Weather in {location}: 22{units[0]}"
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +84,7 @@ def _tool_call_response_sse(
 ) -> str:
     """Build SSE for a tool call response in Responses API format."""
     lines = ""
-    # Tool use start — item has both "id" (item_id) and "call_id"
+    # Tool use start - item has both "id" (item_id) and "call_id"
     item_id = f"fc_{call_id}"
     lines += _sse_event(
         {
@@ -97,7 +93,7 @@ def _tool_call_response_sse(
             "item": {"type": "function_call", "id": item_id, "call_id": call_id, "name": name},
         }
     )
-    # Arguments delta — references item_id, not call_id
+    # Arguments delta - references item_id, not call_id
     mid = len(arguments) // 2
     for part in [arguments[:mid], arguments[mid:]]:
         if part:
@@ -386,7 +382,7 @@ def test_build_payload_no_instructions_when_empty() -> None:
 
 def test_build_payload_with_tools() -> None:
     t = CodexTransport(model=CODEX_MODELS["gpt-4.1"])
-    tool = Tool(name="get_weather", description="Get weather", handler=GetWeather)
+    tool: Tool[Any] = Tool(name="get_weather", description="Get weather", handler=get_weather)
     payload = t.build_payload([], [tool], "")
     assert len(payload["tools"]) == 1
     assert payload["tool_choice"] == "auto"
@@ -509,7 +505,7 @@ def test_strip_title_recursive() -> None:
 
 
 def test_convert_tools() -> None:
-    tool = Tool(name="get_weather", description="Get weather", handler=GetWeather)
+    tool: Tool[Any] = Tool(name="get_weather", description="Get weather", handler=get_weather)
     result = _convert_tools([tool])
     assert len(result) == 1
     assert result[0]["type"] == "function"
@@ -775,7 +771,7 @@ def _tool_call_response_sse_no_output(
                     "delta": part,
                 }
             )
-    # response.completed with empty output — does NOT list function_call items
+    # response.completed with empty output - does NOT list function_call items
     lines += _sse_event(
         {
             "type": "response.completed",
@@ -809,5 +805,5 @@ async def test_parse_sse_empty_output_reports_end_turn(
 
     ends = [e for e in events if isinstance(e, IterationEnd)]
     assert len(ends) == 1
-    # Transport faithfully reports what the API said — agent handles the mismatch
+    # Transport faithfully reports what the API said - agent handles the mismatch
     assert ends[0].stop_reason == StopReason.end_turn

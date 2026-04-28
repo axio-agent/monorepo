@@ -59,7 +59,7 @@ axio
 ```
 
 ```{image} _static/tui-screenshot.svg
-:alt: Axio TUI — terminal interface showing a conversation with tool calls
+:alt: Axio TUI - terminal interface showing a conversation with tool calls
 :width: 100%
 ```
 
@@ -69,13 +69,13 @@ conversation, and watch the agent call tools in real time.
 
 ## Key features
 
-- **Model selection** — switch between any discovered transport and model
-- **Session persistence** — conversations are stored in SQLite and survive
+- **Model selection** - switch between any discovered transport and model
+- **Session persistence** - conversations are stored in SQLite and survive
   restarts
-- **Tool visibility** — every tool call is shown with its input and output
-- **Permission guards** — guards prompt for approval before executing
+- **Tool visibility** - every tool call is shown with its input and output
+- **Permission guards** - guards prompt for approval before executing
   sensitive operations
-- **Sub-agents** — spawn child agents for parallel tasks
+- **Sub-agents** - spawn child agents for parallel tasks
 
 ## Web mode
 

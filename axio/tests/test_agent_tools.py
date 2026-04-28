@@ -16,52 +16,43 @@ from axio.events import (
     ToolResult,
     ToolUseStart,
 )
-from axio.testing import MsgInput, StubTransport, make_text_response, make_tool_use_response
-from axio.tool import Tool, ToolHandler
+from axio.testing import StubTransport, make_echo_tool, make_text_response, make_tool_use_response
+from axio.tool import Tool
 from axio.types import StopReason, Usage
 
-_calls: list[dict[str, Any]] = []
+calls_log: list[dict[str, Any]] = []
 
 
-class TrackingHandler(ToolHandler[Any]):
-    msg: str
-
-    async def __call__(self, context: Any) -> str:
-        _calls.append(self.model_dump())
-        return self.model_dump_json()
+async def _tracking(msg: str) -> str:
+    data = {"msg": msg}
+    calls_log.append(data)
+    return json.dumps(data)
 
 
-class XHandler(ToolHandler[Any]):
-    x: int
-
-    async def __call__(self, context: Any) -> str:
-        return "a"
+async def _handler_x(x: int) -> str:
+    return "a"
 
 
-class YHandler(ToolHandler[Any]):
-    y: int
-
-    async def __call__(self, context: Any) -> str:
-        return "b"
+async def _handler_y(y: int) -> str:
+    return "b"
 
 
-class BadHandler(ToolHandler[Any]):
-    async def __call__(self, context: Any) -> str:
-        raise ValueError("boom")
+async def _bad(**kwargs: object) -> str:
+    raise ValueError("boom")
 
 
 class TestToolInvocation:
     async def test_handler_called(self) -> None:
-        _calls.clear()
-        tool = Tool(name="echo", description="echo", handler=TrackingHandler)
+        calls_log.clear()
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=_tracking)
         transport = StubTransport([make_tool_use_response("echo", "c1", {"msg": "hi"}), make_text_response("Done")])
         agent = Agent(system="test", tools=[tool], transport=transport)
         await agent.run("go", MemoryContextStore())
-        assert len(_calls) == 1
-        assert _calls[0] == {"msg": "hi"}
+        assert len(calls_log) == 1
+        assert calls_log[0] == {"msg": "hi"}
 
     async def test_result_in_context(self) -> None:
-        tool = Tool(name="echo", description="echo", handler=MsgInput)
+        tool = make_echo_tool()
         transport = StubTransport([make_tool_use_response("echo", "c1", {"msg": "hi"}), make_text_response("Done")])
         ctx = MemoryContextStore()
         agent = Agent(system="test", tools=[tool], transport=transport)
@@ -79,22 +70,16 @@ class TestTwoToolsOneResponse:
         """C2: every ToolUseBlock has a corresponding ToolResultBlock."""
         calls: list[str] = []
 
-        class AHandler(ToolHandler[Any]):
-            x: int
+        async def _a(x: int) -> str:
+            calls.append("a")
+            return "a"
 
-            async def __call__(self, context: Any) -> str:
-                calls.append("a")
-                return "a"
+        async def _b(y: int) -> str:
+            calls.append("b")
+            return "b"
 
-        class BHandler(ToolHandler[Any]):
-            y: int
-
-            async def __call__(self, context: Any) -> str:
-                calls.append("b")
-                return "b"
-
-        tool_a = Tool(name="a", description="a", handler=AHandler)
-        tool_b = Tool(name="b", description="b", handler=BHandler)
+        tool_a: Tool[Any] = Tool(name="a", description="a", handler=_a)
+        tool_b: Tool[Any] = Tool(name="b", description="b", handler=_b)
         transport = StubTransport(
             [
                 [
@@ -128,7 +113,7 @@ class TestUnknownTool:
 
 class TestHandlerException:
     async def test_exception_wrapped_as_error_result(self) -> None:
-        tool = Tool(name="bad", description="bad", handler=BadHandler)
+        tool: Tool[Any] = Tool(name="bad", description="bad", handler=_bad)
         transport = StubTransport([make_tool_use_response("bad", "c1", {}), make_text_response("Done")])
         ctx = MemoryContextStore()
         agent = Agent(system="test", tools=[tool], transport=transport)
@@ -145,7 +130,7 @@ class TestHandlerException:
 class TestMalformedJson:
     async def test_malformed_json_returns_error_result(self) -> None:
         """Truncated JSON → ToolResult(is_error=True), loop continues."""
-        tool = Tool(name="list_files", description="list files", handler=MsgInput)
+        tool = make_echo_tool()
         # Truncated JSON: '{"directory": ".'  (missing closing quote and brace)
         truncated = '{"msg": ".'
         transport = StubTransport(
@@ -168,14 +153,14 @@ class TestMalformedJson:
         assert tool_results[0].is_error
         assert tool_results[0].tool_use_id == "c1"
 
-        # Loop should continue — we get a SessionEndEvent with end_turn
+        # Loop should continue - we get a SessionEndEvent with end_turn
         session_ends = [e for e in events if isinstance(e, SessionEndEvent)]
         assert len(session_ends) == 1
         assert session_ends[0].stop_reason == StopReason.end_turn
 
     async def test_mixed_valid_and_malformed_tools(self) -> None:
         """Two parallel tool calls: one valid, one malformed. Valid runs, malformed errors."""
-        tool = Tool(name="echo", description="echo", handler=MsgInput)
+        tool = make_echo_tool()
         valid_args = json.dumps({"msg": "hello"})
         malformed_args = '{"msg": "trunc'
 
@@ -209,7 +194,7 @@ class TestMalformedJson:
 class TestToolResultCarriesData:
     async def test_content_and_input_populated(self) -> None:
         """ToolResult events carry the tool input dict and result content string."""
-        tool = Tool(name="echo", description="echo", handler=MsgInput)
+        tool = make_echo_tool()
         transport = StubTransport([make_tool_use_response("echo", "c1", {"msg": "hi"}), make_text_response("Done")])
         agent = Agent(system="test", tools=[tool], transport=transport)
         events: list[StreamEvent] = []
@@ -225,7 +210,7 @@ class TestToolResultCarriesData:
 
     async def test_error_result_has_content(self) -> None:
         """Error ToolResult events carry the error message as content."""
-        tool = Tool(name="bad", description="bad", handler=BadHandler)
+        tool: Tool[Any] = Tool(name="bad", description="bad", handler=_bad)
         transport = StubTransport([make_tool_use_response("bad", "c1", {}), make_text_response("Done")])
         agent = Agent(system="test", tools=[tool], transport=transport)
         events: list[StreamEvent] = []
@@ -242,7 +227,7 @@ class TestToolResultCarriesData:
 class TestStopReasonOverride:
     async def test_stop_reason_override_when_tool_blocks_present(self) -> None:
         """Transport returns end_turn with tool calls → agent overrides to tool_use and dispatches."""
-        tool = Tool(name="echo", description="echo", handler=MsgInput)
+        tool = make_echo_tool()
         # Transport returns end_turn but includes tool call events
         transport = StubTransport(
             [

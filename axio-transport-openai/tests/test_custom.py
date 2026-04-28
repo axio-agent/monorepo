@@ -163,7 +163,7 @@ def test_roundtrip_unknown_capability_dropped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# fetch_models — must be a no-op (does NOT reset models to OPENAI_MODELS)
+# fetch_models - must be a no-op (does NOT reset models to OPENAI_MODELS)
 # ---------------------------------------------------------------------------
 
 
@@ -182,7 +182,7 @@ async def test_fetch_models_noop_on_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Streaming — direct (no routing; transport IS the provider)
+# Streaming - direct (no routing; transport IS the provider)
 # ---------------------------------------------------------------------------
 
 

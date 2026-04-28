@@ -1,9 +1,10 @@
+import os
+import sys
+
+
 project = "Axio"
 copyright = "2025, Axio contributors"
 author = "Axio contributors"
-
-import os
-import sys
 
 sys.path.insert(0, os.path.abspath("../axio/src"))
 

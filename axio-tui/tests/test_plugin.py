@@ -1,45 +1,36 @@
-"""Tests for axio_tui.plugin — entry-point-based discovery functions."""
+"""Tests for axio_tui.plugin - entry-point-based discovery functions."""
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from axio.permission import PermissionGuard
-from axio.tool import ToolHandler
+from axio.tool import Tool
 
 from axio_tui.plugin import discover_guards, discover_tools, discover_transports
 
 
-class _EchoHandler(ToolHandler[Any]):
+async def _echo_handler(text: str = "") -> str:
     """Echo back input text."""
-
-    text: str = ""
-
-    async def __call__(self, context: Any) -> str:
-        return self.text
+    return text
 
 
-class _NoDocHandler(ToolHandler[Any]):
-    text: str = ""
-
-    async def __call__(self, context: Any) -> str:
-        return self.text
+async def _no_doc_handler(text: str = "") -> str:
+    return text
 
 
-class _ConcurrentHandler(ToolHandler[Any]):
+async def _concurrent_handler(text: str = "") -> str:
     """Handler with concurrency limit."""
+    return text
 
-    _tool_concurrency: ClassVar[int | None] = 2
-    text: str = ""
 
-    async def __call__(self, context: Any) -> str:
-        return self.text
+_concurrent_handler._tool_concurrency = 2  # type: ignore[attr-defined]
 
 
 class _FakeGuard(PermissionGuard):
-    async def check(self, handler: object) -> object:
-        return handler
+    async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+        return kwargs
 
 
 class _FakeTransport:
@@ -56,29 +47,29 @@ def _make_entry_point(name: str, obj: object) -> MagicMock:
 class TestDiscoverTools:
     @patch("axio_tui.plugin.entry_points")
     def test_builds_tool_from_handler(self, mock_eps: MagicMock) -> None:
-        mock_eps.return_value = [_make_entry_point("echo", _EchoHandler)]
+        mock_eps.return_value = [_make_entry_point("echo", _echo_handler)]
         tools = discover_tools()
         assert len(tools) == 1
         assert tools[0].name == "echo"
         assert tools[0].description == "Echo back input text."
-        assert tools[0].handler is _EchoHandler
+        assert tools[0].handler is _echo_handler
         assert tools[0].concurrency is None
 
     @patch("axio_tui.plugin.entry_points")
-    def test_uses_class_name_when_no_docstring(self, mock_eps: MagicMock) -> None:
-        mock_eps.return_value = [_make_entry_point("nodoc", _NoDocHandler)]
+    def test_uses_empty_string_when_no_docstring(self, mock_eps: MagicMock) -> None:
+        mock_eps.return_value = [_make_entry_point("nodoc", _no_doc_handler)]
         tools = discover_tools()
-        assert tools[0].description == "_NoDocHandler"
+        assert tools[0].description == ""
 
     @patch("axio_tui.plugin.entry_points")
     def test_respects_tool_concurrency(self, mock_eps: MagicMock) -> None:
-        mock_eps.return_value = [_make_entry_point("concurrent", _ConcurrentHandler)]
+        mock_eps.return_value = [_make_entry_point("concurrent", _concurrent_handler)]
         tools = discover_tools()
         assert tools[0].concurrency == 2
 
     @patch("axio_tui.plugin.entry_points")
-    def test_skips_non_handler(self, mock_eps: MagicMock) -> None:
-        mock_eps.return_value = [_make_entry_point("bad", str)]
+    def test_skips_non_callable(self, mock_eps: MagicMock) -> None:
+        mock_eps.return_value = [_make_entry_point("bad", 42)]
         tools = discover_tools()
         assert tools == []
 

@@ -1,4 +1,4 @@
-"""Nebius AI Studio CompletionTransport — inherits from OpenAI-compatible transport."""
+"""Nebius AI Studio CompletionTransport - inherits from OpenAI-compatible transport."""
 
 from __future__ import annotations
 

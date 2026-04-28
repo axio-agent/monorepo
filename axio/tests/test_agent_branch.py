@@ -8,22 +8,19 @@ from typing import Any
 from axio.agent import Agent
 from axio.context import MemoryContextStore
 from axio.testing import StubTransport, make_text_response
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 
 
-class HandlerA(ToolHandler[Any]):
-    async def __call__(self, context: Any) -> str:
-        return "a"
+async def _handler_a() -> str:
+    return "a"
 
 
-class HandlerB(ToolHandler[Any]):
-    async def __call__(self, context: Any) -> str:
-        return "b"
+async def _handler_b() -> str:
+    return "b"
 
 
-class NoopHandler(ToolHandler[Any]):
-    async def __call__(self, context: Any) -> str:
-        return ""
+async def _noop() -> str:
+    return ""
 
 
 class TestAgentCopy:
@@ -33,7 +30,7 @@ class TestAgentCopy:
         assert clone is not agent
 
     def test_shares_tools(self) -> None:
-        tool = Tool(name="t", description="t", handler=NoopHandler)
+        tool: Tool[Any] = Tool(name="t", description="t", handler=_noop)
         agent = Agent(system="test", tools=[tool], transport=StubTransport())
         clone = copy.copy(agent)
         assert clone.tools is agent.tools
@@ -52,8 +49,8 @@ class TestAgentCopy:
         assert agent.system == "original"
 
     def test_override_tools(self) -> None:
-        tool_a = Tool(name="a", description="a", handler=HandlerA)
-        tool_b = Tool(name="b", description="b", handler=HandlerB)
+        tool_a: Tool[Any] = Tool(name="a", description="a", handler=_handler_a)
+        tool_b: Tool[Any] = Tool(name="b", description="b", handler=_handler_b)
         agent = Agent(system="test", tools=[tool_a], transport=StubTransport())
         clone = copy.copy(agent)
         clone.tools = [tool_b]

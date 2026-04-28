@@ -3,8 +3,9 @@
 from pathlib import Path
 
 import pytest
+from axio import CONTEXT
 
-from agent_swarm.notes import NotesTool, _format, _parse, make_notes_tool
+from agent_swarm.notes import _format, _parse, make_notes_tool, notes
 
 # ---------------------------------------------------------------------------
 # _parse / _format helpers
@@ -51,10 +52,13 @@ def notes_dir(tmp_path: Path) -> Path:
 
 
 async def _call(action: str, notes_dir: Path, **kwargs: object) -> str:
-    tool = NotesTool(action=action, **kwargs)  # type: ignore[arg-type]
-    result = await tool(notes_dir)
-    assert isinstance(result, str)
-    return result
+    token = CONTEXT.set(notes_dir)
+    try:
+        result = await notes(action=action, **kwargs)  # type: ignore[arg-type]
+        assert isinstance(result, str)
+        return result
+    finally:
+        CONTEXT.reset(token)
 
 
 class TestList:

@@ -128,7 +128,7 @@ All events are frozen dataclasses with `slots=True`:
 : Token counts for one iteration or an entire session. Supports `+` to
   accumulate totals across multiple iterations:
   ```python
-  from axio.types import Usage
+  from axio import Usage
   u1 = Usage(input_tokens=100, output_tokens=50)
   u2 = Usage(input_tokens=200, output_tokens=80)
   total = u1 + u2  # Usage(input_tokens=300, output_tokens=130)
@@ -185,7 +185,7 @@ It also provides convenience methods:
 ## Streaming tool call arguments
 
 `ToolInputDelta` events carry partial JSON fragments of tool arguments as the
-LLM generates them. This enables real-time display of tool inputs — for
+LLM generates them. This enables real-time display of tool inputs - for
 example, rendering file content character-by-character as it streams in,
 similar to how Claude Code shows Edit tool diffs live.
 
@@ -216,7 +216,7 @@ Top-level **string** fields are decoded (escape sequences resolved, quotes
 stripped). All other top-level values (numbers, booleans, objects, arrays) are
 emitted as raw JSON fragments via `ToolFieldDelta.text`.
 
-Typical usage — create one `ToolArgStream` per tool call and forward its
+Typical usage - create one `ToolArgStream` per tool call and forward its
 output events downstream:
 
 ```python
@@ -247,7 +247,7 @@ async for event in agent.run_stream(prompt, ctx):
 ```
 
 The `ToolField*` events are also emitted directly by the agent stream when a
-transport produces `ToolInputDelta` events — you can match them without
+transport produces `ToolInputDelta` events - you can match them without
 instantiating `ToolArgStream` yourself if you prefer to rely on the agent-level
 integration (see below).
 

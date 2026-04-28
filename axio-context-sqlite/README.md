@@ -35,8 +35,8 @@ Create a context store bound to one session.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `conn` | `aiosqlite.Connection` | — | Open database connection (from `connect()`) |
-| `session_id` | `str` | — | Unique identifier for this conversation session |
+| `conn` | `aiosqlite.Connection` | - | Open database connection (from `connect()`) |
+| `session_id` | `str` | - | Unique identifier for this conversation session |
 | `project` | `str \| None` | `str(Path.cwd().resolve())` | Logical project scope used to group and list sessions. Defaults to the current working directory. |
 | `db_name` | `str` | `"axio_context"` | Prefix used for the database table names (`axio_context_messages`, `axio_context_tokens`). |
 
@@ -74,16 +74,16 @@ the same database file, isolated by `session_id` and `project`.
 Message content is stored as serialized JSON. Payloads larger than 512 bytes
 are automatically compressed with gzip (compresslevel 6) and stored
 base64-encoded with a `gzip:` prefix. Smaller payloads are stored as-is with a
-`plain:` prefix. Decompression happens transparently on read — callers never
+`plain:` prefix. Decompression happens transparently on read - callers never
 see the encoded form.
 
 #### SQLite performance settings
 
 Every connection opened by `connect()` is configured with:
 
-- `PRAGMA journal_mode=WAL` — enables concurrent readers alongside one writer
-- `PRAGMA busy_timeout=5000` — waits up to 5 seconds before raising a lock error
-- `PRAGMA synchronous=NORMAL` — balances durability and write throughput
+- `PRAGMA journal_mode=WAL` - enables concurrent readers alongside one writer
+- `PRAGMA busy_timeout=5000` - waits up to 5 seconds before raising a lock error
+- `PRAGMA synchronous=NORMAL` - balances durability and write throughput
 
 ### Agent integration
 
@@ -153,7 +153,7 @@ to call concurrently from multiple coroutines without an application-level lock.
 
 ### Forking
 
-`fork()` copies the current session's messages into a new session — useful for
+`fork()` copies the current session's messages into a new session - useful for
 branching conversations without affecting the original:
 
 <!-- name: test_readme_fork -->

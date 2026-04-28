@@ -147,7 +147,7 @@ class ProviderEditScreen(ModalScreen["OpenAICompatibleTransport | _DeleteSentine
 
     def _model_entries(self) -> list[str]:
         if not self._models:
-            return ["  (no models — add one below)"]
+            return ["  (no models - add one below)"]
         return [f"  {m.id:<32} ctx={m.context_window}  out={m.max_output_tokens}" for m in self._models]
 
     def _refresh_models(self) -> None:

@@ -1,4 +1,4 @@
-"""TransportRegistry — discovers, initialises and manages transport plugins."""
+"""TransportRegistry - discovers, initialises and manages transport plugins."""
 
 from __future__ import annotations
 
@@ -212,7 +212,7 @@ class TransportRegistry:
                     return RoleBinding(transport=transport_name, model=transport.models[model_id])
             return None
 
-        # Migration: bare model ID — search all transports
+        # Migration: bare model ID - search all transports
         for name, transport in self._transports.items():
             if config_value in transport.models:
                 return RoleBinding(transport=name, model=transport.models[config_value])

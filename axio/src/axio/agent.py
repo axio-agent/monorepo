@@ -85,7 +85,7 @@ class Agent:
 
     @staticmethod
     def _accumulate_text(content: list[TextBlock | ToolUseBlock], delta: str) -> None:
-        """Append text delta — merge into last TextBlock or start a new one."""
+        """Append text delta - merge into last TextBlock or start a new one."""
         if content and isinstance(content[-1], TextBlock):
             content[-1] = TextBlock(text=content[-1].text + delta)
         else:
@@ -190,7 +190,7 @@ class Agent:
                             stop_reason,
                         )
 
-                    # Dispatch tools BEFORE appending to context — cancellation
+                    # Dispatch tools BEFORE appending to context - cancellation
                     # between here and the two appends below cannot leave orphan
                     # ToolUseBlocks in the persistent context store.
                     valid = [b for b in tool_blocks if b.id not in malformed]

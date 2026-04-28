@@ -4,20 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 
 from axio_tui.screens import GuardSelectScreen, GuardToolsScreen, PluginHubScreen, ToolDetailScreen
 
 
-class _StubHandler(ToolHandler[Any]):
+async def _stub_handler() -> str:
     """Stub tool handler."""
-
-    async def __call__(self, context: Any) -> str:
-        return ""
+    return ""
 
 
 def _make_tools(*names: str) -> list[Tool[Any]]:
-    return [Tool(name=n, description=f"Description for {n}", handler=_StubHandler) for n in names]
+    return [Tool(name=n, description=f"Description for {n}", handler=_stub_handler) for n in names]
 
 
 GUARD_NAMES = {"path": "Ask user about path access", "llm": "Agent-based safety review"}
@@ -146,7 +144,7 @@ class TestPluginHubScreen:
         )
         entries = screen._format_entries()
         assert "2/3 enabled" in entries[0]  # axio.tools
-        assert "1/2 enabled" in entries[2]  # axio.guards (index 2 — transport is index 1)
+        assert "1/2 enabled" in entries[2]  # axio.guards (index 2 - transport is index 1)
 
     def test_plugin_callback_updates_state(self) -> None:
         tools = _make_tools("shell", "read_file")

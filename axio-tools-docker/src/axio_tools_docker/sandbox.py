@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any
 
 import aiodocker
-from axio.tool import Tool, ToolHandler
+from axio.tool import CONTEXT, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -57,171 +57,140 @@ def parse_device(s: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Tool handlers — field schemas mirror axio-tools-local exactly
+# Tool handlers - plain async functions, context via CONTEXT.get()
 # ---------------------------------------------------------------------------
 
 
-class Shell(ToolHandler["DockerSandbox"]):
+async def shell(command: str, timeout: float = 5, cwd: str = ".", stdin: str | None = None) -> str:
     """Run a shell command and return combined stdout/stderr. Use for git,
     build tools, grep, tests, or any CLI operation. Non-zero exit codes
     are reported. Optionally pass stdin data for commands that read from
     standard input. Prefer short timeouts and avoid interactive commands."""
-
-    command: str
-    timeout: float = 5
-    cwd: str = "."
-    stdin: str | None = None
-
-    async def __call__(self, context: DockerSandbox) -> str:
-        cwd = _resolve_path(context.workdir, self.cwd)
-        command = f"cd {shlex.quote(cwd)} && {self.command}"
-        return await context.exec(command, timeout=self.timeout, stdin=self.stdin)
+    sandbox: DockerSandbox = CONTEXT.get()
+    resolved = _resolve_path(sandbox.workdir, cwd)
+    cmd = f"cd {shlex.quote(resolved)} && {command}"
+    return await sandbox.exec(cmd, timeout=timeout, stdin=stdin)
 
 
-class WriteFile(ToolHandler["DockerSandbox"]):
+async def write_file(file_path: str, content: str, mode: int = 0o644) -> str:
     """Create or overwrite a file with the given content. Parent directories
     are created automatically. Use this for new files or full rewrites.
     For partial edits prefer patch_file instead."""
-
-    file_path: str
-    content: str
-    mode: int = 0o644
-
-    async def __call__(self, context: DockerSandbox) -> str:
-        path = _resolve_path(context.workdir, self.file_path)
-        result = await context.write_file(path, self.content, mode=self.mode)
-        return result
+    sandbox: DockerSandbox = CONTEXT.get()
+    path = _resolve_path(sandbox.workdir, file_path)
+    return await sandbox.write_file(path, content, mode=mode)
 
 
-class ReadFile(ToolHandler["DockerSandbox"]):
+async def read_file(
+    filename: str,
+    max_chars: int = 32768,
+    binary_as_hex: bool = True,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    line_numbers: bool = False,
+) -> str:
     """Read file contents. Returns text for text files, hex for binaries.
     Lines are 1-indexed: start_line=1 is the first line, end_line=3 includes
     line 3. Pass line_numbers=True to prefix each line with its 1-based line
-    number (tab-separated) — required before calling patch_file. Large files
+    number (tab-separated) - required before calling patch_file. Large files
     are truncated to max_chars. Always read the file before editing it with
     write_file or patch_file."""
-
-    filename: str
-    max_chars: int = 32768
-    binary_as_hex: bool = True
-    start_line: int | None = None
-    end_line: int | None = None
-    line_numbers: bool = False
-
-    async def __call__(self, context: DockerSandbox) -> str:
-        path = _resolve_path(context.workdir, self.filename)
-        raw = await context.read_file_bytes(path)
-        try:
-            text = raw.decode()
-        except UnicodeDecodeError:
-            if self.binary_as_hex:
-                return "Encoded binary data HEX: " + raw[: self.max_chars].hex()
-            raise
-        all_lines = text.splitlines(keepends=True)
-        start = 0 if self.start_line is None else self.start_line - 1
-        end = len(all_lines) if self.end_line is None else self.end_line
-        lines = all_lines[start:end]
-        if self.line_numbers:
-            result = "".join(f"{start + 1 + i}\t{line}" for i, line in enumerate(lines))
-        else:
-            result = "".join(lines)
-        if len(result) > self.max_chars:
-            return result[: self.max_chars] + "\n...[truncated]"
-        return result
+    sandbox: DockerSandbox = CONTEXT.get()
+    path = _resolve_path(sandbox.workdir, filename)
+    raw = await sandbox.read_file_bytes(path)
+    try:
+        text = raw.decode()
+    except UnicodeDecodeError:
+        if binary_as_hex:
+            return "Encoded binary data HEX: " + raw[:max_chars].hex()
+        raise
+    all_lines = text.splitlines(keepends=True)
+    start = 0 if start_line is None else start_line - 1
+    end = len(all_lines) if end_line is None else end_line
+    selected = all_lines[start:end]
+    if line_numbers:
+        result = "".join(f"{start + 1 + i}\t{line}" for i, line in enumerate(selected))
+    else:
+        result = "".join(selected)
+    if len(result) > max_chars:
+        return result[:max_chars] + "\n...[truncated]"
+    return result
 
 
-class ListFiles(ToolHandler["DockerSandbox"]):
+async def list_files(directory: str = ".") -> str:
     """List files and directories. Shows permissions, size, modification time,
     and name for each entry. Directories are listed first and marked with
     a trailing slash. Use this to explore the project structure before
     reading or editing files."""
+    sandbox: DockerSandbox = CONTEXT.get()
+    path = _resolve_path(sandbox.workdir, directory)
+    tar = await sandbox.get_archive(path)
 
-    directory: str = "."
+    members = tar.getmembers()
+    if not members:
+        return "(empty directory)"
 
-    async def __call__(self, context: DockerSandbox) -> str:
-        path = _resolve_path(context.workdir, self.directory)
-        tar = await context.get_archive(path)
+    prefix = members[0].name.rstrip("/") + "/"
+    entries: list[tarfile.TarInfo] = []
+    for member in members:
+        if not member.name.startswith(prefix):
+            continue
+        rel = member.name[len(prefix) :]
+        if not rel or "/" in rel.rstrip("/"):
+            continue
+        entries.append(member)
 
-        members = tar.getmembers()
-        if not members:
-            return "(empty directory)"
+    entries.sort(key=lambda m: (not m.isdir(), m.name))
+    if not entries:
+        return "(empty directory)"
 
-        # Docker archives a directory with the basename as prefix: "listing/a.py".
-        # Strip that prefix and keep only immediate children (no further slashes).
-        prefix = members[0].name.rstrip("/") + "/"
-        entries: list[tarfile.TarInfo] = []
-        for member in members:
-            if not member.name.startswith(prefix):
-                continue  # skip the root entry itself
-            rel = member.name[len(prefix) :]
-            if not rel or "/" in rel.rstrip("/"):
-                continue  # skip nested paths
-            entries.append(member)
-
-        entries.sort(key=lambda m: (not m.isdir(), m.name))
-        if not entries:
-            return "(empty directory)"
-
-        lines: list[str] = []
-        for m in entries:
-            full_mode = m.mode
-            if m.isdir():
-                full_mode |= stat_module.S_IFDIR
-            elif m.issym():
-                full_mode |= stat_module.S_IFLNK
-            else:
-                full_mode |= stat_module.S_IFREG
-            mode_str = stat_module.filemode(full_mode)
-            mtime = datetime.fromtimestamp(m.mtime).strftime("%b %d %H:%M")
-            base = m.name.rstrip("/").split("/")[-1] + ("/" if m.isdir() else "")
-            lines.append(f"{mode_str} {m.size:>8} {mtime} {base}")
-        return "\n".join(lines)
+    lines: list[str] = []
+    for m in entries:
+        full_mode = m.mode
+        if m.isdir():
+            full_mode |= stat_module.S_IFDIR
+        elif m.issym():
+            full_mode |= stat_module.S_IFLNK
+        else:
+            full_mode |= stat_module.S_IFREG
+        mode_str = stat_module.filemode(full_mode)
+        mtime = datetime.fromtimestamp(m.mtime).strftime("%b %d %H:%M")
+        base = m.name.rstrip("/").split("/")[-1] + ("/" if m.isdir() else "")
+        lines.append(f"{mode_str} {m.size:>8} {mtime} {base}")
+    return "\n".join(lines)
 
 
-class RunPython(ToolHandler["DockerSandbox"]):
+async def run_python(code: str, cwd: str = ".", timeout: float = 5, stdin: str | None = None) -> str:
     """Run a Python code snippet in a subprocess and return stdout/stderr.
     The code is written to a temp file and executed with the current
     interpreter. Use for calculations, data processing, or testing
     small scripts. Optionally pass stdin data. Non-zero exit codes
     and tracebacks are returned as-is."""
-
-    code: str
-    cwd: str = "."
-    timeout: float = 5
-    stdin: str | None = None
-
-    async def __call__(self, context: DockerSandbox) -> str:
-        cwd = _resolve_path(context.workdir, self.cwd)
-        tmp = f"/tmp/.axio_{uuid.uuid4().hex}.py"
-        await context.write_file(tmp, self.code)
-        command = f"cd {shlex.quote(cwd)} && python3 {tmp}; _rc=$?; rm -f {tmp}; exit $_rc"
-        return await context.exec(command, timeout=self.timeout, stdin=self.stdin)
+    sandbox: DockerSandbox = CONTEXT.get()
+    resolved = _resolve_path(sandbox.workdir, cwd)
+    tmp = f"/tmp/.axio_{uuid.uuid4().hex}.py"
+    await sandbox.write_file(tmp, code)
+    cmd = f"cd {shlex.quote(resolved)} && python3 {tmp}; _rc=$?; rm -f {tmp}; exit $_rc"
+    return await sandbox.exec(cmd, timeout=timeout, stdin=stdin)
 
 
-class PatchFile(ToolHandler["DockerSandbox"]):
+async def patch_file(file_path: str, from_line: int, to_line: int, content: str, mode: int = 0o644) -> str:
     """Replace a range of lines in an existing file. Lines are 1-indexed:
     from_line and to_line are both inclusive (from_line=2, to_line=4 replaces
     lines 2, 3, 4). To insert without deleting, set to_line = from_line - 1.
     Always read the file first with line_numbers=True to get correct line numbers.
     Use this for surgical edits instead of rewriting the whole file with
     write_file."""
-
-    file_path: str
-    mode: int = 0o644
-    from_line: int
-    to_line: int
-    content: str
-
-    async def __call__(self, context: DockerSandbox) -> str:
-        path = _resolve_path(context.workdir, self.file_path)
-        raw = await context.read_file_bytes(path)
-        lines = raw.decode().splitlines(keepends=True)
-        content_lines = self.content.splitlines(keepends=True)
-        if content_lines and not content_lines[-1].endswith("\n"):
-            content_lines[-1] += "\n"
-        new_lines = lines[: self.from_line - 1] + content_lines + lines[self.to_line :]
-        await context.write_file(path, "".join(new_lines), mode=self.mode)
-        return f"{len(new_lines)} lines written to {path}"
+    sandbox: DockerSandbox = CONTEXT.get()
+    path = _resolve_path(sandbox.workdir, file_path)
+    raw = await sandbox.read_file_bytes(path)
+    lines = raw.decode().splitlines(keepends=True)
+    content_lines = content.splitlines(keepends=True)
+    if content_lines and not content_lines[-1].endswith("\n"):
+        content_lines[-1] += "\n"
+    new_lines = lines[: from_line - 1] + content_lines + lines[to_line:]
+    await sandbox.write_file(path, "".join(new_lines), mode=mode)
+    return f"{len(new_lines)} lines written to {path}"
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +211,8 @@ class DockerSandbox:
         network: bool | str = False,
         workdir: str = "/workspace",
         volumes: dict[str, str] | None = None,
+        named_volumes: dict[str, str] | None = None,
+        volumes_remove: bool = False,
         env: dict[str, str] | None = None,
         user: str = "",
         name: str = "",
@@ -271,7 +242,12 @@ class DockerSandbox:
                 A string sets ``NetworkMode`` explicitly, e.g. ``"host"``,
                 ``"bridge"``, or a named network like ``"my-project_default"``.
             workdir: Working directory inside the container.
-            volumes: Mapping of {container_path: host_path} to mount.
+            volumes: Mapping of {container_path: host_path} bind mounts.
+            named_volumes: Mapping of {container_path: volume_name} named Docker volumes.
+                Docker creates the volume automatically if it does not exist. Named volumes
+                persist across container restarts and can be shared between sandbox sessions.
+            volumes_remove: Remove named volumes on exit. Has no effect when attaching to
+                an existing container (``name=`` reuse) or when ``named_volumes`` is empty.
             env: Environment variables passed to all commands, e.g. {"PYTHONPATH": "/app"}.
             user: User to run as inside the container, e.g. "1000" or "nobody".
             name: Container name. If a container with this name already exists and
@@ -313,6 +289,8 @@ class DockerSandbox:
         self.network: bool | str = network
         self.workdir = workdir
         self.volumes: dict[str, str] = volumes or {}
+        self.named_volumes: dict[str, str] = named_volumes or {}
+        self.volumes_remove = volumes_remove
         self.env: dict[str, str] = env or {}
         self.user = user
         self.name = name
@@ -354,6 +332,7 @@ class DockerSandbox:
         if not self._attached:
             await self._ensure_image()
             binds = [f"{host}:{container}" for container, host in self.volumes.items()]
+            binds += [f"{vol}:{path}" for path, vol in self.named_volumes.items()]
             host_config: dict[str, Any] = {
                 "Init": True,
                 "Memory": parse_memory(self.memory),
@@ -417,26 +396,33 @@ class DockerSandbox:
             logger.info("Started sandbox container (image=%s)", self.image)
 
         self._tools = [
-            Tool(name="shell", description=Shell.__doc__ or "", handler=Shell, context=self),
-            Tool(name="write_file", description=WriteFile.__doc__ or "", handler=WriteFile, context=self),
-            Tool(name="read_file", description=ReadFile.__doc__ or "", handler=ReadFile, context=self),
-            Tool(name="list_files", description=ListFiles.__doc__ or "", handler=ListFiles, context=self),
-            Tool(name="run_python", description=RunPython.__doc__ or "", handler=RunPython, context=self),
-            Tool(name="patch_file", description=PatchFile.__doc__ or "", handler=PatchFile, context=self),
+            Tool(name="shell", handler=shell, context=self),
+            Tool(name="write_file", handler=write_file, context=self),
+            Tool(name="read_file", handler=read_file, context=self),
+            Tool(name="list_files", handler=list_files, context=self),
+            Tool(name="run_python", handler=run_python, context=self),
+            Tool(name="patch_file", handler=patch_file, context=self),
         ]
         return self
 
     async def __aexit__(self, *exc: object) -> None:
+        was_attached = self._attached
         if self._container is not None:
-            if self.remove and not self._attached:
+            if self.remove and not was_attached:
                 with contextlib.suppress(Exception):
                     await self._container.delete(force=True)
                 logger.info("Removed sandbox container")
             else:
-                logger.info("Kept sandbox container (attached=%r, remove=%r)", self._attached, self.remove)
+                logger.info("Kept sandbox container (attached=%r, remove=%r)", was_attached, self.remove)
             self._container = None
             self._attached = False
         if self._client is not None:
+            if self.named_volumes and self.volumes_remove and not was_attached:
+                for vol_name in self.named_volumes.values():
+                    with contextlib.suppress(Exception):
+                        vol = await self._client.volumes.get(vol_name)  # type: ignore[no-untyped-call]
+                        await vol.delete()
+                logger.info("Removed %d named volume(s)", len(self.named_volumes))
             await self._client.close()
             self._client = None
         self._tools = None
@@ -446,7 +432,7 @@ class DockerSandbox:
         """Return the axio Tool instances for this sandbox. Only valid inside `async with`."""
         if self._tools is None:
             raise RuntimeError("DockerSandbox must be used as an async context manager")
-        return self._tools
+        return list(self._tools)
 
     @property
     def container_id(self) -> str:

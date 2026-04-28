@@ -1,8 +1,8 @@
 # Writing Context Stores
 
 A context store holds the conversation history for an agent session. Axio
-ships two built-in implementations — `MemoryContextStore` (in-memory,
-ephemeral) and `SQLiteContextStore` (persistent, file-backed) — that cover
+ships two built-in implementations - `MemoryContextStore` (in-memory,
+ephemeral) and `SQLiteContextStore` (persistent, file-backed) - that cover
 most single-process use cases. This guide explains when you need something
 different and how to implement it.
 
@@ -36,7 +36,7 @@ methods are abstract and **must** be provided:
 
 | Method | Guarantee |
 |--------|-----------|
-| `append(message)` | Append one `Message` to the end of the session history. Must be atomic — a caller that awaits `append` and then calls `get_history` must see the message. |
+| `append(message)` | Append one `Message` to the end of the session history. Must be atomic - a caller that awaits `append` and then calls `get_history` must see the message. |
 | `get_history()` | Return a list of all messages in insertion order. Must not mutate the store's internal state. |
 
 Every other method has a default implementation on `ContextStore` that is
@@ -62,7 +62,7 @@ point to demonstrate the required interface before moving to a remote backend.
 <!-- name: test_minimal_context_store -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -101,7 +101,7 @@ Key rules:
 - Return a **copy** of the internal list from `get_history()`, not a
   reference. Callers (including the agent loop) may iterate and modify the
   list independently.
-- The `session_id` property is provided by the base class — you do not need
+- The `session_id` property is provided by the base class - you do not need
   to set it if you do not call `super().__init__()`. It is lazily initialised
   the first time it is accessed.
 
@@ -115,7 +115,7 @@ supports clearing a session:
 <!-- name: test_store_clear -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -164,7 +164,7 @@ That is sufficient for most in-process scenarios, but override it when:
 name: test_store_fork
 ```python
 import asyncio, copy
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 ```
@@ -173,7 +173,7 @@ from axio.blocks import TextBlock
 ```python
 import asyncio
 import copy
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -218,7 +218,7 @@ async def close(self) -> None:
     await self._conn.close()
 ```
 
-The `Agent` does **not** call `close()` automatically — the caller that
+The `Agent` does **not** call `close()` automatically - the caller that
 creates the store is responsible for closing it, typically with
 `try / finally` or an `asynccontextmanager`.
 
@@ -227,7 +227,7 @@ creates the store is responsible for closing it, typically with
 The agent calls `add_context_tokens(input_tokens, output_tokens)` after every
 LLM iteration to accumulate usage data. The base class's default
 implementation delegates to `get_context_tokens()` and `set_context_tokens()`,
-both of which are no-ops — so tokens are silently discarded unless you
+both of which are no-ops - so tokens are silently discarded unless you
 override at least `set_context_tokens` and `get_context_tokens`.
 
 Override both methods together:
@@ -235,7 +235,7 @@ Override both methods together:
 <!-- name: test_store_token_tracking -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 
 
@@ -289,7 +289,7 @@ Method summary:
 
 ## Registering a context store
 
-Context stores are not discovered through entry points — they are ordinary
+Context stores are not discovered through entry points - they are ordinary
 Python classes that you instantiate yourself and pass to the `Agent`.
 
 ### Passing to Agent
@@ -301,7 +301,7 @@ their second argument:
 name: test_store_with_agent
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.testing import StubTransport, make_text_response
 
@@ -320,7 +320,7 @@ transport = StubTransport([make_text_response("ok")])
 <!-- name: test_store_with_agent -->
 ```python
 import asyncio
-from axio.agent import Agent
+from axio import Agent
 
 store = MinimalStore()
 agent = Agent(
@@ -372,7 +372,7 @@ override:
 <!-- name: test_custom_store_basic -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -428,7 +428,7 @@ asyncio.run(test_clear())
 ```python
 import asyncio
 import copy
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -470,7 +470,7 @@ asyncio.run(test_fork_isolation())
 <!-- name: test_custom_store_tokens -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 
 
@@ -514,9 +514,8 @@ making real LLM calls:
 <!-- name: test_custom_store_with_agent -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore, Agent
 from axio.messages import Message
-from axio.agent import Agent
 from axio.testing import StubTransport, make_text_response
 
 
@@ -565,5 +564,5 @@ asyncio.run(test_agent_uses_store())
   backend (like `SQLiteContextStore` does) or fall back to the default
   in-memory deep-copy. The default is safe but does not persist the fork.
 - Override `close()` whenever your store holds a connection or file handle.
-  The agent does not call it — make the caller responsible, using a
+  The agent does not call it - make the caller responsible, using a
   `try / finally` block or an `asynccontextmanager` wrapper.

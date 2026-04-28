@@ -15,8 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal
 
-from axio.tool import Tool, ToolHandler
-from pydantic import Field
+from axio import CONTEXT, Field, Tool
 
 SEPARATOR = "---"
 
@@ -46,7 +45,25 @@ def _format(description: str, body: str) -> str:
     return f"description: {description.strip()}\n{SEPARATOR}\n{body.strip()}"
 
 
-class NotesTool(ToolHandler[Path]):
+async def notes(
+    action: Annotated[
+        Literal["list", "read", "write", "append", "drop"],
+        Field(description="list · read · write · append · drop"),
+    ],
+    name: Annotated[
+        str, Field(default="", description="Note name without extension (required for read/write/append)")
+    ] = "",
+    description: Annotated[
+        str,
+        Field(
+            default="",
+            description="One-line summary shown in list output (required for write/append when creating)",
+        ),
+    ] = "",
+    content: Annotated[
+        str, Field(default="", description="Body text to write or append (required for write/append)")
+    ] = "",
+) -> str:
     """Save and retrieve notes in the swarm's internal notes directory.
 
     Use notes to persist findings, decisions, summaries, and project state
@@ -59,91 +76,76 @@ class NotesTool(ToolHandler[Path]):
       append - append text to a note's body (creates if missing; description required on create)
       drop   - remove a note by name
     """
+    notes_dir: Path = CONTEXT.get()
+    notes_dir.mkdir(parents=True, exist_ok=True)
 
-    action: Annotated[
-        Literal["list", "read", "write", "append", "drop"],
-        Field(description="list · read · write · append · drop"),
-    ]
-    name: Annotated[str, Field(default="", description="Note name without extension (required for read/write/append)")]
-    description: Annotated[
-        str,
-        Field(
-            default="",
-            description="One-line summary shown in list output (required for write/append when creating)",
-        ),
-    ]
-    content: Annotated[str, Field(default="", description="Body text to write or append (required for write/append)")]
+    path = notes_dir / f"{name}.md" if name else None
 
-    async def __call__(self, context: Path) -> str:
-        notes_dir = context
-        notes_dir.mkdir(parents=True, exist_ok=True)
+    match action:
+        case "list":
+            files = sorted(notes_dir.glob("*.md"))
+            if not files:
+                return "(no notes yet)"
+            lines = []
+            for f in files:
+                if f.is_symlink():
+                    f.unlink()
+                    continue
+                if not f.is_file():
+                    continue
+                desc, _ = _parse(f.read_text())
+                lines.append(f"{f.stem} - {desc}" if desc else f.stem)
+            return "\n".join(lines) if lines else "(no notes yet)"
 
-        path = notes_dir / f"{self.name}.md" if self.name else None
+        case "read":
+            if path is None:
+                return "name is required"
+            if err := _check_file(path):
+                return err
+            if not path.exists():
+                return f"Note '{name}' not found"
+            desc, body = _parse(path.read_text())
+            return f"[{desc}]\n\n{body}" if desc else body
 
-        match self.action:
-            case "list":
-                files = sorted(notes_dir.glob("*.md"))
-                if not files:
-                    return "(no notes yet)"
-                lines = []
-                for f in files:
-                    if f.is_symlink():
-                        f.unlink()
-                        continue
-                    if not f.is_file():
-                        continue
-                    desc, _ = _parse(f.read_text())
-                    lines.append(f"{f.stem} - {desc}" if desc else f.stem)
-                return "\n".join(lines) if lines else "(no notes yet)"
+        case "write":
+            if path is None:
+                return "name is required"
+            if not description:
+                return "description is required for write"
+            if err := _check_file(path):
+                return err
+            path.write_text(_format(description, content))
+            return f"Note '{name}' saved"
 
-            case "read":
-                if path is None:
-                    return "name is required"
-                if err := _check_file(path):
-                    return err
-                if not path.exists():
-                    return f"Note '{self.name}' not found"
+        case "append":
+            if path is None:
+                return "name is required"
+            if err := _check_file(path):
+                return err
+            if path.exists():
                 desc, body = _parse(path.read_text())
-                return f"[{desc}]\n\n{body}" if desc else body
+            else:
+                if not description:
+                    return "description is required when creating a new note"
+                desc, body = description, ""
+            merged = (body.rstrip() + "\n\n" + content.strip()).strip()
+            path.write_text(_format(desc, merged))
+            return f"Note '{name}' updated"
 
-            case "write":
-                if path is None:
-                    return "name is required"
-                if not self.description:
-                    return "description is required for write"
-                if err := _check_file(path):
-                    return err
-                path.write_text(_format(self.description, self.content))
-                return f"Note '{self.name}' saved"
+        case "drop":
+            if path is None:
+                return "name is required"
+            path.unlink(missing_ok=True)
+            return f"Note '{name}' dropped"
 
-            case "append":
-                if path is None:
-                    return "name is required"
-                if err := _check_file(path):
-                    return err
-                if path.exists():
-                    desc, body = _parse(path.read_text())
-                else:
-                    if not self.description:
-                        return "description is required when creating a new note"
-                    desc, body = self.description, ""
-                merged = (body.rstrip() + "\n\n" + self.content.strip()).strip()
-                path.write_text(_format(desc, merged))
-                return f"Note '{self.name}' updated"
-
-            case "drop":
-                if path is None:
-                    return "name is required"
-                path.unlink(missing_ok=True)
-                return f"Note '{self.name}' dropped"
+    return "unknown action"
 
 
 def make_notes_tool(workspace: Path, guards: tuple = ()) -> Tool[Path]:
     """Create a notes tool that stores files in *workspace*/.axio-swarm/notes/."""
     return Tool(
         name="notes",
-        description=NotesTool.__doc__ or "",
-        handler=NotesTool,
+        handler=notes,
         context=workspace / ".axio-swarm" / "notes",
         guards=guards,
     )

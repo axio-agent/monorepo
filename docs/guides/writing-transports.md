@@ -10,8 +10,7 @@ A transport connects Axio to an LLM provider. Implement the
 from typing import runtime_checkable, Protocol
 from collections.abc import AsyncIterator
 from axio.messages import Message
-from axio.tool import Tool
-from axio.events import StreamEvent
+from axio import Tool, StreamEvent
 
 
 @runtime_checkable
@@ -33,12 +32,9 @@ The agent expects the stream to end with an `IterationEnd` event.
 ```python
 import asyncio
 from collections.abc import AsyncIterator
-from axio.transport import CompletionTransport
+from axio import CompletionTransport, Tool, TextDelta, IterationEnd, StreamEvent, StopReason, Usage
 from axio.messages import Message
 from axio.blocks import TextBlock
-from axio.tool import Tool
-from axio.events import TextDelta, IterationEnd, StreamEvent
-from axio.types import StopReason, Usage
 
 
 class EchoTransport:
@@ -94,12 +90,12 @@ an `AsyncIterator[StreamEvent]`.
 
 Your transport should yield these events in order:
 
-1. **Content events** — any mix of:
+1. **Content events** - any mix of:
    - `TextDelta` for text chunks
    - `ReasoningDelta` for reasoning/thinking chunks
    - `ToolUseStart` followed by `ToolInputDelta` for tool calls
 
-2. **`IterationEnd`** — exactly once at the end, with:
+2. **`IterationEnd`** - exactly once at the end, with:
    - `iteration`: the agent passes this, but transports can use `1`
    - `stop_reason`: `end_turn`, `tool_use`, `max_tokens`, or `error`
    - `usage`: token counts for this call
@@ -111,8 +107,7 @@ When the LLM wants to call a tool, yield:
 <!-- name: test_tool_call_events -->
 ```python
 import asyncio
-from axio.events import ToolUseStart, ToolInputDelta, IterationEnd
-from axio.types import StopReason, Usage
+from axio import ToolUseStart, ToolInputDelta, IterationEnd, StopReason, Usage
 
 
 async def example_tool_call_stream():
@@ -140,8 +135,7 @@ For parallel tool calls, use different `index` values:
 <!-- name: test_multiple_tool_calls -->
 ```python
 import asyncio
-from axio.events import ToolUseStart, ToolInputDelta, IterationEnd
-from axio.types import StopReason, Usage
+from axio import ToolUseStart, ToolInputDelta, IterationEnd, StopReason, Usage
 
 
 async def example_parallel_stream():
@@ -294,7 +288,7 @@ my_llm = "my_package:MySettingsScreen"
 
 ## Tips
 
-- Stream tokens as they arrive — don't buffer the full response.
+- Stream tokens as they arrive - don't buffer the full response.
 - Track token usage accurately for cost monitoring.
 - Handle API errors gracefully: yield `IterationEnd` with
   `stop_reason=StopReason.error` rather than letting exceptions propagate.

@@ -165,21 +165,6 @@ _STOP_REASON_MAP: dict[str, StopReason] = {
 }
 
 
-def _strip_title(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove pydantic 'title' keys from a JSON schema recursively."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "title":
-            continue
-        if isinstance(value, dict):
-            out[key] = _strip_title(value)
-        elif isinstance(value, list):
-            out[key] = [_strip_title(item) if isinstance(item, dict) else item for item in value]
-        else:
-            out[key] = value
-    return out
-
-
 def _convert_messages(messages: list[Message], system: str) -> list[dict[str, Any]]:
     """Convert axio Message list to OpenAI message dicts."""
     result: list[dict[str, Any]] = []
@@ -255,7 +240,7 @@ def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
             "function": {
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": _strip_title(tool.input_schema),
+                "parameters": tool.input_schema,
             },
         }
         for tool in tools
@@ -293,7 +278,7 @@ class ThinkTagParser:
             # Check for partial tag prefix at end of buffer
             if self._could_be_partial(tag):
                 break
-            # No tag found and no partial — emit everything
+            # No tag found and no partial - emit everything
             if self._buf:
                 result.append(("reasoning" if self._inside else "text", self._buf))
                 self._buf = ""

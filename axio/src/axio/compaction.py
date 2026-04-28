@@ -70,14 +70,14 @@ def _find_safe_boundary(history: list[Message], keep_recent: int) -> int:
 class AutoCompactStore(ContextStore):
     """Delegating ``ContextStore`` wrapper that auto-compacts the inner store
     when token usage exceeds a threshold.  Works with any ``ContextStore``
-    backend — ``MemoryContextStore``, ``SQLiteContextStore``, etc.
+    backend - ``MemoryContextStore``, ``SQLiteContextStore``, etc.
 
     The threshold defaults to 75 % of ``transport.model.context_window``
     (read via ``getattr``; falls back to 128 000 if the transport has no
     ``model`` attribute).  Pass ``max_tokens`` explicitly to override.
 
     Compaction fires from :meth:`add_context_tokens`, which the agent loop
-    calls immediately after ``IterationEnd`` — ``input_tokens`` there equals
+    calls immediately after ``IterationEnd`` - ``input_tokens`` there equals
     the real context size sent to the model in that iteration.
 
     Internally, :meth:`_do_compact` forks the inner store before calling

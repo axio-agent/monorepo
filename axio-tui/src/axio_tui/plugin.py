@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+from collections.abc import Callable
 from importlib.metadata import entry_points
 from typing import Any, Protocol, runtime_checkable
 
 from axio.permission import PermissionGuard
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,7 @@ class ToolsPlugin(Protocol):
 
     Plugins register via the ``axio.tools.settings`` entry point group.
     The TUI discovers them, calls ``init()``, collects tools, and shows
-    settings screens — without knowing anything about the plugin internals.
+    settings screens - without knowing anything about the plugin internals.
     """
 
     @property
@@ -42,16 +44,14 @@ TOOLS_SETTINGS_GROUP = "axio.tools.settings"
 SELECTOR_GROUP = "axio.selector"
 
 
-def _handler_description(handler: type[ToolHandler[Any]]) -> str:
-    """Extract handler docstring as tool description."""
-    doc = handler.__doc__
-    if doc:
-        return doc.strip()
-    return handler.__name__
+def _make_tool(ep_name: str, handler: Callable[..., Any]) -> Tool[Any]:
+    """Build a Tool from an entry-point handler (plain async function or callable)."""
+    concurrency: int | None = getattr(handler, "_tool_concurrency", None)
+    return Tool(name=ep_name, handler=handler, concurrency=concurrency)
 
 
 def discover_tools() -> list[Tool[Any]]:
-    """Load ToolHandler classes from 'axio.tools' entry points, build Tool objects."""
+    """Load handler callables from 'axio.tools' entry points, build Tool objects."""
     tools: list[Tool[Any]] = []
     for ep in entry_points(group=TOOLS_GROUP):
         try:
@@ -59,18 +59,13 @@ def discover_tools() -> list[Tool[Any]]:
         except Exception:
             logger.warning("Failed to load tool entry point %r", ep.name, exc_info=True)
             continue
-        if not (isinstance(handler, type) and issubclass(handler, ToolHandler)):
-            logger.warning("Entry point %r is not a ToolHandler subclass, skipping", ep.name)
+        if not callable(handler):
+            logger.warning("Entry point %r is not callable, skipping", ep.name)
             continue
-        concurrency: int | None = getattr(handler, "_tool_concurrency", None)
-        tools.append(
-            Tool(
-                name=ep.name,
-                description=_handler_description(handler),
-                handler=handler,
-                concurrency=concurrency,
-            )
-        )
+        if not inspect.iscoroutinefunction(handler):
+            logger.warning("Entry point %r is not an async callable, skipping", ep.name)
+            continue
+        tools.append(_make_tool(ep.name, handler))
     return tools
 
 
@@ -83,18 +78,10 @@ def discover_tools_by_package() -> dict[str, list[Tool[Any]]]:
         except Exception:
             logger.warning("Failed to load tool entry point %r", ep.name, exc_info=True)
             continue
-        if not (isinstance(handler, type) and issubclass(handler, ToolHandler)):
+        if not callable(handler) or not inspect.iscoroutinefunction(handler):
             continue
         pkg = ep.dist.name if ep.dist else "unknown"
-        concurrency: int | None = getattr(handler, "_tool_concurrency", None)
-        groups.setdefault(pkg, []).append(
-            Tool(
-                name=ep.name,
-                description=_handler_description(handler),
-                handler=handler,
-                concurrency=concurrency,
-            )
-        )
+        groups.setdefault(pkg, []).append(_make_tool(ep.name, handler))
     return groups
 
 

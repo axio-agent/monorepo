@@ -7,9 +7,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from axio import Tool
 from axio.models import ModelSpec
 from axio.testing import StubTransport, make_text_response
-from axio.tool import Tool
 from axio.transport import DummyCompletionTransport
 
 from agent_swarm.swarm import (
@@ -82,7 +82,7 @@ class TestMakeAnalyzeTool:
 
         assert len(tool.guards) == 1
         assert tool.guards[0] is mock_guard
-        guard_factory.assert_called_once_with("orchestrator", "analyze")
+        guard_factory.assert_called_once_with("orchestrator")
 
 
 class TestMakeDelegateTool:
@@ -113,7 +113,7 @@ class TestMakeDelegateTool:
 
         assert len(tool.guards) == 1
         assert tool.guards[0] is mock_guard
-        guard_factory.assert_called_once_with("orchestrator", "delegate")
+        guard_factory.assert_called_once_with("orchestrator")
 
 
 class TestRunSwarm:
@@ -237,7 +237,7 @@ class TestSymlinkProtection:
         except (TimeoutError, Exception):
             pass
 
-        # Symlink must be gone — replaced by a real file
+        # Symlink must be gone - replaced by a real file
         assert not db_link.is_symlink(), "symlink should have been deleted"
         assert secret.read_text() == "sensitive", "original target must be untouched"
 
@@ -253,6 +253,6 @@ class TestSymlinkProtection:
         agents_md.symlink_to(secret)
 
         # Document the Python behaviour the guard relies on:
-        assert agents_md.is_file(), "is_file() follows symlinks — without the extra check it would be read"
+        assert agents_md.is_file(), "is_file() follows symlinks - without the extra check it would be read"
         assert agents_md.is_symlink()
         assert not (agents_md.is_file() and not agents_md.is_symlink()), "guard must block symlinks"

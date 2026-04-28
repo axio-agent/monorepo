@@ -26,10 +26,10 @@ all = [
 ]
 
 [project.entry-points."axio.tools"]
-status_line = "axio_tui.tools:StatusLine"
-confirm = "axio_tui.tools:Confirm"
-subagent = "axio_tui.tools:SubAgent"
-vision = "axio_tui.tools:VisionAnalyze"
+status_line = "axio_tui.tools:status_line"
+confirm = "axio_tui.tools:confirm"
+subagent = "axio_tui.tools:subagent"
+vision = "axio_tui.tools:vision_analyze"
 
 [project.scripts]
 axio = "axio_tui.__main__:main"
@@ -60,16 +60,6 @@ select = ["E", "F", "I", "UP"]
 strict = true
 python_version = "3.12"
 
-[dependency-groups]
-dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.24",
-    "mypy>=1.14",
-    "ruff>=0.9",
-    "pytest-cov>=7.1.0",
-    "markdown-pytest>=0.6.0",
-]
-
 [[tool.mypy.overrides]]
 module = [
     "axio_transport_anthropic", "axio_transport_codex",
@@ -79,3 +69,13 @@ module = [
     "axio_tui_guards", "axio_tui_guards.*",
 ]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.14",
+    "ruff>=0.9",
+    "pytest-cov>=7.1.0",
+    "markdown-pytest>=0.6.0",
+]

@@ -1,4 +1,4 @@
-"""Tests for ReadFile tool handler."""
+"""Tests for read_file tool handler."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from axio_tools_local.read_file import ReadFile
+from axio_tools_local.read_file import read_file
 
 
 @pytest.fixture()
@@ -21,11 +21,11 @@ def tmp_cwd(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 async def read(tmp_cwd: Path, filename: str, **kwargs: Any) -> str:
-    return await ReadFile(filename=filename, **kwargs)({})
+    return await read_file(filename=filename, **kwargs)
 
 
 class TestReadFilePlain:
-    """line_numbers=False (default) — plain text, no line numbers."""
+    """line_numbers=False (default) - plain text, no line numbers."""
 
     async def test_single_line(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "f.txt").write_text("content here")
@@ -56,7 +56,7 @@ class TestReadFilePlain:
 
 
 class TestReadFileIndexed:
-    """line_numbers=True — each line prefixed with 1-based number."""
+    """line_numbers=True - each line prefixed with 1-based number."""
 
     async def test_first_line_is_1(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "f.txt").write_text("hello\n")
@@ -160,13 +160,10 @@ class TestReadFileBinary:
     async def test_binary_raises_without_hex(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "b.dat").write_bytes(b"\x80\x81\xff")
         with pytest.raises(UnicodeDecodeError):
-            await ReadFile(filename="b.dat", binary_as_hex=False)({})
+            await read_file(filename="b.dat", binary_as_hex=False)
 
 
 class TestReadFileMisc:
     async def test_file_not_found(self, tmp_cwd: Path) -> None:
         with pytest.raises(FileNotFoundError):
             await read(tmp_cwd, "nope.txt")
-
-    async def test_repr(self) -> None:
-        assert "test.py" in repr(ReadFile(filename="test.py"))

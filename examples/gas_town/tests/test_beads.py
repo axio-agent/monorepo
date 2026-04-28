@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import aiosqlite
 import pytest
+from axio import CONTEXT
 
 from gas_town.beads import (
     DDL,
-    BeadTool,
+    bead,
     bead_summary,
     get_bead,
     mark_in_progress,
@@ -34,6 +36,15 @@ async def db_path(tmp_path) -> str:
         await db.execute(DDL)
         await db.commit()
     return str(db_path)
+
+
+async def call_bead(db: aiosqlite.Connection, **kwargs: Any) -> str:
+    """Call bead() with db set as CONTEXT."""
+    token = CONTEXT.set(db)
+    try:
+        return await bead(**kwargs)
+    finally:
+        CONTEXT.reset(token)
 
 
 class TestBeadSummary:
@@ -151,22 +162,18 @@ class TestMarkInProgress:
 
 class TestBeadToolCreate:
     async def test_create_returns_bead_id(self, db_connection) -> None:
-        tool = BeadTool(action="create", title="My New Bead")  # type: ignore[call-arg]
-        result = await tool(db_connection)
-
+        result = await call_bead(db_connection, action="create", title="My New Bead")
         assert "Created bead [1]" in result
         assert "My New Bead" in result
 
     async def test_create_with_empty_title(self, db_connection) -> None:
-        tool = BeadTool(action="create", title="")  # type: ignore[call-arg]
-        result = await tool(db_connection)
+        result = await call_bead(db_connection, action="create", title="")
         assert "Created bead" in result
 
 
 class TestBeadToolList:
     async def test_list_empty(self, db_connection) -> None:
-        tool = BeadTool(action="list")  # type: ignore[call-arg]
-        result = await tool(db_connection)
+        result = await call_bead(db_connection, action="list")
         assert "(no beads)" in result
 
     async def test_list_with_beads(self, db_connection) -> None:
@@ -176,59 +183,40 @@ class TestBeadToolList:
         )
         await db_connection.commit()
 
-        tool = BeadTool(action="list")  # type: ignore[call-arg]
-        result = await tool(db_connection)
+        result = await call_bead(db_connection, action="list")
         assert "Test Bead" in result
 
 
 class TestBeadToolUpdate:
     async def test_update_modifies_status(self, db_connection) -> None:
-        create_tool = BeadTool(action="create", title="To Update")  # type: ignore[call-arg]
-        await create_tool(db_connection)
-
-        update_tool = BeadTool(action="update", id=1, status="closed")  # type: ignore[call-arg]
-        result = await update_tool(db_connection)
-
+        await call_bead(db_connection, action="create", title="To Update")
+        result = await call_bead(db_connection, action="update", id=1, status="closed")
         assert "[1] updated" in result
         assert "status=closed" in result
 
     async def test_update_modifies_assignee(self, db_connection) -> None:
-        create_tool = BeadTool(action="create", title="Assign Test")  # type: ignore[call-arg]
-        await create_tool(db_connection)
-
-        update_tool = BeadTool(action="update", id=1, assignee="worker1")  # type: ignore[call-arg]
-        result = await update_tool(db_connection)
-
+        await call_bead(db_connection, action="create", title="Assign Test")
+        result = await call_bead(db_connection, action="update", id=1, assignee="worker1")
         assert "assignee=worker1" in result
 
     async def test_update_preserves_existing_values(self, db_connection) -> None:
-        create_tool = BeadTool(action="create", title="Preserve Test")  # type: ignore[call-arg]
-        await create_tool(db_connection)
-
-        update_tool = BeadTool(action="update", id=1, assignee="new_worker")  # type: ignore[call-arg]
-        result = await update_tool(db_connection)
-
+        await call_bead(db_connection, action="create", title="Preserve Test")
+        result = await call_bead(db_connection, action="update", id=1, assignee="new_worker")
         assert "status=open" in result
 
     async def test_update_nonexistent_bead_returns_not_found(self, db_connection) -> None:
-        tool = BeadTool(action="update", id=999, status="closed")  # type: ignore[call-arg]
-        result = await tool(db_connection)
+        result = await call_bead(db_connection, action="update", id=999, status="closed")
         assert "not found" in result
 
 
 class TestBeadToolClose:
     async def test_close_sets_status_closed(self, db_connection) -> None:
-        create_tool = BeadTool(action="create", title="To Close")  # type: ignore[call-arg]
-        await create_tool(db_connection)
-
-        close_tool = BeadTool(action="close", id=1)  # type: ignore[call-arg]
-        result = await close_tool(db_connection)
-
+        await call_bead(db_connection, action="create", title="To Close")
+        result = await call_bead(db_connection, action="close", id=1)
         assert "[1] closed" in result
 
     async def test_close_nonexistent_bead_returns_not_found(self, db_connection) -> None:
-        tool = BeadTool(action="close", id=999)  # type: ignore[call-arg]
-        result = await tool(db_connection)
+        result = await call_bead(db_connection, action="close", id=999)
         assert "not found" in result
 
 
@@ -240,9 +228,7 @@ class TestBeadToolNote:
         )
         await db_connection.commit()
 
-        note_tool = BeadTool(action="note", id=1, notes="Appended note")  # type: ignore[call-arg]
-        result = await note_tool(db_connection)
-
+        result = await call_bead(db_connection, action="note", id=1, notes="Appended note")
         assert "[1] note appended" in result
 
         row = await get_bead(db_connection, 1)
@@ -252,14 +238,10 @@ class TestBeadToolNote:
         assert "Appended note" in notes
 
     async def test_note_with_empty_text(self, db_connection) -> None:
-        create_tool = BeadTool(action="create", title="Test")  # type: ignore[call-arg]
-        await create_tool(db_connection)
-
-        note_tool = BeadTool(action="note", id=1, notes="")  # type: ignore[call-arg]
-        result = await note_tool(db_connection)
+        await call_bead(db_connection, action="create", title="Test")
+        result = await call_bead(db_connection, action="note", id=1, notes="")
         assert "[1] note appended" in result
 
     async def test_note_nonexistent_bead_returns_not_found(self, db_connection) -> None:
-        tool = BeadTool(action="note", id=999, notes="test")  # type: ignore[call-arg]
-        result = await tool(db_connection)
+        result = await call_bead(db_connection, action="note", id=999, notes="test")
         assert "not found" in result

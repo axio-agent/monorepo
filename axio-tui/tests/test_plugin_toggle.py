@@ -1,24 +1,22 @@
-"""Tests for ToolSelectScreen — enable/disable tool toggling."""
+"""Tests for ToolSelectScreen - enable/disable tool toggling."""
 
 from __future__ import annotations
 
 from typing import Any
 
 import pytest
-from axio.tool import Tool, ToolHandler
+from axio.tool import Tool
 
 from axio_tui.screens import ToolSelectScreen
 
 
-class _StubHandler(ToolHandler[Any]):
+async def _stub_handler() -> str:
     """Stub tool handler."""
-
-    async def __call__(self, context: Any) -> str:
-        return ""
+    return ""
 
 
 def _make_tools(*names: str) -> list[Tool[Any]]:
-    return [Tool(name=n, description=f"Description for {n}", handler=_StubHandler) for n in names]
+    return [Tool(name=n, description=f"Description for {n}", handler=_stub_handler) for n in names]
 
 
 def _screen(tools: list[Tool[Any]], disabled: set[str]) -> ToolSelectScreen:

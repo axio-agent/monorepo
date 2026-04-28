@@ -8,11 +8,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from axio.agent import Agent
+from axio import Agent, GuardError, PermissionGuard
 from axio.agent_loader import TomlAgentLoader
-from axio.exceptions import GuardError
 from axio.models import ModelSpec
-from axio.permission import PermissionGuard
 from axio.testing import StubTransport, make_text_response
 from axio.transport import DummyCompletionTransport
 
@@ -88,7 +86,7 @@ class TestToolCreationWithGuards:
         class DenyGuard(PermissionGuard):
             """Guard that denies all requests."""
 
-            async def check(self, handler: Any) -> Any:
+            async def check(self, tool: Any, **kwargs: Any) -> dict[str, Any]:
                 raise GuardError("Denied by guard")
 
         guard_factory = MagicMock(return_value=DenyGuard())
@@ -193,11 +191,8 @@ class TestEdgeCases:
 
         tool = make_analyze_tool({}, on_event, transport, role_models, "test_role")
 
-        # Instantiate the handler to check fields
-        handler_class = tool.handler
-        handler_instance = handler_class(task="Test task")
-
-        assert hasattr(handler_instance, "task")
+        # Check that tool has the expected field in its schema
+        assert "task" in tool.input_schema["properties"]
 
     def test_delegate_tool_handler_validation(self):
         """Test delegate tool handler has required fields."""
@@ -207,12 +202,10 @@ class TestEdgeCases:
 
         delegate_tool = make_delegate_tool(on_event, transport, role_models, {})
 
-        handler_class = delegate_tool.handler
-        handler_instance = handler_class(role="backend_dev", topic="test", task="do something")
-
-        assert hasattr(handler_instance, "role")
-        assert hasattr(handler_instance, "topic")
-        assert hasattr(handler_instance, "task")
+        # Check that tool has the expected fields in its schema
+        assert "role" in delegate_tool.input_schema["properties"]
+        assert "topic" in delegate_tool.input_schema["properties"]
+        assert "task" in delegate_tool.input_schema["properties"]
 
     def test_workspace_setup(self):
         """Test workspace setup."""

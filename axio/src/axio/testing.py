@@ -9,15 +9,12 @@ from typing import Any
 from .context import MemoryContextStore
 from .events import IterationEnd, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
 from .messages import Message
-from .tool import Tool, ToolHandler
+from .tool import Tool
 from .types import StopReason, Usage
 
 
-class MsgInput(ToolHandler[Any]):
-    msg: str
-
-    async def __call__(self, context: Any) -> str:
-        return self.model_dump_json()
+async def _msg_input(msg: str) -> str:
+    return json.dumps({"msg": msg})
 
 
 class StubTransport:
@@ -84,4 +81,4 @@ def make_ephemeral_context() -> MemoryContextStore:
 
 
 def make_echo_tool() -> Tool[Any]:
-    return Tool(name="echo", description="Returns input as JSON", handler=MsgInput)
+    return Tool(name="echo", description="Returns input as JSON", handler=_msg_input)

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from axio_tools_local.patch_file import PatchFile
+from axio_tools_local.patch_file import patch_file
 
 
 @pytest.fixture()
@@ -25,8 +25,7 @@ def tmp_cwd(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 async def patch(path: Path, from_line: int, to_line: int, content: str) -> str:
-    handler = PatchFile(file_path=path.name, from_line=from_line, to_line=to_line, content=content)
-    return await handler({})
+    return await patch_file(file_path=path.name, from_line=from_line, to_line=to_line, content=content)
 
 
 class TestPatchBasic:
@@ -181,9 +180,3 @@ class TestEdgeCases:
         f.write_text("привет\nмир\n")
         await patch(f, 1, 1, "hello\n")
         assert f.read_text() == "hello\nмир\n"
-
-    async def test_repr(self) -> None:
-        h = PatchFile(file_path="f.py", from_line=5, to_line=10, content="code")
-        r = repr(h)
-        assert "f.py" in r
-        assert "5:10" in r

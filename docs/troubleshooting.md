@@ -42,7 +42,7 @@ For the TUI, you can also set keys via the settings screen (open the command pal
 
 ### `Invalid API key` / `Authentication error`
 
-- Verify the key is correct — no extra spaces or quotes in the env var
+- Verify the key is correct - no extra spaces or quotes in the env var
 - Check the key has not expired
 - For OpenAI: make sure you have active billing
 - For Anthropic: ensure the key has the right permissions
@@ -53,7 +53,7 @@ For the TUI, you can also set keys via the settings screen (open the command pal
 
 - Check your internet connection
 - Verify the API endpoint is correct (especially for custom endpoints)
-- Some corporate networks block external APIs — try using a VPN
+- Some corporate networks block external APIs - try using a VPN
 - For OpenAI-compatible APIs: verify the base URL in your transport config
 
 ### `Timeout error`
@@ -64,7 +64,7 @@ For the TUI, you can also set keys via the settings screen (open the command pal
 
 ### `SSL certificate error`
 
-- Update your Python version — newer versions have updated CA certificates
+- Update your Python version - newer versions have updated CA certificates
 - On macOS: run `/Applications/Python\ 3.x/Install\ Certificates.command`
 - On Linux: update ca-certificates: `sudo apt update && sudo apt install ca-certificates`
 
@@ -92,8 +92,8 @@ agent = Agent(
 
 Check the error message:
 
-- **Timeout**: the tool took too long — consider async optimization
-- **Permission denied**: a guard blocked the tool — see "Permission guards" below
+- **Timeout**: the tool took too long - consider async optimization
+- **Permission denied**: a guard blocked the tool - see "Permission guards" below
 - **Import error**: check the tool handler's dependencies are installed
 
 ### `Tool returned empty result`
@@ -115,7 +115,7 @@ Guards are blocking all tool calls. Check:
 ### `PathGuard: path not allowed`
 
 The path guard prompts for permission on each new directory. It does not take
-a pre-configured allow list — instead it asks at runtime. To attach it:
+a pre-configured allow list - instead it asks at runtime. To attach it:
 
 ```python
 from axio_tui_guards import PathGuard
@@ -153,7 +153,7 @@ Multiple processes are accessing the same SQLite database. Solutions:
 
 ### TUI crashes on startup
 
-- Check Python version — requires 3.12+
+- Check Python version - requires 3.12+
 - Run with verbose logging: `axio --log-level debug` to see error output
 - Try resetting config: delete `~/.local/share/axio-tui/axio.db` and restart
 
