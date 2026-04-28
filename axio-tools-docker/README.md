@@ -32,7 +32,7 @@ pip install axio-tools-docker
 
 ## Quick start
 
-<!-- name: test_readme_usage; mark: docker -->
+<!-- name: test_readme_usage; fixtures: docker -->
 ```python
 import asyncio
 from axio.agent import Agent
@@ -112,37 +112,76 @@ asyncio.run(first_session())
 asyncio.run(second_session())
 ```
 
+## Named volumes
+
+Named volumes are managed by the Docker daemon and persist across container
+restarts. Use them to share state between sandbox sessions:
+
+<!-- name: test_readme_example; fixtures: docker -->
+```python
+import asyncio
+from axio_tools_docker import DockerSandbox
+
+async def main() -> None:
+    async with DockerSandbox(
+        image="python:3.12-alpine",
+        named_volumes={"/data": "my-project-data"},
+    ) as sb:
+        await sb.write_file("/data/state.json", '{"count": 1}')
+    # Container removed, volume survives.
+
+    async with DockerSandbox(
+        image="python:3.12-alpine",
+        named_volumes={"/data": "my-project-data"},
+        volumes_remove=True,   # delete the volume on exit
+    ) as sb:
+        raw = await sb.read_file_bytes("/data/state.json")
+        assert raw.decode() == '{"count": 1}'
+
+asyncio.run(main())
+```
+
+Docker creates the volume automatically if it does not exist yet.
+
 ## Configuration
 
-<!-- name: test_readme_config -->
+<!-- name: test_readme_config; fixtures: docker -->
 ```python
+import os
 from axio_tools_docker import DockerSandbox
 
 sandbox = DockerSandbox(
-    "unix:///var/run/docker.sock",   # Docker daemon URL (positional)
+    os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock"),  # Docker daemon URL, optional
     image="python:3.12-slim",
-    memory="512m",                   # memory limit: "256m", "1g", …
-    cpus="2.0",                      # CPU limit
-    network=False,                   # False=none, True=default, str=explicit mode
+    memory="512m",  # memory limit: "256m", "1g", …
+    cpus="2.0",  # CPU limit
+    network=False,  # False=none, True=default, str=explicit mode
     workdir="/workspace",
-    volumes={"/workspace": "/tmp/host-dir"},   # {container_path: host_path}
+    volumes={"/workspace": "/tmp/host-dir"},  # {container_path: host_path}
+    named_volumes={"/data": "my-project-data"},  # named Docker volumes
+    volumes_remove=False,  # remove named volumes on exit
     env={"PYTHONPATH": "/app"},
     user="nobody",
     name="my-agent-sandbox",
     remove=False,
-    read_only=True,                  # read-only root filesystem
-    shm_size="64m",                  # /dev/shm size
-    cap_add=["NET_ADMIN"],           # add Linux capabilities
-    cap_drop=["ALL"],                # drop Linux capabilities
+    read_only=True,  # read-only root filesystem
+    shm_size="64m",  # /dev/shm size
+    cap_add=["NET_ADMIN"],  # add Linux capabilities
+    cap_drop=["ALL"],  # drop Linux capabilities
     privileged=False,
     ulimits={"nofile": (1024, 65536), "nproc": 512},
     tmpfs={"/tmp": "size=128m,mode=1777"},
-    ports={8080: 8080},              # {container_port: host_port}
+    ports={8080: 8080},  # {container_port: host_port}
     platform="linux/amd64",
     extra_hosts={"host.docker.internal": "host-gateway"},
     devices=["/dev/net/tun", "/dev/sda:/dev/xvda:r"],
     dns=["8.8.8.8", "1.1.1.1"],
 )
+
+assert sandbox.image == "python:3.12-slim"
+assert sandbox.memory == "512m"
+assert sandbox.cpus == "2.0"
+assert sandbox.network == False
 ```
 
 | Parameter | Type | Default | Description |
@@ -154,6 +193,8 @@ sandbox = DockerSandbox(
 | `network` | `bool \| str` | `False` | Network mode. `False` → `none`. `True` → Docker default. String → explicit `NetworkMode` (e.g. `"host"`, `"bridge"`, `"my-net"`). |
 | `workdir` | `str` | `"/workspace"` | Working directory inside the container. |
 | `volumes` | `dict[str, str]` | `{}` | Bind mounts as `{container_path: host_path}`. |
+| `named_volumes` | `dict[str, str]` | `{}` | Named Docker volumes as `{container_path: volume_name}`. Created automatically if absent. |
+| `volumes_remove` | `bool` | `False` | Remove named volumes on exit. No effect when attached to an existing container. |
 | `env` | `dict[str, str]` | `{}` | Environment variables passed to all commands. |
 | `user` | `str` | `""` | User to run as (e.g. `"nobody"`, `"1000"`). |
 | `name` | `str` | `""` | Container name. Attaches to existing container if found; creates new one otherwise. |

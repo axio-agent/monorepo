@@ -549,3 +549,106 @@ class TestToolTypeValidation:
         t: Tool[Any] = Tool(name="f", handler=f)
         with pytest.raises(HandlerError, match="requires str"):
             await t(value=42)
+
+    async def test_multi_branch_union_accepts_first_branch(self) -> None:
+        async def f(x: str | int) -> str:
+            return str(x)
+
+        t: Tool[Any] = Tool(name="f", handler=f)
+        assert await t(x="hello") == "hello"
+
+    async def test_multi_branch_union_accepts_second_branch(self) -> None:
+        async def f(x: str | int) -> str:
+            return str(x)
+
+        t: Tool[Any] = Tool(name="f", handler=f)
+        assert await t(x=42) == "42"
+
+    async def test_multi_branch_union_rejects_other_type(self) -> None:
+        async def f(x: str | int) -> str:
+            return str(x)
+
+        t: Tool[Any] = Tool(name="f", handler=f)
+        with pytest.raises(HandlerError, match="requires str | int"):
+            await t(x=[])
+
+
+class TestExplicitSchemaRouting:
+    """Explicit schemas drive kwarg filtering for any handler kind."""
+
+    async def test_explicit_schema_filters_extras_before_guards(self) -> None:
+        """With explicit schema, extras not in schema are stripped before guards."""
+        seen: list[dict[str, Any]] = []
+
+        class _Spy(PermissionGuard):
+            async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+                seen.append(dict(kwargs))
+                return kwargs
+
+        custom: dict[str, Any] = {
+            "type": "object",
+            "properties": {"msg": {"type": "string"}},
+            "required": ["msg"],
+        }
+
+        async def f(msg: str) -> str:
+            return msg
+
+        t: Tool[Any] = Tool(name="f", handler=f, schema=MappingProxyType(custom), guards=(_Spy(),))
+        result = await t(msg="hello", _decoy="ignored")
+        assert result == "hello"
+        assert seen == [{"msg": "hello"}]
+
+    async def test_explicit_schema_strips_guard_injected_extras(self) -> None:
+        """Guard-injected keys not in the explicit schema are dropped before execution."""
+
+        class _Inject(PermissionGuard):
+            async def check(self, tool: Tool[Any], **kwargs: Any) -> dict[str, Any]:
+                return {**kwargs, "_guard_extra": "should-be-dropped"}
+
+        custom: dict[str, Any] = {
+            "type": "object",
+            "properties": {"msg": {"type": "string"}},
+            "required": ["msg"],
+        }
+
+        async def f(msg: str) -> str:
+            return msg
+
+        t: Tool[Any] = Tool(name="f", handler=f, schema=MappingProxyType(custom), guards=(_Inject(),))
+        assert await t(msg="hello") == "hello"
+
+    async def test_required_field_with_schema_default_rejected_when_missing(self) -> None:
+        """A field listed in 'required' must be supplied by the caller, even if it has a schema default."""
+        mcp_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {"path": {"type": "string", "default": "/tmp"}},
+            "required": ["path"],
+        }
+
+        async def handler(**kwargs: Any) -> str:
+            return str(kwargs.get("path", ""))
+
+        t: Tool[Any] = Tool(name="t", handler=handler, schema=MappingProxyType(mcp_schema))
+        with pytest.raises(HandlerError, match="Missing required field"):
+            await t()
+
+    async def test_optional_field_with_schema_default_injected(self) -> None:
+        """Optional fields (not in 'required') have their schema defaults injected."""
+        mcp_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "encoding": {"type": "string", "default": "utf-8"},
+            },
+            "required": ["path"],
+        }
+        received: list[dict[str, Any]] = []
+
+        async def handler(**kwargs: Any) -> str:
+            received.append(dict(kwargs))
+            return "ok"
+
+        t: Tool[Any] = Tool(name="t", handler=handler, schema=MappingProxyType(mcp_schema))
+        await t(path="/tmp/f.txt")
+        assert received == [{"path": "/tmp/f.txt", "encoding": "utf-8"}]

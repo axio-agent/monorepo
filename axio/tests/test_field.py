@@ -270,3 +270,59 @@ class TestValidateExtended:
     def test_list_no_type_args_skips_element_check(self) -> None:
         fi = FieldInfo()
         fi.validate([1, "x", None], "items", list)  # bare list - no element check
+
+    # list item consistency with scalar rules
+    def test_list_float_accepts_int_element(self) -> None:
+        fi = FieldInfo()
+        fi.validate([1, 2.5], "values", list[float])  # int is valid JSON number
+
+    def test_list_bool_rejected_for_int_element(self) -> None:
+        fi = FieldInfo()
+        with pytest.raises(TypeError, match="element 0 requires int"):
+            fi.validate([True], "flags", list[int])
+
+    def test_list_optional_item_accepts_none(self) -> None:
+        fi = FieldInfo()
+        fi.validate(["ok", None], "tags", list[str | None])
+
+    def test_list_optional_item_rejects_wrong_type(self) -> None:
+        fi = FieldInfo()
+        with pytest.raises(TypeError, match="element 1 requires str"):
+            fi.validate(["ok", 42], "tags", list[str | None])
+
+
+class TestMultiBranchUnion:
+    def test_str_or_int_accepts_str(self) -> None:
+        fi = FieldInfo()
+        fi.validate("hello", "x", str | int)
+
+    def test_str_or_int_accepts_int(self) -> None:
+        fi = FieldInfo()
+        fi.validate(42, "x", str | int)
+
+    def test_str_or_int_rejects_list(self) -> None:
+        fi = FieldInfo()
+        with pytest.raises(TypeError, match="requires str | int"):
+            fi.validate([], "x", str | int)
+
+    def test_str_or_int_or_none_accepts_none(self) -> None:
+        fi = FieldInfo()
+        fi.validate(None, "x", str | int | None)
+
+    def test_str_or_int_or_none_accepts_str(self) -> None:
+        fi = FieldInfo()
+        fi.validate("hi", "x", str | int | None)
+
+    def test_str_or_int_or_none_rejects_list(self) -> None:
+        fi = FieldInfo()
+        with pytest.raises(TypeError, match="requires str | int"):
+            fi.validate([], "x", str | int | None)
+
+    def test_bool_or_str_accepts_bool(self) -> None:
+        fi = FieldInfo()
+        fi.validate(True, "x", bool | str)
+
+    def test_int_or_str_rejects_bool(self) -> None:
+        fi = FieldInfo()
+        with pytest.raises(TypeError, match="requires int | str"):
+            fi.validate(True, "x", int | str)

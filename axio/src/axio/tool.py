@@ -109,9 +109,9 @@ class Tool[T]:
         schema_explicit = bool(self.schema)
         if not self.schema:
             object.__setattr__(self, "schema", MappingProxyType(build_tool_schema(self.handler, hints=param_hints)))
-        # For **kwargs handlers with an explicit schema (e.g. MCP tools): synthesise
-        # _fields from schema properties so type validation and default injection work.
-        if accepts_var_kwargs and schema_explicit:
+        # For handlers with an explicit schema: synthesise _fields from schema properties
+        # so type validation, default injection, and kwarg filtering all use the schema.
+        if schema_explicit:
             schema_props: dict[str, Any] = dict(self.schema).get("properties") or {}
             schema_fields: dict[str, tuple[Any, FieldInfo]] = {}
             for prop_name, prop_schema in schema_props.items():
@@ -142,15 +142,17 @@ class Tool[T]:
         async with self._acquire():
             # 1. Inject defaults and validate - guards see fully materialised kwargs.
             try:
+                required_set: set[str] = set(self.schema.get("required", []))
                 for name, (hint, fi) in self._fields.items():
                     if name not in kwargs:
-                        if fi.default is not MISSING:
+                        # Required fields must be supplied by the caller even if the schema
+                        # carries a default; only inject defaults for optional fields.
+                        if fi.default is not MISSING and name not in required_set:
                             kwargs[name] = fi.default
                     else:
                         fi.validate(kwargs[name], name, hint)
 
-                required = self.schema.get("required", [])
-                missing = [name for name in required if name not in kwargs]
+                missing = [name for name in required_set if name not in kwargs]
                 if missing:
                     raise HandlerError(f"Missing required field(s): {', '.join(missing)}")
             except HandlerError:
@@ -160,14 +162,14 @@ class Tool[T]:
 
             # 2. Strip caller-supplied extras before guards so they only see
             #    what the handler will actually receive.
-            if not self._accepts_var_kwargs:
-                kwargs = {k: v for k, v in kwargs.items() if k in self._fields}
-            elif self._schema_explicit:
-                # **kwargs handlers with an explicit schema (e.g. MCP tools): filter
-                # to declared properties. Even an empty-properties schema strips all extras.
+            if self._schema_explicit:
+                # Explicit schema is the contract - filter to its declared properties.
+                # Applies to both **kwargs (MCP) and regular handlers with custom schemas.
                 schema_props = self.schema.get("properties")
                 if schema_props is not None:
                     kwargs = {k: v for k, v in kwargs.items() if k in schema_props}
+            elif not self._accepts_var_kwargs:
+                kwargs = {k: v for k, v in kwargs.items() if k in self._fields}
 
             # 3. Guards run sequentially on stripped kwargs.
             for guard in self.guards:
@@ -180,7 +182,11 @@ class Tool[T]:
 
             # 4. Execute handler - strip any guard-injected stray kwargs.
             try:
-                if not self._accepts_var_kwargs:
+                if self._schema_explicit:
+                    schema_props = self.schema.get("properties")
+                    if schema_props is not None:
+                        kwargs = {k: v for k, v in kwargs.items() if k in schema_props}
+                elif not self._accepts_var_kwargs:
                     kwargs = {k: v for k, v in kwargs.items() if k in self._fields}
                 token = CONTEXT.set(self.context)
                 try:

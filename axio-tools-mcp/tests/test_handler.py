@@ -224,3 +224,39 @@ async def test_empty_properties_strips_all_extras() -> None:
 
     await tool(_extra="ignored")
     cast(AsyncMock, session.call_tool).assert_awaited_once_with("ping", {})
+
+
+async def test_guard_injected_extras_not_forwarded_to_mcp_server() -> None:
+    """Guard-injected keys outside the schema are stripped before the MCP call.
+
+    Tool.__call__ applies the schema-based post-guard strip for explicit-schema
+    handlers, so guards cannot accidentally inject kwargs that reach the MCP server.
+    """
+    from axio.permission import PermissionGuard
+
+    class _Inject(PermissionGuard):
+        async def check(self, tool: Any, **kwargs: Any) -> dict[str, Any]:
+            return {**kwargs, "_audit_tag": "injected-by-guard"}
+
+    session = _make_mock_session()
+    cast(AsyncMock, session.call_tool).return_value = CallToolResult(
+        content=[TextContent(type="text", text="ok")],
+        isError=False,
+    )
+
+    mcp_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
+    handler = build_handler("fs__read", "read", "Read", session)
+    tool: Tool[Any] = Tool(
+        name="fs__read",
+        description="Read",
+        handler=handler,
+        schema=MappingProxyType(mcp_schema),
+        guards=(_Inject(),),
+    )
+
+    await tool(path="/tmp/file.txt")
+    cast(AsyncMock, session.call_tool).assert_awaited_once_with("read", {"path": "/tmp/file.txt"})

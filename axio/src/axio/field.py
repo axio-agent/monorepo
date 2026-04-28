@@ -45,11 +45,14 @@ def check_list_items(value: list[Any], name: str, inner: Any) -> None:
     item_args = get_args(inner)
     if not item_args:
         return
-    item_b = bare_type(item_args[0])
+    item_hint = item_args[0]
+    item_b = bare_type(item_hint)
     if item_b not in PRIMITIVE_TYPES:
         return
     for idx, elem in enumerate(value):
-        if not isinstance(elem, item_b):
+        try:
+            check_type(elem, name, item_hint, strict=False)
+        except (TypeError, ValueError):
             raise TypeError(f"Field '{name}' element {idx} requires {item_b.__name__}, got {type(elem).__name__}")
 
 
@@ -57,6 +60,19 @@ def check_type(value: Any, name: str, inner: Any, *, strict: bool) -> None:
     """Dispatch type validation for *value* against *inner* (already unwrapped)."""
     origin = get_origin(inner)
     b = bare_type(inner)
+
+    # Multi-branch union (e.g. str | int): value must satisfy at least one branch.
+    # unwrap_hint already stripped Optional (| None), so non-None multi-unions land here.
+    if b is object and (origin is types.UnionType or origin is typing.Union):
+        branches = [br for br in get_args(inner) if br is not type(None)]
+        for branch in branches:
+            try:
+                check_type(value, name, branch, strict=strict)
+                return
+            except (TypeError, ValueError):
+                continue
+        branch_names = " | ".join(getattr(bare_type(br), "__name__", str(br)) for br in branches)
+        raise TypeError(f"Field '{name}' requires {branch_names}, got {type(value).__name__}")
 
     # bool is an int subclass - reject it for non-bool hints before numeric dispatch.
     if isinstance(value, bool) and b is not bool:

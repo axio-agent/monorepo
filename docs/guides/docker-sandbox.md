@@ -21,7 +21,7 @@ required.
 
 ## Quick start
 
-<!-- name: test_docker_quick_start; mark: docker -->
+<!-- name: test_docker_quick_start; fixtures: docker -->
 ```python
 import asyncio
 from axio import Agent, MemoryContextStore
@@ -73,7 +73,7 @@ present locally.
 The `container_id` property returns the Docker ID of the running container and
 is only valid inside the `async with` block:
 
-<!-- name: test_docker_container_id; mark: docker -->
+<!-- name: test_docker_container_id; fixtures: docker -->
 ```python
 import asyncio
 from axio_tools_docker import DockerSandbox
@@ -94,7 +94,7 @@ Pass `name=` to give the container a fixed name. When a running container with
 that name already exists, the sandbox attaches to it instead of creating a new
 one and skips removal on exit regardless of `remove`:
 
-<!-- name: test_docker_named_reuse; mark: docker -->
+<!-- name: test_docker_named_reuse; fixtures: docker -->
 ```python
 import asyncio
 from axio_tools_docker import DockerSandbox
@@ -120,6 +120,44 @@ asyncio.run(second_session())
 ```
 
 If no container with the given name exists, a new one is created normally.
+
+## Named volumes
+
+Named volumes are managed by the Docker daemon independently of any container.
+They persist across container restarts and can be shared between sandbox sessions.
+Pass `named_volumes=` as a `{container_path: volume_name}` mapping:
+
+<!-- name: test_docker_named_volumes; fixtures: docker -->
+```python
+import asyncio
+from axio_tools_docker import DockerSandbox
+
+async def main() -> None:
+    # First session: write data to the volume
+    async with DockerSandbox(
+        image="python:3.12-alpine",
+        named_volumes={"/data": "my-project-data"},
+    ) as sb:
+        await sb.write_file("/data/state.json", '{"count": 1}')
+    # Container is removed, but the volume survives.
+
+    # Second session: data is still there
+    async with DockerSandbox(
+        image="python:3.12-alpine",
+        named_volumes={"/data": "my-project-data"},
+        volumes_remove=True,   # remove the volume on exit
+    ) as sb:
+        raw = await sb.read_file_bytes("/data/state.json")
+        print(raw.decode())   # {"count": 1}
+    # Volume is now removed as well.
+
+asyncio.run(main())
+```
+
+Docker creates the volume automatically if it does not exist yet.
+
+Set `volumes_remove=True` to delete the named volumes when the sandbox exits.
+This has no effect when attaching to an existing container (`name=` reuse).
 
 ## Resource limits
 
@@ -201,6 +239,8 @@ sandbox = DockerSandbox(
     network=False,
     workdir="/workspace",
     volumes={"/workspace": "/tmp/host-dir"},
+    named_volumes={"/data": "my-project-data"},
+    volumes_remove=False,
     env={"PYTHONPATH": "/app"},
     user="nobody",
     name="my-sandbox",
@@ -229,6 +269,8 @@ sandbox = DockerSandbox(
 | `network` | `bool \| str` | `False` | Network mode. `False` → `none`. `True` → Docker default. String → explicit `NetworkMode` (e.g. `"host"`, `"bridge"`, `"my-project_default"`). |
 | `workdir` | `str` | `"/workspace"` | Working directory inside the container. Relative paths in tool calls resolve against this. |
 | `volumes` | `dict[str, str]` | `{}` | Bind mounts as `{container_path: host_path}`. |
+| `named_volumes` | `dict[str, str]` | `{}` | Named Docker volumes as `{container_path: volume_name}`. Created automatically if absent. |
+| `volumes_remove` | `bool` | `False` | Remove named volumes on exit. No effect when attached to an existing container. |
 | `env` | `dict[str, str]` | `{}` | Environment variables passed to all commands. |
 | `user` | `str` | `""` | User to run as (e.g. `"nobody"`, `"1000"`). |
 | `name` | `str` | `""` | Container name. Attaches to existing container if running; creates new one otherwise. |
