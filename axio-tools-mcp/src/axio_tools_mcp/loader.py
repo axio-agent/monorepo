@@ -48,7 +48,6 @@ async def load_mcp_tools(
                 tool_name=tool_name,
                 mcp_tool_name=mcp_tool.name,
                 description=description,
-                input_schema=input_schema,
                 session=session,
             )
             all_tools.append(

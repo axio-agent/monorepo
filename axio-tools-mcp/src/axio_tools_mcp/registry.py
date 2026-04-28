@@ -72,7 +72,6 @@ class MCPRegistry:
                     tool_name=tool_name,
                     mcp_tool_name=mcp_tool.name,
                     description=description,
-                    input_schema=input_schema,
                     session=session,
                 )
                 tools.append(
