@@ -13,12 +13,14 @@ from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from .field import MISSING, FieldInfo, get_field_info, is_classvar
 
-_PRIMITIVE: dict[type[Any], str] = {
+PRIMITIVE: dict[type[Any], str] = {
     str: "string",
     int: "integer",
     float: "number",
     bool: "boolean",
 }
+
+VAR_KINDS = frozenset({inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD})
 
 
 def property_schema(annotation: Any) -> dict[str, Any]:
@@ -61,8 +63,8 @@ def property_schema(annotation: Any) -> dict[str, Any]:
         return {"type": "object"}
 
     # Primitive scalars
-    if annotation in _PRIMITIVE:
-        return {"type": _PRIMITIVE[annotation]}
+    if annotation in PRIMITIVE:
+        return {"type": PRIMITIVE[annotation]}
 
     # Unknown - expose as bare object schema
     return {}
@@ -105,6 +107,8 @@ def build_tool_schema(
 
     for name, hint in hints.items():
         if name.startswith("_") or is_classvar(hint) or name == "return":
+            continue
+        if sig is not None and name in sig.parameters and sig.parameters[name].kind in VAR_KINDS:
             continue
 
         properties[name] = property_schema(hint)

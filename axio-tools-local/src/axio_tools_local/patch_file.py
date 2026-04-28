@@ -34,6 +34,8 @@ async def patch_file(
         new_lines = lines[: from_line - 1] + content_lines + lines[to_line:]
         with path.open("w") as f:
             f.writelines(new_lines)
-            return f"{f.tell()} bytes written to {file_path}"
+            result = f"{f.tell()} bytes written to {file_path}"
+        os.chmod(path, mode)
+        return result
 
     return await asyncio.to_thread(_blocking)

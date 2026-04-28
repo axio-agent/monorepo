@@ -244,7 +244,7 @@ class TestToolValidation:
             return required
 
         t: Tool[Any] = Tool(name="f", description="f", handler=f)
-        with pytest.raises(HandlerError):
+        with pytest.raises(HandlerError, match="required"):
             await t()
 
     async def test_validation_only_on_provided_params(self) -> None:

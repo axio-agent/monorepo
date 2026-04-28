@@ -80,6 +80,11 @@ class Tool[T]:
                     elif fi is not None:
                         fi.validate(kwargs[name], name, hint)
 
+                required = self.schema.get("required", [])
+                missing = [name for name in required if name not in kwargs]
+                if missing:
+                    raise HandlerError(f"Missing required field(s): {', '.join(missing)}")
+
                 async def _run() -> str:
                     CONTEXT.set(self.context)
                     return str(await self.handler(**kwargs))

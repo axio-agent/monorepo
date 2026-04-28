@@ -40,8 +40,11 @@ async def db_path(tmp_path) -> str:
 
 async def call_bead(db: aiosqlite.Connection, **kwargs: Any) -> str:
     """Call bead() with db set as CONTEXT."""
-    CONTEXT.set(db)
-    return await bead(**kwargs)
+    token = CONTEXT.set(db)
+    try:
+        return await bead(**kwargs)
+    finally:
+        CONTEXT.reset(token)
 
 
 class TestBeadSummary:
