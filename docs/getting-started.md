@@ -71,7 +71,7 @@ design.
 ## Adding Tools
 
 Tools are plain `async def` functions. Define parameters as arguments and return
-a string (or JSON-serialisable value):
+a string:
 
 <!--
 name: test_adding_tools

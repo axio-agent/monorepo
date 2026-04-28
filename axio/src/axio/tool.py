@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -18,6 +19,8 @@ from .schema import build_tool_schema
 from .types import ToolName
 
 type JSONSchema = dict[str, Any]
+
+logger = logging.getLogger(__name__)
 
 # Set to the tool's ``context`` value before each handler invocation.
 # Handlers that cannot receive context as a parameter retrieve it via ``CONTEXT.get()``.
@@ -43,6 +46,14 @@ class Tool[T]:
         if not self.description:
             object.__setattr__(self, "description", self.handler.__doc__ or "")
         hints = get_type_hints(self.handler, include_extras=True)
+        return_hint = hints.get("return")
+        if return_hint is not None and return_hint is not str:
+            logger.warning(
+                "Tool %r handler %r has return annotation %r, expected str. Non-str values will be coerced via str().",
+                self.name,
+                getattr(self.handler, "__qualname__", self.handler),
+                return_hint,
+            )
         param_hints = {k: v for k, v in hints.items() if k != "return"}
         param_fields = MappingProxyType({name: (hint, get_field_info(hint)) for name, hint in param_hints.items()})
         if not self.schema:
