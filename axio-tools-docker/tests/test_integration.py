@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import os
 import re
@@ -13,9 +12,6 @@ import aiodocker
 import pytest
 
 from axio_tools_docker.sandbox import DockerSandbox
-
-
-
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -67,17 +63,21 @@ async def test_shell_stderr(sandbox: DockerSandbox) -> None:
     assert "[stderr]" in result
     assert "err" in result
 
+
 async def test_shell_exit_code(sandbox: DockerSandbox) -> None:
     result = await sandbox.exec("exit 42")
     assert "[exit code: 42]" in result
+
 
 async def test_shell_timeout(sandbox: DockerSandbox) -> None:
     result = await sandbox.exec("sleep 60", timeout=0.5)
     assert "[timeout" in result
 
+
 async def test_shell_stdin(sandbox: DockerSandbox) -> None:
     result = await sandbox.exec("cat", stdin="hello from stdin\n")
     assert "hello from stdin" in result
+
 
 async def test_write_and_read_file(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/test.txt", "line1\nline2\nline3\n")
@@ -189,15 +189,11 @@ async def test_name_creates_new_container(docker: str, image: str, container_nam
 async def test_name_attaches_to_existing_container(docker: str, image: str, container_name: str) -> None:
     """A second sandbox with the same name reuses the running container."""
     try:
-        async with DockerSandbox(
-            docker, image=image, workdir="/workspace", name=container_name, remove=False
-        ) as sb1:
+        async with DockerSandbox(docker, image=image, workdir="/workspace", name=container_name, remove=False) as sb1:
             first_id = sb1.container_id
             await sb1.write_file("/workspace/marker.txt", "from-first-session")
 
-        async with DockerSandbox(
-            docker, image=image, workdir="/workspace", name=container_name, remove=False
-        ) as sb2:
+        async with DockerSandbox(docker, image=image, workdir="/workspace", name=container_name, remove=False) as sb2:
             second_id = sb2.container_id
             raw = await sb2.read_file_bytes("/workspace/marker.txt")
 
@@ -220,9 +216,7 @@ async def test_name_container_id_property(docker: str, image: str) -> None:
 async def test_stopped_container_exec_raises(docker: str, image: str, container_name: str) -> None:
     """If the container is stopped externally, exec raises DockerError."""
     try:
-        async with DockerSandbox(
-            docker, image=image, workdir="/workspace", name=container_name, remove=False
-        ) as sb:
+        async with DockerSandbox(docker, image=image, workdir="/workspace", name=container_name, remove=False) as sb:
             async with aiodocker.Docker(url=docker) as client:
                 c = await client.containers.get(container_name)
                 await c.stop()
