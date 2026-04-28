@@ -7,9 +7,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from axio import Tool
 from axio.models import ModelSpec
 from axio.testing import StubTransport, make_text_response
-from axio.tool import Tool
 from axio.transport import DummyCompletionTransport
 
 from agent_swarm.swarm import (

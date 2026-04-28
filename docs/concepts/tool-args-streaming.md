@@ -171,10 +171,9 @@ from axio.tool_args import ToolArgStream
 -->
 <!-- name: test_tool_arg_stream_basic -->
 ```python
+from axio import ToolUseStart, ToolInputDelta
+from axio.events import ToolFieldStart, ToolFieldDelta, ToolFieldEnd
 from axio.tool_args import ToolArgStream
-from axio.events import (
-    ToolUseStart, ToolInputDelta, ToolFieldStart, ToolFieldDelta, ToolFieldEnd
-)
 
 parsers: dict[str, ToolArgStream] = {}
 

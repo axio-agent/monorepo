@@ -29,16 +29,21 @@ from typing import Annotated, Any, TypedDict
 
 import aiosqlite
 from aiochannel import Channel
-from axio.agent import Agent
+from axio import (
+    CONTEXT,
+    Agent,
+    CompletionTransport,
+    Field,
+    MemoryContextStore,
+    PermissionGuard,
+    StreamEvent,
+    TextDelta,
+    Tool,
+)
 from axio.agent_loader import load_agents
 from axio.compaction import AutoCompactStore
-from axio.context import MemoryContextStore
-from axio.events import StreamEvent, TextDelta
-from axio.field import Field
 from axio.models import ModelSpec
-from axio.permission import PermissionGuard
-from axio.tool import CONTEXT, Tool
-from axio.transport import CompletionTransport, DummyCompletionTransport
+from axio.transport import DummyCompletionTransport
 
 from .beads import DDL as BEAD_DDL
 from .beads import (
@@ -62,11 +67,11 @@ SANDBOX_CONTEXT = """\
 Sandbox environment
 -------------------
 You are running inside an isolated Docker container. The only path shared with
-the host is /workspace — all project reads and writes happen there.
+the host is /workspace - all project reads and writes happen there.
 Paths inside the container differ from host paths; do not assume they match.
 You have full root access inside this sandbox: install any packages, compilers,
 or CLI tools you need via shell (apt, pip, npm, cargo, …). Modify system files
-freely. This container is yours — treat it that way."""
+freely. This container is yours - treat it that way."""
 
 # ---------------------------------------------------------------------------
 # Read-only analyst prototype

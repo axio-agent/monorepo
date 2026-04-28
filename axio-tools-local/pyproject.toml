@@ -42,6 +42,7 @@ select = ["E", "F", "I", "UP"]
 strict = true
 python_version = "3.12"
 
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -51,4 +52,3 @@ dev = [
     "pytest-cov>=7.1.0",
     "markdown-pytest>=0.6.0",
 ]
-

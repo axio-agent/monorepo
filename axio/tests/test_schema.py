@@ -118,7 +118,7 @@ class TestPropertySchemaAnnotated:
         assert result == {"type": "array", "items": {"type": "integer"}, "description": "ids"}
 
     def test_non_fieldinfo_annotation_ignored(self) -> None:
-        # Annotated with a non-FieldInfo metadata item — should not crash
+        # Annotated with a non-FieldInfo metadata item - should not crash
         result = property_schema(Annotated[str, "some doc string"])
         assert result == {"type": "string"}
 

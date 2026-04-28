@@ -45,7 +45,7 @@ How to work your bead
 5. Verify your work - run tests or checks if applicable.
 6. Write the result of your work to the bead notes before closing:
    `bead(action='note', id=<id>, notes='<actual output or summary of what was done>')`
-   The Mayor reads your result from the bead notes — be specific and complete.
+   The Mayor reads your result from the bead notes - be specific and complete.
    For shell commands: include the actual stdout/stderr output.
    For file changes: summarise what was created or modified.
 7. Close the bead: `bead(action='close', id=<id>)`

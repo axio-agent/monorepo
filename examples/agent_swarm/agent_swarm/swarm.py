@@ -15,16 +15,21 @@ from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
 import aiosqlite
-from axio.agent import Agent
+from axio import (
+    CONTEXT,
+    Agent,
+    CompletionTransport,
+    Field,
+    MemoryContextStore,
+    PermissionGuard,
+    StreamEvent,
+    TextDelta,
+    Tool,
+)
 from axio.agent_loader import load_agents
 from axio.compaction import AutoCompactStore
-from axio.context import MemoryContextStore
-from axio.events import StreamEvent, TextDelta
-from axio.field import Field
 from axio.models import ModelSpec
-from axio.permission import PermissionGuard
-from axio.tool import CONTEXT, Tool
-from axio.transport import CompletionTransport, DummyCompletionTransport
+from axio.transport import DummyCompletionTransport
 
 from .ask_user import make_ask_user_tool
 from .notes import make_notes_tool
@@ -41,11 +46,11 @@ SANDBOX_CONTEXT = """\
 Sandbox environment
 -------------------
 You are running inside an isolated Docker container. The only path shared with
-the host is /workspace — all project reads and writes happen there.
+the host is /workspace - all project reads and writes happen there.
 Paths inside the container differ from host paths; do not assume they match.
 You have full root access inside this sandbox: install any packages, compilers,
 or CLI tools you need via shell (apt, pip, npm, cargo, …). Modify system files
-freely. This container is yours — treat it that way."""
+freely. This container is yours - treat it that way."""
 
 # ---------------------------------------------------------------------------
 # Read-only analyst prototype
@@ -53,10 +58,20 @@ freely. This container is yours — treat it that way."""
 
 ANALYST = Agent(
     system="""\
-You are a read-only analyst. Your only job is to read files in the workspace and
-produce a concise, well-structured report answering the question you are given.
-You must not create, modify, or delete any files. Never use write_file or patch_file.
-Return your findings as plain text - the caller will use them directly.""",
+You are a read-only analyst. Your job is to read files in the workspace and produce
+a thorough, precise report answering the question you are given. Other specialists
+will make decisions based solely on your output - omitting details is worse than
+being verbose.
+
+Precision rules:
+- Every claim must cite its source: filename and line number (e.g. `auth.py:42`).
+- Quote the exact lines when they matter; do not paraphrase code or config.
+- If something is absent or you could not find it, say so explicitly: which files you
+  checked and what you searched for. Never invent or guess - "not found" is a valid
+  and valuable answer.
+- Cover edge cases, surprises, and anything that contradicts the obvious interpretation.
+
+You must not create, modify, or delete any files. Never use write_file or patch_file.""",
     transport=DummyCompletionTransport(),
 )
 

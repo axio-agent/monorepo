@@ -24,7 +24,7 @@ name: test_tool_selector_protocol
 from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 from axio.messages import Message
-from axio.tool import Tool
+from axio import Tool
 
 
 @runtime_checkable
@@ -73,7 +73,7 @@ import asyncio
 from collections.abc import Iterable
 from typing import Any
 from axio.messages import Message
-from axio.tool import Tool
+from axio import Tool
 
 
 class KeywordSelector:
@@ -132,7 +132,7 @@ Combine with guards to enforce role-based access:
 from collections.abc import Iterable
 from typing import Any
 from axio.messages import Message
-from axio.tool import Tool
+from axio import Tool
 
 
 class RoleBasedSelector:
@@ -165,7 +165,7 @@ For large tool catalogues, use semantic similarity:
 from collections.abc import Iterable
 from typing import Any
 from axio.messages import Message
-from axio.tool import Tool
+from axio import Tool
 
 
 class EmbeddingSelector:
@@ -208,9 +208,7 @@ class EmbeddingSelector:
 Pass a selector via the `selector` field when constructing an {class}`Agent`:
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.tool import Tool
-from axio.context import MemoryContextStore
+from axio import Agent, Tool, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 
 

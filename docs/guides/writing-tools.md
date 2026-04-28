@@ -11,7 +11,7 @@ input parameters; the docstring becomes the description.
 <!-- name: test_word_count_tool -->
 ```python
 # my_tools/word_count.py
-from axio.tool import Tool
+from axio import Tool
 
 
 async def word_count(text: str) -> str:
@@ -39,14 +39,13 @@ JSON schema: descriptions, optional defaults, and numeric constraints.
 
 Parameter descriptions are included in the JSON schema sent to the LLM with
 every tool call. Clear descriptions help the model understand what each
-parameter expects and produce correct values — especially for parameters
+parameter expects and produce correct values - especially for parameters
 whose purpose isn't obvious from the name alone.
 
 <!-- name: test_annotated_parameters -->
 ```python
 from typing import Annotated
-from axio.field import Field
-from axio.tool import Tool
+from axio import Field, Tool
 
 
 async def search(
@@ -69,7 +68,7 @@ assert "limit" not in schema.get("required", [])
 
 Parameters with a `default` value are omitted from `required` in the schema.
 When the LLM omits an optional parameter, the default is applied automatically
-before the handler is called — no `None` check needed.
+before the handler is called - no `None` check needed.
 
 ### Numeric constraints
 
@@ -79,8 +78,7 @@ and enforced at call time:
 <!-- name: test_annotated_constraints -->
 ```python
 from typing import Annotated
-from axio.field import Field
-from axio.tool import Tool
+from axio import Field, Tool
 
 
 async def resize(
@@ -105,8 +103,7 @@ from `int` or other types). Import it from `axio.field`:
 
 <!-- name: test_strict_str -->
 ```python
-from axio.field import StrictStr
-from axio.tool import Tool
+from axio import StrictStr, Tool
 
 
 async def echo(message: StrictStr) -> str:
@@ -128,7 +125,7 @@ Python code and want to catch accidental non-string inputs early.
 
 <!-- name: test_word_count_tool -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 word_count_tool = Tool(
     name="word_count",
@@ -144,8 +141,7 @@ Pass an explicit `description=` string to override it.
 <!--
 name: test_word_count_tool
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 my_transport = StubTransport([make_text_response("ok")])
 context = MemoryContextStore()
@@ -179,7 +175,7 @@ Attach guards to control when the tool can run:
 <!--
 name: test_tool_with_guard
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 async def word_count(text: str) -> str:
     """Count words."""
@@ -231,8 +227,7 @@ from pathlib import Path
 -->
 <!-- name: test_error_handling -->
 ```python
-from axio.exceptions import HandlerError
-from axio.tool import Tool
+from axio import HandlerError, Tool
 
 
 async def read_file(path: str) -> str:
@@ -253,7 +248,7 @@ configuration (like MCP servers or Docker containers), implement the
 ```python
 from typing import Any
 from axio_tui.plugin import ToolsPlugin
-from axio.tool import Tool
+from axio import Tool
 
 
 class MyPlugin:

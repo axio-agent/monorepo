@@ -44,8 +44,7 @@ a **context store** to hold conversation history, and an **Agent** to tie them t
 <!-- name: test_minimal_agent -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 
 async def main() -> None:
@@ -79,10 +78,8 @@ name: test_adding_tools
 -->
 <!-- name: test_adding_tools -->
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore, Tool
 from axio.testing import StubTransport, make_text_response
-from axio.tool import Tool
 
 # Use real transport in real code; StubTransport is just for example
 transport = StubTransport([make_text_response("ok")])
@@ -110,10 +107,9 @@ signals as they arrive rather than waiting for the full response.
 <!-- name: test_streaming_example -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
-from axio.events import TextDelta, SessionEndEvent
+from axio import Agent, MemoryContextStore, TextDelta
 from axio.testing import StubTransport, make_text_response
+from axio.events import SessionEndEvent
 
 async def main() -> None:
     transport = StubTransport([

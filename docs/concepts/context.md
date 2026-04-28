@@ -90,7 +90,7 @@ anywhere. Only two methods are truly abstract and must be overridden:
 
 <!-- name: test_context_store_abc -->
 ```python
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 
 class MyContextStore(ContextStore):
@@ -127,7 +127,7 @@ tests, and prototypes. `fork()` returns an independent deep copy.
 <!-- name: test_memory_context_store -->
 ```python
 import asyncio
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -208,7 +208,7 @@ Implement `ContextStore` to use any backend:
 <!-- name: test_context_factory_methods -->
 ```python
 import asyncio
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -245,7 +245,7 @@ these values. Custom stores may override `set_context_tokens` and
 <!-- name: test_token_tracking -->
 ```python
 import asyncio
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 
 async def main():
     ctx = MemoryContextStore()
@@ -319,7 +319,7 @@ iteration.
 <!--
 name: test_auto_compact_store
 ```python
-from axio.agent import Agent
+from axio import Agent
 from axio.testing import StubTransport, make_text_response
 transport = StubTransport([make_text_response("ok")])
 agent = Agent(system="you are helpful", transport=transport)
@@ -329,7 +329,7 @@ agent = Agent(system="you are helpful", transport=transport)
 ```python
 import asyncio
 from axio.compaction import AutoCompactStore
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -352,7 +352,7 @@ falls back to 128 000 if the transport has no `model` attribute. Pass
 <!-- name: test_auto_compact_explicit_max_tokens -->
 ```python
 from axio.compaction import AutoCompactStore
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 from axio.testing import StubTransport
 inner_store = MemoryContextStore()
 transport = StubTransport([])
@@ -383,8 +383,7 @@ compaction logic:
 
 <!-- name: test_compact_context -->
 ```python
-from axio.context import ContextStore
-from axio.transport import CompletionTransport
+from axio import ContextStore, CompletionTransport
 from axio.messages import Message
 
 async def compact_context(
@@ -412,7 +411,7 @@ transport = StubTransport([make_text_response("Earlier: user asked about deploym
 ```python
 import asyncio
 from axio.compaction import compact_context
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 

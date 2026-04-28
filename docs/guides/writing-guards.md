@@ -8,9 +8,7 @@ can modify) the raw keyword arguments before the handler runs.
 <!-- name: test_max_length_guard -->
 ```python
 from typing import Any
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
-from axio.tool import Tool
+from axio import PermissionGuard, GuardError, Tool
 
 
 class MaxLengthGuard(PermissionGuard):
@@ -41,9 +39,7 @@ Key rules:
 name: test_attaching_guards
 ```python
 from typing import Any
-from axio.tool import Tool
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
+from axio import Tool, PermissionGuard, GuardError
 
 async def write_file(path: str, content: str) -> str:
     """Write content to a file."""
@@ -58,7 +54,7 @@ class MaxLengthGuard(PermissionGuard):
 -->
 <!-- name: test_attaching_guards -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 tool = Tool(
     name="write_file",
@@ -80,9 +76,7 @@ use `ConcurrentGuard` to limit concurrent calls:
 <!-- name: test_llm_risk_guard -->
 ```python
 from typing import Any
-from axio.exceptions import GuardError
-from axio.permission import ConcurrentGuard
-from axio.tool import Tool
+from axio import GuardError, ConcurrentGuard, Tool
 
 
 class LLMRiskGuard(ConcurrentGuard):
@@ -136,7 +130,7 @@ class LLMRiskGuard(AllowAllGuard):
 -->
 <!-- name: test_composing_guards -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 tool = Tool(
     name="shell",

@@ -128,7 +128,7 @@ All events are frozen dataclasses with `slots=True`:
 : Token counts for one iteration or an entire session. Supports `+` to
   accumulate totals across multiple iterations:
   ```python
-  from axio.types import Usage
+  from axio import Usage
   u1 = Usage(input_tokens=100, output_tokens=50)
   u2 = Usage(input_tokens=200, output_tokens=80)
   total = u1 + u2  # Usage(input_tokens=300, output_tokens=130)

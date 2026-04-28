@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from axio.tool import CONTEXT
+from axio import CONTEXT
 
 from agent_swarm.notes import _format, _parse, make_notes_tool, notes
 

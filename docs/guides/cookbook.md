@@ -9,8 +9,7 @@ Save and restore conversation history:
 <!-- name: test_memory_context -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 
 
@@ -39,10 +38,8 @@ Build a web API with streaming events:
 
 <!-- name: test_streaming_pattern -->
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore, TextDelta
 from axio.testing import StubTransport, make_text_response
-from axio.events import TextDelta
 
 
 transport = StubTransport([make_text_response("Hello!")])
@@ -60,7 +57,7 @@ Combine retrieval and generation:
 
 <!-- name: test_rag_tools -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 
 async def retrieve_context(query: str) -> str:
@@ -84,8 +81,7 @@ Coordinate multiple agents:
 
 <!-- name: test_multi_agent -->
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 
 
@@ -123,10 +119,8 @@ Transport with exponential backoff:
 <!-- name: test_retry_transport -->
 ```python
 from typing import AsyncIterator
+from axio import Tool, StreamEvent, TextDelta, IterationEnd, StopReason, Usage
 from axio.messages import Message
-from axio.tool import Tool
-from axio.events import StreamEvent, TextDelta, IterationEnd
-from axio.types import StopReason, Usage
 
 
 class RetryTransport:
@@ -153,7 +147,7 @@ class RetryTransport:
 <!-- name: test_rate_limit -->
 ```python
 import asyncio
-from axio.tool import Tool, CONTEXT
+from axio import Tool, CONTEXT
 
 RATE_LIMIT = 10
 TIME_WINDOW = 60
@@ -182,8 +176,7 @@ Check for required environment variables:
 ```python
 import os
 from typing import Any
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
+from axio import PermissionGuard, GuardError
 
 
 class ApiKeyGuard(PermissionGuard):
@@ -204,8 +197,7 @@ Apply guards to specific tools:
 <!-- name: test_tool_with_guards -->
 ```python
 from typing import Any
-from axio.tool import Tool
-from axio.permission import PermissionGuard
+from axio import Tool, PermissionGuard
 
 
 async def sensitive_operation(data: str) -> str:

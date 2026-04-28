@@ -11,9 +11,7 @@ name: test_agent_dataclass
 -->
 ```python
 from dataclasses import dataclass, field
-from axio.tool import Tool
-from axio.transport import CompletionTransport
-from axio.selector import ToolSelector
+from axio import Tool, CompletionTransport, ToolSelector
 from axio.messages import Message
 
 
@@ -127,7 +125,7 @@ capability restrictions, or implementing dynamic tool routing.
 from typing import Protocol, runtime_checkable
 from collections.abc import Iterable
 from axio.messages import Message
-from axio.tool import Tool
+from axio import Tool
 
 
 @runtime_checkable
@@ -153,7 +151,7 @@ modified agent without mutating the original:
 <!-- name: test_agent_copy -->
 ```python
 import asyncio
-from axio.agent import Agent
+from axio import Agent
 from axio.testing import StubTransport, make_text_response
 
 transport = StubTransport([make_text_response("ok")])

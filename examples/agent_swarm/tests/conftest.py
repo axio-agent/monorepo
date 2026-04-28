@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from axio.tool import Tool
+from axio import Tool
 
 
 async def _noop() -> str:

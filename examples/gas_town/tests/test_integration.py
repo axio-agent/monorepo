@@ -10,12 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiochannel import Channel
+from axio import CONTEXT, MemoryContextStore
 from axio.compaction import AutoCompactStore
-from axio.context import MemoryContextStore
 from axio.messages import Message
 from axio.models import ModelSpec
 from axio.testing import StubTransport, make_text_response
-from axio.tool import CONTEXT
 
 from gas_town.beads import DDL, bead, bead_summary, get_bead
 from gas_town.swarm import make_analyze_tool, make_sling_tool, run_gastown

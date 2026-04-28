@@ -38,6 +38,10 @@ select = ["E", "F", "I", "UP"]
 strict = true
 python_version = "3.12"
 
+[[tool.mypy.overrides]]
+module = ["axio_tui", "axio_tui.*", "axio_tools_local", "axio_tools_local.*"]
+ignore_missing_imports = true
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -47,7 +51,3 @@ dev = [
     "pytest-cov>=7.1.0",
     "markdown-pytest>=0.6.0",
 ]
-
-[[tool.mypy.overrides]]
-module = ["axio_tui", "axio_tui.*", "axio_tools_local", "axio_tools_local.*"]
-ignore_missing_imports = true

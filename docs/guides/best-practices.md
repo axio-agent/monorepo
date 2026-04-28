@@ -10,7 +10,7 @@ Each tool should do one thing well. If you find yourself writing "and also...", 
 
 <!-- name: test_focused_tools -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 
 async def fetch_url(url: str) -> str:
@@ -29,7 +29,7 @@ The LLM uses these to decide when to call your tool.
 
 <!-- name: test_descriptive_docstrings -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 
 async def geo_locate(ip: str = "auto") -> str:
@@ -47,8 +47,7 @@ Use `Annotated` + `Field` from `axio.field` for validation:
 <!-- name: test_pydantic_validation -->
 ```python
 from typing import Annotated
-from axio.tool import Tool
-from axio.field import Field
+from axio import Tool, Field
 
 
 async def fetch_url(
@@ -67,7 +66,7 @@ Don't force everything to string - return dicts for structured results:
 
 <!-- name: test_structured_result -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 
 async def calculate(a: float, b: float, operation: str) -> dict:
@@ -89,8 +88,7 @@ async def calculate(a: float, b: float, operation: str) -> dict:
 <!-- name: test_handler_error -->
 ```python
 from pathlib import Path
-from axio.tool import Tool
-from axio.exceptions import HandlerError
+from axio import Tool, HandlerError
 
 
 async def read_file(path: str) -> str:
@@ -108,7 +106,7 @@ Move input validation to guards to keep handlers clean:
 <!-- name: test_guard_validation -->
 ```python
 from typing import Any
-from axio.permission import PermissionGuard
+from axio import PermissionGuard
 
 
 class SanitizeInput(PermissionGuard):
@@ -126,7 +124,7 @@ class SanitizeInput(PermissionGuard):
 <!-- name: test_isolated_tool -->
 ```python
 import asyncio
-from axio.tool import Tool
+from axio import Tool
 
 
 async def fetch_url(url: str) -> str:
@@ -146,8 +144,7 @@ asyncio.run(test_fetch())
 
 <!-- name: test_stub_transport_agent -->
 ```python
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_tool_use_response, make_text_response
 
 
@@ -168,9 +165,7 @@ async def test_agent_with_tool():
 import asyncio
 import pytest
 from typing import Any
-from axio.tool import Tool
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
+from axio import Tool, PermissionGuard, GuardError
 
 
 async def word_count(text: str) -> str:
@@ -243,7 +238,7 @@ class AppConfig(BaseSettings):
 
 <!-- name: test_concurrency_limit -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 
 async def slow_api_call() -> str:
@@ -266,7 +261,7 @@ Don't create a new context store for each request:
 
 <!-- name: test_reuse_context -->
 ```python
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 
 
 # Bad: new store each time
@@ -289,8 +284,7 @@ async def handle_request_good(msg: str) -> None:
 <!-- name: test_sensitive_tool_guards -->
 ```python
 from typing import Any
-from axio.tool import Tool
-from axio.permission import PermissionGuard
+from axio import Tool, PermissionGuard
 
 
 async def run_sql(query: str) -> str:
@@ -331,8 +325,7 @@ If your tool accesses files, validate paths:
 ```python
 from pathlib import Path
 from typing import Any
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
+from axio import PermissionGuard, GuardError
 
 
 class PathGuard(PermissionGuard):
@@ -354,7 +347,7 @@ Axio uses strict typing. Type hints help catch errors early:
 
 <!-- name: test_type_hints -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 
 async def my_tool(query: str, limit: int = 10) -> list[dict[str, str]]:
@@ -380,7 +373,7 @@ context = SQLiteContextStore(conn, session_id=user_session_id)
 Track usage from `IterationEnd` events:
 
 ```python
-from axio.events import IterationEnd
+from axio import IterationEnd
 
 async for event in agent.run_stream(msg, context):
     if isinstance(event, IterationEnd):

@@ -11,13 +11,13 @@ to build JSON schemas that are sent to LLMs so they understand how to call tools
 <!--
 name: test_fieldinfo_basics
 ```python
-from axio.field import FieldInfo
+from axio import FieldInfo
 ```
 -->
 <!-- name: test_fieldinfo_fields -->
 ```python
 from dataclasses import fields
-from axio.field import FieldInfo
+from axio import FieldInfo
 
 # FieldInfo has these fields:
 fi = FieldInfo(
@@ -32,7 +32,8 @@ The `Field()` constructor function provides a convenient API:
 
 <!-- name: test_field_constructor -->
 ```python
-from axio.field import Field, MISSING
+from axio import Field
+from axio.field import MISSING
 
 # Basic usage with description
 query_field = Field(description="Search query")
@@ -54,8 +55,7 @@ Use `Annotated` from the `typing` module to attach `FieldInfo` to parameters:
 <!-- name: test_field_in_tool -->
 ```python
 from typing import Annotated
-from axio.field import Field
-from axio.tool import Tool
+from axio import Field, Tool
 
 
 async def search(
@@ -80,7 +80,7 @@ to the LLM as part of the JSON schema:
 <!-- name: test_field_description -->
 ```python
 from typing import Annotated
-from axio.field import Field
+from axio import Field
 from axio.schema import build_tool_schema
 
 
@@ -102,7 +102,8 @@ Specify a default value to make a parameter optional:
 <!-- name: test_field_default -->
 ```python
 from typing import Annotated
-from axio.field import Field, MISSING
+from axio import Field
+from axio.field import MISSING
 from axio.schema import build_tool_schema
 
 
@@ -129,7 +130,7 @@ Constrain numeric parameters with minimum and maximum values:
 <!-- name: test_field_bounds -->
 ```python
 from typing import Annotated
-from axio.field import Field
+from axio import Field
 from axio.schema import build_tool_schema
 
 
@@ -160,7 +161,7 @@ to enforce strict string typing:
 <!-- name: test_strict_str -->
 ```python
 from typing import Annotated
-from axio.field import StrictStr, FieldInfo
+from axio import StrictStr, FieldInfo
 from axio.schema import build_tool_schema
 
 
@@ -190,8 +191,7 @@ reject cases where an LLM might pass an integer like `0` or `1` instead of
 <!-- name: test_field_file_example -->
 ```python
 from typing import Annotated, Literal
-from axio.field import Field
-from axio.tool import Tool
+from axio import Field, Tool
 
 
 async def write_file(
@@ -213,8 +213,7 @@ tool = Tool(name="write_file", handler=write_file)
 <!-- name: test_field_http_example -->
 ```python
 from typing import Annotated
-from axio.field import Field
-from axio.tool import Tool
+from axio import Field, Tool
 
 
 async def http_request(
@@ -235,8 +234,7 @@ tool = Tool(name="http_request", handler=http_request)
 <!-- name: test_field_db_example -->
 ```python
 from typing import Annotated
-from axio.field import Field
-from axio.tool import Tool
+from axio import Field, Tool
 
 
 async def query_users(

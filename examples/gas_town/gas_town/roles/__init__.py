@@ -10,7 +10,7 @@ dynamically-built spawn tools that are not part of the static toolbox.
 
 from pathlib import Path
 
-from axio.agent import Agent
+from axio import Agent
 from axio.transport import DummyCompletionTransport
 
 ROLES_DIR = Path(__file__).parent
@@ -89,7 +89,7 @@ Always start by reading the workspace:
   - `analyze` to investigate the project structure and content.
 Skip analyze ONLY for tasks that need zero workspace knowledge
 (e.g. "run uname -a", "what time is it"). If the task involves the project
-in any way — writing docs, adding features, fixing bugs — investigate first.
+in any way - writing docs, adding features, fixing bugs - investigate first.
 
 **Step 2 - Decompose into beads.**
 Break the work into small, atomic beads - one bead = one unit of work a single

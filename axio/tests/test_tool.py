@@ -302,7 +302,7 @@ class TestToolCustomSchema:
         assert "msg" in t.input_schema["properties"]
 
     def test_custom_schema_no_titles(self) -> None:
-        """Custom schemas are passed through as-is — no titles injected."""
+        """Custom schemas are passed through as-is - no titles injected."""
         custom: dict[str, Any] = {
             "type": "object",
             "properties": {"q": {"type": "string"}},

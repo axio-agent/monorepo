@@ -78,7 +78,7 @@ Overview of every package in the monorepo and their entry points.
 <!-- name: test_index_example -->
 ```python
 import aiohttp
-from axio.tool import Tool
+from axio import Tool
 
 
 async def fetch(url: str) -> str:
@@ -125,8 +125,7 @@ axio_transport_openai.OpenAITransport = lambda: StubTransport([make_text_respons
 <!-- name: test_index_example -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio_transport_openai import OpenAITransport
 
 

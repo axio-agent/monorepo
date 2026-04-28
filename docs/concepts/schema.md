@@ -18,8 +18,7 @@ Schema generation serves two critical functions in the axio framework:
 
 <!-- name: test_schema_purpose -->
 ```python
-from axio.tool import Tool
-from axio.field import Field
+from axio import Tool, Field
 from typing import Annotated
 
 async def search(
@@ -91,7 +90,7 @@ Schema keywords:
 <!-- name: test_field_metadata -->
 ```python
 from typing import Annotated
-from axio.field import Field
+from axio import Field
 from axio.schema import build_tool_schema
 
 def constrained(
@@ -124,7 +123,8 @@ Fields without any of these are added to the `"required"` list.
 <!-- name: test_required_fields -->
 ```python
 from typing import Annotated
-from axio.field import Field, MISSING
+from axio import Field
+from axio.field import MISSING
 from axio.schema import build_tool_schema
 
 def required_vs_optional(
@@ -148,7 +148,7 @@ assert "field_default" not in schema.get("required", [])
 
 <!-- name: test_basic_schema -->
 ```python
-from axio.field import Field
+from axio import Field, Tool
 from typing import Annotated
 
 async def greet(name: Annotated[str, Field(description="Name to greet")],
@@ -156,7 +156,6 @@ async def greet(name: Annotated[str, Field(description="Name to greet")],
     """Greet someone by name."""
     return " ".join([f"Hello, {name}!" for _ in range(repeat)])
 
-from axio.tool import Tool
 tool = Tool(name="greet", handler=greet)
 
 # The generated schema:
@@ -182,7 +181,7 @@ tool = Tool(name="greet", handler=greet)
 <!-- name: test_literal_schema -->
 ```python
 from typing import Annotated, Literal
-from axio.field import Field
+from axio import Field
 
 def set_mode(mode: Annotated[Literal["on", "off", "toggle"], Field(description="Power mode")]) -> str:
     return f"Mode set to {mode}"
@@ -198,7 +197,7 @@ assert schema["properties"]["mode"]["description"] == "Power mode"
 <!-- name: test_array_schema -->
 ```python
 from typing import Annotated
-from axio.field import Field
+from axio import Field
 
 def create_tags(tags: Annotated[list[str], Field(description="List of tags")]) -> str:
     return f"Created tags: {tags}"

@@ -10,7 +10,7 @@ modify tool calls.
 ```python
 from abc import ABC, abstractmethod
 from typing import Any
-from axio.tool import Tool
+from axio import Tool
 
 
 class PermissionGuard(ABC):
@@ -36,7 +36,7 @@ output kwargs become the next guard's input:
 import asyncio
 from typing import Any
 from axio.permission import AllowAllGuard
-from axio.tool import Tool
+from axio import Tool
 
 
 async def echo(text: str) -> str:
@@ -77,7 +77,7 @@ LLMGuard = AllowAllGuard
 -->
 <!-- name: test_tool_with_guards -->
 ```python
-from axio.tool import Tool
+from axio import Tool
 
 tool = Tool(
     name="write_file",
@@ -98,8 +98,7 @@ call external services), subclass `ConcurrentGuard`:
 import asyncio
 from abc import ABC, abstractmethod
 from typing import Any
-from axio.permission import PermissionGuard
-from axio.tool import Tool
+from axio import PermissionGuard, Tool
 
 
 class ConcurrentGuard(PermissionGuard, ABC):

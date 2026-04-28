@@ -15,8 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal
 
-from axio.field import Field
-from axio.tool import CONTEXT, Tool
+from axio import CONTEXT, Field, Tool
 
 SEPARATOR = "---"
 

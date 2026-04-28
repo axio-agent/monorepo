@@ -8,11 +8,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from axio.agent import Agent
+from axio import Agent, GuardError, PermissionGuard
 from axio.agent_loader import TomlAgentLoader
-from axio.exceptions import GuardError
 from axio.models import ModelSpec
-from axio.permission import PermissionGuard
 from axio.testing import StubTransport, make_text_response
 from axio.transport import DummyCompletionTransport
 

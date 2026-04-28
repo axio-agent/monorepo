@@ -8,7 +8,7 @@ the docstring becomes the tool description sent to the LLM.
 <!-- name: test_write_file_handler -->
 ```python
 from pathlib import Path
-from axio.tool import Tool
+from axio import Tool
 
 async def write_file(path: str, content: str) -> str:
     """Write content to a file at the given path."""
@@ -27,8 +27,7 @@ Use `Annotated` + `Field` to add descriptions, defaults, or numeric bounds:
 <!-- name: test_write_file_with_field -->
 ```python
 from typing import Annotated
-from axio.tool import Tool
-from axio.field import Field
+from axio import Tool, Field
 
 async def search(
     query: Annotated[str, Field(description="Search query")],
@@ -53,8 +52,7 @@ via `Tool(context=...)`:
 ```python
 import asyncio
 from typing import Annotated
-from axio.tool import Tool, CONTEXT
-from axio.field import Field
+from axio import Tool, CONTEXT, Field
 
 
 async def search(
@@ -80,7 +78,7 @@ Nested helpers that cannot receive arguments can also call `CONTEXT.get()`:
 
 ```python
 import asyncio
-from axio.tool import Tool, CONTEXT
+from axio import Tool, CONTEXT
 
 
 def helper() -> str:
@@ -189,7 +187,7 @@ of available tools before each LLM call.
 <!--
 name: test_tool_selector_protocol
 ```python
-from axio.permission import PermissionGuard
+from axio import PermissionGuard
 ToolName = str
 ```
 -->
@@ -198,7 +196,7 @@ ToolName = str
 from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 from axio.messages import Message
-from axio.tool import Tool
+from axio import Tool
 
 
 @runtime_checkable

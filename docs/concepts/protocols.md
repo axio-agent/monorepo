@@ -40,8 +40,7 @@ The transport protocol has a single method:
 from typing import runtime_checkable, Protocol
 from collections.abc import AsyncIterator
 from axio.messages import Message
-from axio.tool import Tool
-from axio.events import StreamEvent
+from axio import Tool, StreamEvent
 
 
 @runtime_checkable
@@ -80,7 +79,7 @@ everything else has a working default implementation:
 <!-- name: test_context_store_abc -->
 ```python
 from axio.messages import Message
-from axio.context import ContextStore
+from axio import ContextStore
 
 
 class MyContextStore(ContextStore):
@@ -128,8 +127,7 @@ Protocol. Subclass it and implement `check()`:
 <!-- name: test_permission_guard_abc -->
 ```python
 from typing import Any
-from axio.permission import PermissionGuard
-from axio.tool import Tool
+from axio import PermissionGuard, Tool
 
 
 class MyGuard(PermissionGuard):

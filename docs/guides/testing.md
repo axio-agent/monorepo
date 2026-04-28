@@ -30,8 +30,7 @@ Create an event sequence for a simple text reply:
 
 <!-- name: test_make_text_response -->
 ```python
-from axio.events import TextDelta, IterationEnd
-from axio.types import StopReason, Usage
+from axio import TextDelta, IterationEnd, StopReason, Usage
 from axio.testing import make_text_response
 
 events = make_text_response(text="Hello world", iteration=1)
@@ -51,9 +50,8 @@ Create an event sequence for a tool call:
 
 <!-- name: test_make_tool_use_response -->
 ```python
+from axio import ToolUseStart, ToolInputDelta, IterationEnd, StopReason
 from axio.testing import make_tool_use_response
-from axio.events import ToolUseStart, ToolInputDelta, IterationEnd
-from axio.types import StopReason
 
 events = make_tool_use_response(
     tool_name="greet",
@@ -77,8 +75,8 @@ Create transport that returns a single "Hello world" text response:
 
 <!-- name: test_make_stub_transport -->
 ```python
+from axio import TextDelta, IterationEnd
 from axio.testing import make_stub_transport
-from axio.events import TextDelta, IterationEnd
 
 transport = make_stub_transport()
 assert len(transport._responses) == 1
@@ -92,7 +90,7 @@ Create a fresh in-memory context store:
 
 <!-- name: test_make_ephemeral_context -->
 ```python
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 from axio.testing import make_ephemeral_context
 
 context = make_ephemeral_context()
@@ -121,7 +119,7 @@ text after seeing the result:
 <!-- name: test_agent_calls_tool -->
 ```python
 import asyncio
-from axio.agent import Agent
+from axio import Agent
 from axio.testing import (
     StubTransport,
     make_tool_use_response,
@@ -157,7 +155,7 @@ Test a tool handler directly:
 <!-- name: test_word_count_isolation -->
 ```python
 import asyncio
-from axio.tool import Tool
+from axio import Tool
 
 
 async def word_count(text: str) -> str:
@@ -179,7 +177,7 @@ Or test through the `Tool` wrapper to exercise guards:
 <!-- name: test_word_count_via_tool -->
 ```python
 import asyncio
-from axio.tool import Tool
+from axio import Tool
 
 
 async def word_count(text: str) -> str:
@@ -203,9 +201,7 @@ asyncio.run(test_word_count_tool())
 import asyncio
 import pytest
 from typing import Any
-from axio.tool import Tool
-from axio.permission import PermissionGuard
-from axio.exceptions import GuardError
+from axio import Tool, PermissionGuard, GuardError
 
 
 async def word_count(text: str) -> str:
@@ -247,7 +243,7 @@ asyncio.run(test_guard_denies_long_input())
 <!-- name: test_context_stores -->
 ```python
 import asyncio
-from axio.context import MemoryContextStore
+from axio import MemoryContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 

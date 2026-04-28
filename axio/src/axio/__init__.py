@@ -1,4 +1,4 @@
-"""axio — public API."""
+"""axio - public API."""
 
 from .agent import Agent
 from .blocks import TextBlock, ToolResultBlock, ToolUseBlock

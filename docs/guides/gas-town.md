@@ -130,7 +130,7 @@ dynamically-built spawn tools), and derives `ROLE_NAMES` from TOML filenames:
 
 ```python
 from pathlib import Path
-from axio.agent import Agent
+from axio import Agent
 from axio.transport import DummyCompletionTransport
 
 ROLES_DIR = Path(__file__).parent

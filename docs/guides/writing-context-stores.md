@@ -62,7 +62,7 @@ point to demonstrate the required interface before moving to a remote backend.
 <!-- name: test_minimal_context_store -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -115,7 +115,7 @@ supports clearing a session:
 <!-- name: test_store_clear -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -164,7 +164,7 @@ That is sufficient for most in-process scenarios, but override it when:
 name: test_store_fork
 ```python
 import asyncio, copy
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 ```
@@ -173,7 +173,7 @@ from axio.blocks import TextBlock
 ```python
 import asyncio
 import copy
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -235,7 +235,7 @@ Override both methods together:
 <!-- name: test_store_token_tracking -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 
 
@@ -301,7 +301,7 @@ their second argument:
 name: test_store_with_agent
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.testing import StubTransport, make_text_response
 
@@ -320,7 +320,7 @@ transport = StubTransport([make_text_response("ok")])
 <!-- name: test_store_with_agent -->
 ```python
 import asyncio
-from axio.agent import Agent
+from axio import Agent
 
 store = MinimalStore()
 agent = Agent(
@@ -372,7 +372,7 @@ override:
 <!-- name: test_custom_store_basic -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -428,7 +428,7 @@ asyncio.run(test_clear())
 ```python
 import asyncio
 import copy
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 from axio.blocks import TextBlock
 
@@ -470,7 +470,7 @@ asyncio.run(test_fork_isolation())
 <!-- name: test_custom_store_tokens -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore
 from axio.messages import Message
 
 
@@ -514,9 +514,8 @@ making real LLM calls:
 <!-- name: test_custom_store_with_agent -->
 ```python
 import asyncio
-from axio.context import ContextStore
+from axio import ContextStore, Agent
 from axio.messages import Message
-from axio.agent import Agent
 from axio.testing import StubTransport, make_text_response
 
 

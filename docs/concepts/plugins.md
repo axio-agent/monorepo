@@ -53,9 +53,7 @@ The `axio_tui.plugin` module provides discovery functions:
 
 <!-- name: test_discover_tools -->
 ```python
-from axio.tool import Tool
-from axio.transport import CompletionTransport
-from axio.permission import PermissionGuard
+from axio import Tool, CompletionTransport, PermissionGuard
 
 
 def discover_tools() -> list[Tool]:
@@ -97,7 +95,7 @@ The full protocol (defined in `axio_tui.plugin`) is:
 
 ```python
 from typing import Any, Protocol, runtime_checkable
-from axio.tool import Tool
+from axio import Tool
 
 
 @runtime_checkable
@@ -157,7 +155,7 @@ Each transport class declares its display name via a `name: str` field:
 ```python
 import os
 from dataclasses import dataclass, field
-from axio.transport import CompletionTransport
+from axio import CompletionTransport
 
 
 @dataclass(slots=True)

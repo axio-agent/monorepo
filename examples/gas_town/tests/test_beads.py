@@ -7,7 +7,7 @@ from typing import Any
 
 import aiosqlite
 import pytest
-from axio.tool import CONTEXT
+from axio import CONTEXT
 
 from gas_town.beads import (
     DDL,

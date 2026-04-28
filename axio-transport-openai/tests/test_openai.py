@@ -935,6 +935,24 @@ class TestThinkTagParser:
         result = p.feed("<think>\nreasoning\n</think>\nanswer")
         assert result == [("reasoning", "\nreasoning\n"), ("text", "\nanswer")]
 
+    def test_malformed_tag_not_treated_as_think(self) -> None:
+        """A space inside '<thi nk>' must not be parsed as an opening tag."""
+        p = ThinkTagParser()
+        result = p.feed("<thi nk>some content</think>")
+        # No think tag opened, so everything is plain text (including the bad close tag)
+        text = "".join(t for _, t in result)
+        assert "some content" in text
+        assert not any(k == "reasoning" for k, _ in result)
+
+    def test_multiple_think_blocks(self) -> None:
+        """Two sequential <think>...</think> blocks separated by text."""
+        p = ThinkTagParser()
+        result = p.feed("<think>first</think>middle<think>second</think>end")
+        kinds = [k for k, _ in result]
+        texts = {k: "".join(t for k2, t in result if k2 == k) for k in set(kinds)}
+        assert texts.get("reasoning", "") == "firstsecond"
+        assert texts.get("text", "") == "middleend"
+
 
 # ---------------------------------------------------------------------------
 # SSE integration: reasoning deltas

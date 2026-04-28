@@ -24,8 +24,7 @@ required.
 <!-- name: test_docker_quick_start; mark: docker -->
 ```python
 import asyncio
-from axio.agent import Agent
-from axio.context import MemoryContextStore
+from axio import Agent, MemoryContextStore
 from axio.testing import StubTransport, make_text_response
 from axio_tools_docker import DockerSandbox
 

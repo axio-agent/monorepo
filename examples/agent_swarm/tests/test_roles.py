@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from axio.agent import Agent
+from axio import Agent
 from axio.agent_loader import TomlAgentLoader
 from axio.transport import DummyCompletionTransport
 

@@ -38,12 +38,13 @@ select = ["E", "F", "I", "UP"]
 strict = true
 python_version = "3.12"
 
+
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
-    "pytest-cov>=7.1.0",
     "mypy>=1.14",
     "ruff>=0.9",
+    "pytest-cov>=7.1.0",
     "markdown-pytest>=0.6.0",
 ]
