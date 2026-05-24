@@ -51,12 +51,18 @@ from axio.tool_args import ToolArgStream
 from axio_tools_agents.peers import (
     PeerMessage,
     PeerServer,
+    enqueue_local_agent_prompt,
     format_message_for_dialog,
+    interrupt_agent,
+    is_local_background_agent,
     list_peers,
+    local_background_agent_records,
     send_message,
     set_agent_event_handler,
     set_spawn_agent_factory,
     spawn_agent,
+    stop_agent,
+    stop_local_background_agents,
 )
 from axio_tools_local.list_files import list_files
 from axio_tools_local.patch_file import patch_file
@@ -150,9 +156,11 @@ TOOLS: list[Tool[Any]] = [
     Tool(name="list_files", handler=list_files),
     Tool(name="search_files", handler=search_files),
     Tool(name="shell", handler=shell),
+    Tool(name="interrupt_agent", handler=interrupt_agent),
     Tool(name="list_peers", handler=list_peers),
     Tool(name="send_message", handler=send_message),
     Tool(name="spawn_agent", handler=spawn_agent, concurrency=3),
+    Tool(name="stop_agent", handler=stop_agent),
 ]
 
 
@@ -309,10 +317,13 @@ def build_system_prompt(
         ]
         if any(t.name == "spawn_agent" for t in tools):
             lines += [
-                "- Use spawn_agent for independent parallel agent work. Spawned agents start with empty context "
-                "by default; set inherit_context=true only when the child needs the current conversation.",
+                "- Use spawn_agent for independent parallel agent work. It returns immediately with a background "
+                "agent id. Spawned agents start with empty context by default; set inherit_context=true only "
+                "when the child needs the current conversation.",
                 "- Use list_peers to discover running agents in this project, or list_peers(all_projects=true) "
                 "to inspect all local agent ids. Use send_message(agent_id=..., message=...) for IPC.",
+                "- Use interrupt_agent(agent_id=...) to cancel a spawned agent's current response while keeping it "
+                "alive. Use stop_agent(agent_id=...) only when the child should exit.",
             ]
     lines.append("")
 
@@ -358,6 +369,9 @@ class _AgentRenderState:
         self.streamed_tool_ids: set[str] = set()
         self.field_first_delta = True
         self.field_key: str | None = None
+        self.background_text_chars = 0
+        self.background_tools: list[str] = []
+        self.background_errors: list[str] = []
 
 
 class ReplRenderer:
@@ -365,9 +379,24 @@ class ReplRenderer:
         self._lock = asyncio.Lock()
         self._states: dict[str, _AgentRenderState] = {}
         self._active_agent: str | None = None
+        self._focused_agent = "main"
+        self._foreground_streaming = False
+        self._background_pending: set[str] = set()
         self._input_active = False
         self._input_interrupted = False
         self._redraw_input = False
+
+    @property
+    def focused_agent(self) -> str:
+        return self._focused_agent
+
+    def set_focus(self, agent_id: str) -> None:
+        self._focused_agent = agent_id
+        state = self._state(agent_id)
+        state.background_text_chars = 0
+        state.background_tools.clear()
+        state.background_errors.clear()
+        self._background_pending.discard(agent_id)
 
     def set_input_active(self, active: bool) -> None:
         self._input_active = active
@@ -377,7 +406,20 @@ class ReplRenderer:
 
     async def render(self, agent_id: str, event: StreamEvent) -> None:
         async with self._lock:
-            self._render_locked(agent_id, event)
+            if agent_id == self._focused_agent:
+                self._render_locked(agent_id, event)
+                if isinstance(event, Error | SessionEndEvent):
+                    self._foreground_streaming = False
+                    self._flush_background_summaries_locked()
+                elif not isinstance(event, IterationEnd):
+                    self._foreground_streaming = True
+            else:
+                self._record_background_event_locked(agent_id, event)
+
+    async def mark_idle(self) -> None:
+        async with self._lock:
+            self._foreground_streaming = False
+            self._flush_background_summaries_locked()
 
     async def notice(self, text: str) -> None:
         async with self._lock:
@@ -487,7 +529,7 @@ class ReplRenderer:
                 if is_error:
                     sys.stdout.write(f"{RESET}\n{RED}{content}{RESET}\n")
                 elif name == "spawn_agent":
-                    sys.stdout.write(f"{RESET}\n{GREEN}[spawn_agent completed]{RESET}\n")
+                    sys.stdout.write(f"{RESET}\n{GREEN}{content}{RESET}\n")
                 elif tid in state.streamed_tool_ids:
                     sys.stdout.write(f"{RESET}\n")
                 else:
@@ -508,6 +550,48 @@ class ReplRenderer:
                 if self._redraw_input and self._input_active and readline is not None:
                     readline.redisplay()
                 self._redraw_input = False
+
+    def _record_background_event_locked(self, agent_id: str, event: StreamEvent) -> None:
+        state = self._state(agent_id)
+        match event:
+            case TextDelta(delta=delta):
+                state.background_text_chars += len(delta)
+            case ToolUseStart(name=name):
+                if name not in state.background_tools:
+                    state.background_tools.append(name)
+            case Error(exception=exc):
+                state.background_errors.append(str(exc))
+                self._background_pending.add(agent_id)
+                if not self._foreground_streaming:
+                    self._flush_background_summaries_locked()
+            case SessionEndEvent():
+                self._background_pending.add(agent_id)
+                if not self._foreground_streaming:
+                    self._flush_background_summaries_locked()
+            case _:
+                pass
+
+    def _flush_background_summaries_locked(self) -> None:
+        if not self._background_pending:
+            return
+        self._prepare_input_output()
+        for agent_id in sorted(self._background_pending):
+            state = self._state(agent_id)
+            parts = [f"{agent_id} completed"]
+            if state.background_tools:
+                parts.append(f"tools={','.join(state.background_tools)}")
+            if state.background_text_chars:
+                parts.append(f"text={state.background_text_chars} chars")
+            if state.background_errors:
+                parts.append(f"errors={len(state.background_errors)}")
+            print(f"{DIM}[background {'; '.join(parts)}]{RESET}")
+            state.background_text_chars = 0
+            state.background_tools.clear()
+            state.background_errors.clear()
+        self._background_pending.clear()
+        if self._redraw_input and self._input_active and readline is not None:
+            readline.redisplay()
+        self._redraw_input = False
 
     def _render_field_event(
         self,
@@ -602,6 +686,36 @@ async def _read_input_async(loop: asyncio.AbstractEventLoop, renderer: ReplRende
 
 def _peer_name(root: Path) -> str:
     return f"axio-repl:{root.name}:{os.getpid()}"
+
+
+def _resolve_local_agent_id(value: str) -> str | None:
+    if value == "main":
+        return "main"
+    records = local_background_agent_records()
+    exact = [record.id for record in records if record.id == value or record.name == value]
+    if len(exact) == 1:
+        return exact[0]
+    prefixed = [record.id for record in records if record.id.startswith(value)]
+    if len(prefixed) == 1:
+        return prefixed[0]
+    return None
+
+
+def _resolve_command_agent_id(value: str, renderer: ReplRenderer) -> str | None:
+    if value == "current":
+        return renderer.focused_agent
+    return _resolve_local_agent_id(value)
+
+
+def _show_agents(renderer: ReplRenderer) -> None:
+    print(f"Focused agent: {BOLD}{renderer.focused_agent}{RESET}")
+    records = local_background_agent_records()
+    if not records:
+        print("No local background agents.")
+        return
+    for record in records:
+        marker = "*" if record.id == renderer.focused_agent else " "
+        print(f"{marker} {record.id} name={record.name!r} kind={record.kind} pid={record.pid}")
 
 
 # ── REPL commands ────────────────────────────────────────────────────
@@ -894,10 +1008,18 @@ async def main() -> None:
                 print(f"\n{DIM}[interrupted]{RESET}")
             finally:
                 prompt_task = None
+                await renderer.mark_idle()
+
+        async def _interrupt_focused_agent(agent_id: str) -> None:
+            await interrupt_agent(agent_id, reason="SIGINT")
+            await renderer.notice("[interrupted]")
+            await renderer.mark_idle()
 
         def _on_sigint() -> None:
             nonlocal prompt_task
-            if prompt_task is not None and not prompt_task.done():
+            if renderer.focused_agent != "main":
+                asyncio.create_task(_interrupt_focused_agent(renderer.focused_agent))
+            elif prompt_task is not None and not prompt_task.done():
                 prompt_task.cancel()
 
         loop.add_signal_handler(signal.SIGINT, _on_sigint)
@@ -917,7 +1039,8 @@ async def main() -> None:
             except OSError as exc:
                 print(f"{DIM}[peer messaging disabled: {exc}]{RESET}")
 
-            commands_list = ", ".join(["/help", *commands, "/quit"])
+            agent_commands = ["/agents", "/agent-focus", "/agent-interrupt", "/agent-stop"]
+            commands_list = ", ".join(["/help", *commands, *agent_commands, "/quit"])
             label = getattr(transport, "name", "unknown")
             print(f"REPL ready ({label}). Commands: {commands_list}")
 
@@ -960,25 +1083,79 @@ async def main() -> None:
                     print(f"Type your request. Tools: {tool_list}")
                     print(f"Commands: {commands_list}")
                     continue
+                if lowered == "/agents":
+                    _show_agents(renderer)
+                    continue
+                if lowered == "/agent-focus" or lowered.startswith("/agent-focus "):
+                    arg = user_input[len("/agent-focus") :].strip()
+                    if not arg:
+                        _show_agents(renderer)
+                        continue
+                    agent_id = _resolve_local_agent_id(arg)
+                    if agent_id is None:
+                        print(f"No local agent matching {arg!r}")
+                        continue
+                    renderer.set_focus(agent_id)
+                    print(f"Focused agent: {BOLD}{agent_id}{RESET}")
+                    continue
+                if lowered == "/agent-stop" or lowered.startswith("/agent-stop "):
+                    arg = user_input[len("/agent-stop") :].strip() or renderer.focused_agent
+                    agent_id = _resolve_command_agent_id(arg, renderer)
+                    if agent_id is None:
+                        print(f"No local agent matching {arg!r}")
+                        continue
+                    if agent_id == "main":
+                        print("Use /quit to exit the main REPL agent.")
+                        continue
+                    print(await stop_agent(agent_id, reason="user requested stop"))
+                    if renderer.focused_agent == agent_id:
+                        await renderer.mark_idle()
+                        renderer.set_focus("main")
+                        print(f"Focused agent: {BOLD}main{RESET}")
+                    continue
+                if lowered == "/agent-interrupt" or lowered.startswith("/agent-interrupt "):
+                    arg = user_input[len("/agent-interrupt") :].strip() or renderer.focused_agent
+                    agent_id = _resolve_command_agent_id(arg, renderer)
+                    if agent_id is None:
+                        print(f"No local agent matching {arg!r}")
+                        continue
+                    if agent_id == "main":
+                        print("Press Ctrl-C while the main agent is streaming to interrupt it.")
+                        continue
+                    print(await interrupt_agent(agent_id, reason="user requested interrupt"))
+                    if renderer.focused_agent == agent_id:
+                        await renderer.mark_idle()
+                    continue
 
                 matched = False
                 for prefix, cmd in commands.items():
                     if lowered == prefix or lowered.startswith(prefix + " "):
-                        arg = user_input[len(prefix) :].strip() or None
-                        if arg is None:
+                        cmd_arg = user_input[len(prefix) :].strip() or None
+                        if cmd_arg is None:
                             cmd.show()
                         else:
-                            cmd.apply(arg)
+                            cmd.apply(cmd_arg)
                         matched = True
                         break
                 if matched:
                     continue
 
-                await _run_turn(user_input)
+                if renderer.focused_agent == "main":
+                    await _run_turn(user_input)
+                elif is_local_background_agent(renderer.focused_agent):
+                    delivered = await enqueue_local_agent_prompt(renderer.focused_agent, user_input, wait=True)
+                    await renderer.mark_idle()
+                    if not delivered:
+                        print(f"Agent {renderer.focused_agent!r} is no longer running.")
+                        renderer.set_focus("main")
+                else:
+                    print(f"Agent {renderer.focused_agent!r} is no longer local; focusing main.")
+                    renderer.set_focus("main")
         finally:
             for task in (input_task, inbox_task):
                 if task is not None and not task.done():
                     task.cancel()
+            await stop_local_background_agents()
             if peer_server is not None:
                 await peer_server.close()
             set_agent_event_handler(None)

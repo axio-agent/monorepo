@@ -7,9 +7,11 @@ requires-python = ">=3.12"
 dependencies = ["axio"]
 
 [project.entry-points."axio.tools"]
+interrupt_agent = "axio_tools_agents.peers:interrupt_agent"
 list_peers = "axio_tools_agents.peers:list_peers"
 send_message = "axio_tools_agents.peers:send_message"
 spawn_agent = "axio_tools_agents.peers:spawn_agent"
+stop_agent = "axio_tools_agents.peers:stop_agent"
 
 [build-system]
 requires = ["hatchling"]

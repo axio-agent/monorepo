@@ -9,14 +9,14 @@ import re
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Self
 from uuid import uuid4
 
 from axio.agent import Agent
 from axio.context import ContextStore
-from axio.events import StreamEvent, TextDelta
+from axio.events import Error, StreamEvent
 from axio.field import StrictStr
 
 MAX_MESSAGE_CHARS = 200_000
@@ -82,6 +82,7 @@ class PeerMessage:
 
 
 MessageHandler = Callable[[PeerMessage], Awaitable[None]]
+StopHandler = Callable[[str, str], Awaitable[None]]
 SpawnAgentFactory = Callable[[bool], Awaitable[tuple[Agent, ContextStore]]]
 AgentEventHandler = Callable[[str, StreamEvent], Awaitable[None]]
 
@@ -91,6 +92,36 @@ _current_peer: contextvars.ContextVar[PeerServer | None] = contextvars.ContextVa
 )
 _spawn_agent_factory: SpawnAgentFactory | None = None
 _agent_event_handler: AgentEventHandler | None = None
+
+
+@dataclass(slots=True)
+class _QueuedPrompt:
+    prompt: str | None
+    done: asyncio.Future[None] | None = None
+
+
+@dataclass(slots=True)
+class _BackgroundAgent:
+    agent: Agent
+    context: ContextStore
+    peer: PeerServer
+    inbox: asyncio.Queue[_QueuedPrompt] = field(default_factory=asyncio.Queue)
+    runner: asyncio.Task[None] | None = None
+    current_turn: asyncio.Task[None] | None = None
+    stopping: bool = False
+
+
+_background_agents: dict[str, _BackgroundAgent] = {}
+
+
+def _finish_pending_prompts(background: _BackgroundAgent) -> None:
+    while True:
+        try:
+            queued = background.inbox.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        if queued.done is not None and not queued.done.done():
+            queued.done.set_result(None)
 
 
 def _safe_slug(value: str) -> str:
@@ -225,6 +256,8 @@ class PeerServer:
         *,
         kind: str,
         handler: MessageHandler,
+        stop_handler: StopHandler | None = None,
+        interrupt_handler: StopHandler | None = None,
         cwd: str | None = None,
         project: str | None = None,
         peer_id: str | None = None,
@@ -235,6 +268,8 @@ class PeerServer:
         self.cwd = _normalize_project(cwd)
         self.project = _normalize_project(project or self.cwd)
         self._handler = handler
+        self._stop_handler = stop_handler
+        self._interrupt_handler = interrupt_handler
         self._server: asyncio.AbstractServer | None = None
         self._socket_path: Path | None = None
         self._socket_token = uuid4().hex[:16]
@@ -300,7 +335,19 @@ class PeerServer:
                 await _write_response(writer, {"ok": False, "error": "message too large"})
                 return
             data = json.loads(raw.decode("utf-8"))
-            if data.get("type") != "message":
+            request_type = data.get("type")
+            if request_type == "stop":
+                await self._handle_control_request(data, writer, handler=self._stop_handler, unsupported="stop")
+                return
+            if request_type == "interrupt":
+                await self._handle_control_request(
+                    data,
+                    writer,
+                    handler=self._interrupt_handler,
+                    unsupported="interrupt",
+                )
+                return
+            if request_type != "message":
                 await _write_response(writer, {"ok": False, "error": "unsupported message type"})
                 return
             message = PeerMessage.from_dict(data)
@@ -322,6 +369,23 @@ class PeerServer:
             writer.close()
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.wait_closed()
+
+    async def _handle_control_request(
+        self,
+        data: dict[str, Any],
+        writer: asyncio.StreamWriter,
+        *,
+        handler: StopHandler | None,
+        unsupported: str,
+    ) -> None:
+        if handler is None:
+            await _write_response(writer, {"ok": False, "error": f"peer does not support {unsupported}"})
+            return
+        if str(data.get("to_id", "")) != self.id:
+            await _write_response(writer, {"ok": False, "error": "wrong recipient"})
+            return
+        await handler(str(data.get("from_id", "")), str(data.get("reason", "")))
+        await _write_response(writer, {"ok": True})
 
 
 async def list_peers(all_projects: bool = False) -> str:
@@ -397,53 +461,187 @@ async def send_message(agent_id: StrictStr, message: StrictStr) -> str:
     return f"Delivered message to {peer.name} ({peer.id})."
 
 
-async def _run_agent_turns_with_peer(
+async def _send_control_request(agent_id: str, request_type: str, reason: str) -> str:
+    records = _visible_records(await list_peer_records(), all_projects=True)
+    peer = _resolve_peer_by_id(records, agent_id)
+    if peer is None:
+        return f"No peer found for agent_id={agent_id!r}. Call list_peers first."
+
+    sender = current_peer()
+    if sender is not None and peer.id == sender.id:
+        return f"Cannot {request_type} the current agent."
+
+    payload = {
+        "type": request_type,
+        "id": uuid4().hex,
+        "from_id": sender.id if sender is not None else f"unregistered-{os.getpid()}",
+        "from_name": sender.name if sender is not None else f"unregistered-{os.getpid()}",
+        "to_id": peer.id,
+        "reason": reason,
+        "sent_at": time.time(),
+    }
+
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(peer.socket_path), timeout=3)
+    except (OSError, TimeoutError) as exc:
+        _safe_unlink(_registry_path(peer.id))
+        _safe_unlink(peer.socket_path)
+        return f"Failed to connect to peer {peer.id}: {exc}"
+
+    try:
+        writer.write(json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n")
+        await asyncio.wait_for(writer.drain(), timeout=3)
+        raw = await asyncio.wait_for(reader.readline(), timeout=3)
+    except (ConnectionError, OSError, TimeoutError) as exc:
+        return f"Failed to send {request_type} to peer {peer.id}: {exc}"
+    finally:
+        writer.close()
+        with contextlib.suppress(ConnectionError, OSError):
+            await writer.wait_closed()
+
+    try:
+        response = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return f"Peer {peer.id} returned an invalid response: {exc}"
+    if response.get("ok") is not True:
+        return f"Peer {peer.id} rejected {request_type}: {response.get('error', 'unknown error')}"
+    return f"Sent {request_type} to {peer.name} ({peer.id})."
+
+
+async def stop_agent(agent_id: StrictStr, reason: str = "") -> str:
+    """Stop a running axio peer by global agent id. This permanently ends a
+    spawned background agent; use interrupt_agent to cancel only the current
+    response and keep the agent available."""
+    return await _send_control_request(agent_id, "stop", reason)
+
+
+async def interrupt_agent(agent_id: StrictStr, reason: str = "") -> str:
+    """Interrupt the current response of a running axio peer by global agent id
+    without stopping the agent."""
+    return await _send_control_request(agent_id, "interrupt", reason)
+
+
+async def _run_agent_turn(
+    *,
+    background: _BackgroundAgent,
+    prompt: str,
+) -> None:
+    with peer_context(background.peer):
+        async for event in background.agent.run_stream(prompt, background.context):
+            if _agent_event_handler is not None:
+                await _agent_event_handler(background.peer.id, event)
+
+
+async def _run_background_agent(background: _BackgroundAgent) -> None:
+    try:
+        while True:
+            queued = await background.inbox.get()
+            if queued.prompt is None or background.stopping:
+                if queued.done is not None and not queued.done.done():
+                    queued.done.set_result(None)
+                break
+            turn = asyncio.create_task(_run_agent_turn(background=background, prompt=queued.prompt))
+            background.current_turn = turn
+            try:
+                await turn
+            except asyncio.CancelledError:
+                if background.stopping:
+                    break
+            # Background agents must survive a failed turn so that the parent can
+            # inspect, interrupt, stop, or send a recovery prompt.
+            except Exception as exc:
+                if _agent_event_handler is not None:
+                    await _agent_event_handler(background.peer.id, Error(exc))
+            finally:
+                background.current_turn = None
+                if queued.done is not None and not queued.done.done():
+                    queued.done.set_result(None)
+            if background.stopping:
+                break
+    finally:
+        _finish_pending_prompts(background)
+        _background_agents.pop(background.peer.id, None)
+        await background.peer.close()
+
+
+async def _start_background_agent(
     *,
     agent: Agent,
     context: ContextStore,
     initial_task: str,
     name: str,
-    kind: str,
     project: str,
     cwd: str,
-) -> str:
-    inbox: asyncio.Queue[str] = asyncio.Queue()
+) -> _BackgroundAgent:
     accept_lock = asyncio.Lock()
-    closing = False
+    background: _BackgroundAgent
 
     async def _on_message(message: PeerMessage) -> None:
         async with accept_lock:
-            if closing:
+            if background.stopping:
                 raise RuntimeError("agent is no longer accepting messages")
-            inbox.put_nowait(format_message_for_dialog(message))
+            background.inbox.put_nowait(_QueuedPrompt(format_message_for_dialog(message)))
 
-    peer = await PeerServer(name, kind=kind, handler=_on_message, project=project, cwd=cwd).start(set_current=False)
-    results: list[str] = []
-    try:
-        with peer_context(peer):
-            task = initial_task
-            while True:
-                parts: list[str] = []
-                async for event in agent.run_stream(task, context):
-                    if _agent_event_handler is not None:
-                        await _agent_event_handler(peer.id, event)
-                    if isinstance(event, TextDelta):
-                        parts.append(event.delta)
-                results.append("".join(parts))
-                try:
-                    task = inbox.get_nowait()
-                    continue
-                except asyncio.QueueEmpty:
-                    pass
-                async with accept_lock:
-                    try:
-                        task = inbox.get_nowait()
-                    except asyncio.QueueEmpty:
-                        closing = True
-                        break
-    finally:
-        await peer.close()
-    return "\n\n".join(part for part in results if part)
+    async def _on_stop(_from_id: str, _reason: str) -> None:
+        async with accept_lock:
+            background.stopping = True
+            if background.current_turn is not None and not background.current_turn.done():
+                background.current_turn.cancel()
+            background.inbox.put_nowait(_QueuedPrompt(None))
+
+    async def _on_interrupt(_from_id: str, _reason: str) -> None:
+        async with accept_lock:
+            if background.current_turn is not None and not background.current_turn.done():
+                background.current_turn.cancel()
+
+    peer = await PeerServer(
+        name,
+        kind="spawned-agent",
+        handler=_on_message,
+        stop_handler=_on_stop,
+        interrupt_handler=_on_interrupt,
+        project=project,
+        cwd=cwd,
+    ).start(set_current=False)
+    background = _BackgroundAgent(agent=agent, context=context, peer=peer)
+    _background_agents[peer.id] = background
+    background.inbox.put_nowait(_QueuedPrompt(initial_task))
+    background.runner = asyncio.create_task(_run_background_agent(background))
+    return background
+
+
+def local_background_agent_records() -> list[PeerRecord]:
+    return [background.peer.record for background in _background_agents.values()]
+
+
+def is_local_background_agent(agent_id: str) -> bool:
+    return agent_id in _background_agents
+
+
+async def enqueue_local_agent_prompt(agent_id: str, prompt: str, *, wait: bool = False) -> bool:
+    background = _background_agents.get(agent_id)
+    if background is None or background.stopping:
+        return False
+    done: asyncio.Future[None] | None = None
+    if wait:
+        done = asyncio.get_running_loop().create_future()
+    background.inbox.put_nowait(_QueuedPrompt(prompt, done))
+    if done is not None:
+        await done
+    return True
+
+
+async def stop_local_background_agents() -> None:
+    backgrounds = list(_background_agents.values())
+    for background in backgrounds:
+        background.stopping = True
+        if background.current_turn is not None and not background.current_turn.done():
+            background.current_turn.cancel()
+        background.inbox.put_nowait(_QueuedPrompt(None))
+    for background in backgrounds:
+        if background.runner is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await background.runner
 
 
 async def spawn_agent(
@@ -451,11 +649,11 @@ async def spawn_agent(
     inherit_context: bool = False,
     name: str | None = None,
 ) -> str:
-    """Spawn an independent agent and return its final response. By default the
-    spawned agent starts with an empty context. Set inherit_context=true only
-    when the spawned agent must see the current conversation. The spawned agent
-    is registered as an IPC peer while it runs, so other agents can send messages
-    to it by global agent id."""
+    """Spawn an independent background agent and return its global agent id. By
+    default the spawned agent starts with an empty context. Set
+    inherit_context=true only when the spawned agent must see the current
+    conversation. The spawned agent remains available for IPC until it is
+    explicitly stopped."""
     if _spawn_agent_factory is None:
         return "spawn_agent is not configured"
 
@@ -464,14 +662,17 @@ async def spawn_agent(
     project = parent.project if parent is not None else _current_project()
     cwd = parent.cwd if parent is not None else _normalize_project(None)
     base_name = name or f"spawn_agent:{task[:40]}"
-    return await _run_agent_turns_with_peer(
+    background = await _start_background_agent(
         agent=agent,
         context=context,
         initial_task=task,
         name=base_name,
-        kind="spawned-agent",
         project=project,
         cwd=cwd,
+    )
+    return (
+        f"Spawned background agent_id={background.peer.id} name={background.peer.name!r}. "
+        "Use send_message, interrupt_agent, or stop_agent with this agent_id."
     )
 
 
