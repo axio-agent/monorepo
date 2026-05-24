@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import copy
+import dataclasses
 import os
 import re
 import signal
@@ -31,6 +33,7 @@ from axio.events import (
     IterationEnd,
     ReasoningDelta,
     SessionEndEvent,
+    StreamEvent,
     TextDelta,
     ToolFieldDelta,
     ToolFieldEnd,
@@ -45,6 +48,16 @@ from axio.field import StrictStr
 from axio.models import Capability, ModelSpec
 from axio.tool import Tool
 from axio.tool_args import ToolArgStream
+from axio_tools_agents.peers import (
+    PeerMessage,
+    PeerServer,
+    format_message_for_dialog,
+    list_peers,
+    send_message,
+    set_agent_event_handler,
+    set_spawn_agent_factory,
+    spawn_agent,
+)
 from axio_tools_local.list_files import list_files
 from axio_tools_local.patch_file import patch_file
 from axio_tools_local.read_file import read_file
@@ -137,6 +150,9 @@ TOOLS: list[Tool[Any]] = [
     Tool(name="list_files", handler=list_files),
     Tool(name="search_files", handler=search_files),
     Tool(name="shell", handler=shell),
+    Tool(name="list_peers", handler=list_peers),
+    Tool(name="send_message", handler=send_message),
+    Tool(name="spawn_agent", handler=spawn_agent, concurrency=3),
 ]
 
 
@@ -291,6 +307,13 @@ def build_system_prompt(
             "- Never run destructive shell commands (rm -rf, git reset --hard) without user confirmation.",
             "- For large files, read specific line ranges instead of the entire file.",
         ]
+        if any(t.name == "spawn_agent" for t in tools):
+            lines += [
+                "- Use spawn_agent for independent parallel agent work. Spawned agents start with empty context "
+                "by default; set inherit_context=true only when the child needs the current conversation.",
+                "- Use list_peers to discover running agents in this project, or list_peers(all_projects=true) "
+                "to inspect all local agent ids. Use send_message(agent_id=..., message=...) for IPC.",
+            ]
     lines.append("")
 
     if agents_text:
@@ -328,81 +351,144 @@ def setup_history() -> None:
 # ── Event rendering ──────────────────────────────────────────────────
 
 
-async def run_prompt(agent: Agent, ctx: MemoryContextStore, prompt: str) -> None:
-    in_text = False
-    arg_streams: dict[str, ToolArgStream] = {}
-    streamed_tool_ids: set[str] = set()
+class _AgentRenderState:
+    def __init__(self) -> None:
+        self.in_text = False
+        self.arg_streams: dict[str, ToolArgStream] = {}
+        self.streamed_tool_ids: set[str] = set()
+        self.field_first_delta = True
+        self.field_key: str | None = None
 
-    async for event in agent.run_stream(prompt, ctx):
+
+class ReplRenderer:
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._states: dict[str, _AgentRenderState] = {}
+        self._active_agent: str | None = None
+        self._input_active = False
+        self._input_interrupted = False
+        self._redraw_input = False
+
+    def set_input_active(self, active: bool) -> None:
+        self._input_active = active
+        if not active:
+            self._input_interrupted = False
+            self._redraw_input = False
+
+    async def render(self, agent_id: str, event: StreamEvent) -> None:
+        async with self._lock:
+            self._render_locked(agent_id, event)
+
+    async def notice(self, text: str) -> None:
+        async with self._lock:
+            self._prepare_input_output()
+            if self._active_agent is not None and self._state(self._active_agent).in_text:
+                print()
+                self._state(self._active_agent).in_text = False
+            print(f"{DIM}{text}{RESET}")
+
+    def _state(self, agent_id: str) -> _AgentRenderState:
+        return self._states.setdefault(agent_id, _AgentRenderState())
+
+    def _prepare_input_output(self) -> None:
+        if not self._input_active:
+            return
+        if not self._input_interrupted:
+            print()
+            self._input_interrupted = True
+        self._redraw_input = True
+
+    def _switch_agent(self, agent_id: str) -> _AgentRenderState:
+        switched = self._active_agent != agent_id
+        if switched:
+            if self._active_agent is not None and self._state(self._active_agent).in_text:
+                print()
+                self._state(self._active_agent).in_text = False
+            if self._active_agent is not None or agent_id != "main":
+                print(f"\n{DIM}── {agent_id} ──{RESET}")
+            self._active_agent = agent_id
+        state = self._state(agent_id)
+        if switched and state.field_key is not None:
+            sys.stdout.write(f"\n  {YELLOW}{state.field_key} (continued){RESET}: {DIM}")
+            sys.stdout.flush()
+            state.field_first_delta = True
+        return state
+
+    def _render_locked(self, agent_id: str, event: StreamEvent) -> None:  # noqa: C901
+        if not isinstance(event, IterationEnd):
+            self._prepare_input_output()
+        state = self._switch_agent(agent_id)
         match event:
             case ReasoningDelta(delta=delta):
-                if in_text:
+                if state.in_text:
                     print()
-                    in_text = False
+                    state.in_text = False
                 sys.stdout.write(f"{DIM}> {delta}{RESET}")
                 sys.stdout.flush()
 
             case TextDelta(delta=delta):
-                if not in_text:
-                    in_text = True
+                if not state.in_text:
+                    state.in_text = True
                 if "[Output truncated:" in delta:
                     sys.stdout.write(f"\n{RED}{delta.strip()}{RESET}\n")
-                    in_text = False
+                    state.in_text = False
                 else:
                     sys.stdout.write(delta)
                 sys.stdout.flush()
 
             case ImageOutput(data=data, media_type=mt):
-                if in_text:
+                if state.in_text:
                     print()
-                    in_text = False
+                    state.in_text = False
                 path = _save_media(data, mt)
                 print(f"{GREEN}[image saved: {path}]{RESET}")
 
             case AudioOutput(data=data, media_type=mt):
-                if in_text:
+                if state.in_text:
                     print()
-                    in_text = False
+                    state.in_text = False
                 path = _save_media(data, mt)
                 print(f"{GREEN}[audio saved: {path}]{RESET}")
 
             case VideoOutput(data=data, media_type=mt):
-                if in_text:
+                if state.in_text:
                     print()
-                    in_text = False
+                    state.in_text = False
                 path = _save_media(data, mt)
                 print(f"{GREEN}[video saved: {path}]{RESET}")
 
             case ToolUseStart(index=index, tool_use_id=tid, name=name):
-                if in_text:
+                if state.in_text:
                     print()
-                    in_text = False
+                    state.in_text = False
                 sys.stdout.write(f"\n{BOLD}{CYAN}\u25b6 {name}{RESET}")
                 sys.stdout.flush()
-                arg_streams[tid] = ToolArgStream(tid, index)
+                state.arg_streams[tid] = ToolArgStream(tid, index)
 
             case ToolInputDelta(tool_use_id=tid, partial_json=pj):
-                stream = arg_streams.get(tid)
+                stream = state.arg_streams.get(tid)
                 if stream:
                     for fe in stream.feed(pj):
-                        _render_field_event(fe)
+                        self._render_field_event(state, fe)
                     if stream.done:
                         sys.stdout.write("\n")
                         sys.stdout.flush()
-                        del arg_streams[tid]
+                        del state.arg_streams[tid]
 
             case ToolOutputDelta(tool_use_id=tid, key=key, delta=delta):
-                if tid not in streamed_tool_ids:
+                if tid not in state.streamed_tool_ids:
                     sys.stdout.write("\n")
-                streamed_tool_ids.add(tid)
+                state.streamed_tool_ids.add(tid)
                 color = RED if key == "stderr" else DIM
                 sys.stdout.write(f"{color}{delta}{RESET}")
                 sys.stdout.flush()
 
-            case ToolResult(tool_use_id=tid, is_error=is_error, content=content):
+            case ToolResult(tool_use_id=tid, name=name, is_error=is_error, content=content):
                 if is_error:
                     sys.stdout.write(f"{RESET}\n{RED}{content}{RESET}\n")
-                elif tid in streamed_tool_ids:
+                elif name == "spawn_agent":
+                    sys.stdout.write(f"{RESET}\n{GREEN}[spawn_agent completed]{RESET}\n")
+                elif tid in state.streamed_tool_ids:
                     sys.stdout.write(f"{RESET}\n")
                 else:
                     sys.stdout.write(f"{RESET}\n{GREEN}{content}{RESET}\n")
@@ -415,9 +501,58 @@ async def run_prompt(agent: Agent, ctx: MemoryContextStore, prompt: str) -> None
                 print(f"\n{RED}Error: {exc}{RESET}", file=sys.stderr)
 
             case SessionEndEvent(total_usage=usage):
-                if in_text:
+                if state.in_text:
                     print()
+                    state.in_text = False
                 print(f"{DIM}[{usage.input_tokens}in/{usage.output_tokens}out tokens]{RESET}")
+                if self._redraw_input and self._input_active and readline is not None:
+                    readline.redisplay()
+                self._redraw_input = False
+
+    def _render_field_event(
+        self,
+        state: _AgentRenderState,
+        event: ToolFieldStart | ToolFieldDelta | ToolFieldEnd,
+    ) -> None:
+        match event:
+            case ToolFieldStart(key=key):
+                sys.stdout.write(f"\n  {YELLOW}{key}{RESET}: {DIM}")
+                sys.stdout.flush()
+                state.field_key = key
+                state.field_first_delta = True
+            case ToolFieldDelta(text=text):
+                if state.field_first_delta and "\n" in text:
+                    sys.stdout.write("\n")
+                state.field_first_delta = False
+                sys.stdout.write(text)
+                sys.stdout.flush()
+            case ToolFieldEnd():
+                sys.stdout.write(RESET)
+                sys.stdout.flush()
+                state.field_key = None
+
+
+async def run_prompt(agent: Agent, ctx: MemoryContextStore, prompt: str, renderer: ReplRenderer) -> None:
+    async for event in agent.run_stream(prompt, ctx):
+        await renderer.render("main", event)
+
+
+def _clone_transport_for_spawn(transport: Any) -> Any:
+    clone = copy.copy(transport)
+    if dataclasses.is_dataclass(clone):
+        for field_info in dataclasses.fields(clone):
+            value = getattr(clone, field_info.name)
+            if isinstance(value, dict):
+                setattr(clone, field_info.name, dict(value))
+            elif isinstance(value, list):
+                setattr(clone, field_info.name, list(value))
+            elif isinstance(value, set):
+                setattr(clone, field_info.name, set(value))
+    if hasattr(clone, "last_usage"):
+        setattr(clone, "last_usage", None)
+    if hasattr(clone, "_thought_signatures"):
+        setattr(clone, "_thought_signatures", {})
+    return clone
 
 
 _media_counter = 0
@@ -434,27 +569,6 @@ def _save_media(data: bytes, media_type: str) -> str:
     os.write(fd, data)
     os.close(fd)
     return path
-
-
-_field_first_delta = True
-
-
-def _render_field_event(event: ToolFieldStart | ToolFieldDelta | ToolFieldEnd) -> None:
-    global _field_first_delta
-    match event:
-        case ToolFieldStart(key=key):
-            sys.stdout.write(f"\n  {YELLOW}{key}{RESET}: {DIM}")
-            sys.stdout.flush()
-            _field_first_delta = True
-        case ToolFieldDelta(text=text):
-            if _field_first_delta and "\n" in text:
-                sys.stdout.write("\n")
-            _field_first_delta = False
-            sys.stdout.write(text)
-            sys.stdout.flush()
-        case ToolFieldEnd():
-            sys.stdout.write(RESET)
-            sys.stdout.flush()
 
 
 # ── Input handling ───────────────────────────────────────────────────
@@ -476,6 +590,18 @@ def _read_input() -> str:
             print(f"  ... {line}")
         lines.extend(extra)
     return "\n".join(lines).strip()
+
+
+async def _read_input_async(loop: asyncio.AbstractEventLoop, renderer: ReplRenderer) -> str:
+    renderer.set_input_active(True)
+    try:
+        return await loop.run_in_executor(None, _read_input)
+    finally:
+        renderer.set_input_active(False)
+
+
+def _peer_name(root: Path) -> str:
+    return f"axio-repl:{root.name}:{os.getpid()}"
 
 
 # ── REPL commands ────────────────────────────────────────────────────
@@ -712,6 +838,31 @@ async def main() -> None:
         )
         ctx = MemoryContextStore()
 
+        async def _make_spawn_agent(inherit_context: bool) -> tuple[Agent, MemoryContextStore]:
+            child_ctx = await MemoryContextStore.from_context(ctx) if inherit_context else MemoryContextStore()
+            child_transport = _clone_transport_for_spawn(agent.transport)
+            child_tools = [
+                Tool(
+                    name=t.name,
+                    description=t.description,
+                    handler=t.handler,
+                    guards=t.guards,
+                    context=t.context,
+                    concurrency=t.concurrency,
+                )
+                for t in agent.tools
+                if t.name != "spawn_agent"
+            ]
+            child_system = build_system_prompt(root, child_transport.model, child_tools, agents_text)
+            return agent.copy(
+                transport=child_transport,
+                system=child_system,
+                tools=child_tools,
+                max_iterations=min(agent.max_iterations, 25),
+            ), child_ctx
+
+        set_spawn_agent_factory(_make_spawn_agent)
+
         # Agent-dependent commands.
         commands["/model"] = Command(
             lambda: _show_model(transport),
@@ -723,7 +874,26 @@ async def main() -> None:
         )
 
         loop = asyncio.get_event_loop()
+        renderer = ReplRenderer()
+        set_agent_event_handler(renderer.render)
         prompt_task: asyncio.Task[None] | None = None
+        input_task: asyncio.Task[str] | None = None
+        inbox_task: asyncio.Task[str] | None = None
+        peer_queue: asyncio.Queue[str] = asyncio.Queue()
+        peer_server: PeerServer | None = None
+
+        async def _on_peer_message(message: PeerMessage) -> None:
+            await peer_queue.put(format_message_for_dialog(message))
+
+        async def _run_turn(prompt: str) -> None:
+            nonlocal prompt_task
+            prompt_task = asyncio.create_task(run_prompt(agent, ctx, prompt, renderer))
+            try:
+                await prompt_task
+            except asyncio.CancelledError:
+                print(f"\n{DIM}[interrupted]{RESET}")
+            finally:
+                prompt_task = None
 
         def _on_sigint() -> None:
             nonlocal prompt_task
@@ -734,25 +904,51 @@ async def main() -> None:
 
         try:
             if args.prompt:
-                prompt_task = asyncio.create_task(run_prompt(agent, ctx, args.prompt))
-                try:
-                    await prompt_task
-                except asyncio.CancelledError:
-                    print(f"\n{DIM}[interrupted]{RESET}")
-                finally:
-                    prompt_task = None
+                await _run_turn(args.prompt)
                 return
+
+            try:
+                peer_server = await PeerServer(
+                    _peer_name(root),
+                    kind="axio-repl",
+                    handler=_on_peer_message,
+                    cwd=str(root),
+                ).start()
+            except OSError as exc:
+                print(f"{DIM}[peer messaging disabled: {exc}]{RESET}")
 
             commands_list = ", ".join(["/help", *commands, "/quit"])
             label = getattr(transport, "name", "unknown")
             print(f"REPL ready ({label}). Commands: {commands_list}")
 
             while True:
+                if input_task is None:
+                    input_task = asyncio.create_task(_read_input_async(loop, renderer))
+                if inbox_task is None:
+                    inbox_task = asyncio.create_task(peer_queue.get())
+
+                done, _ = await asyncio.wait(
+                    {input_task, inbox_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if inbox_task in done:
+                    peer_prompt = inbox_task.result()
+                    inbox_task = None
+                    await renderer.notice("[peer message queued]")
+                    await _run_turn(peer_prompt)
+                    continue
+
+                if input_task not in done:
+                    continue
+
                 try:
-                    user_input = await loop.run_in_executor(None, _read_input)
+                    user_input = input_task.result()
                 except EOFError:
                     print()
                     break
+                finally:
+                    input_task = None
 
                 if not user_input:
                     continue
@@ -778,14 +974,15 @@ async def main() -> None:
                 if matched:
                     continue
 
-                prompt_task = asyncio.create_task(run_prompt(agent, ctx, user_input))
-                try:
-                    await prompt_task
-                except asyncio.CancelledError:
-                    print(f"\n{DIM}[interrupted]{RESET}")
-                finally:
-                    prompt_task = None
+                await _run_turn(user_input)
         finally:
+            for task in (input_task, inbox_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            if peer_server is not None:
+                await peer_server.close()
+            set_agent_event_handler(None)
+            set_spawn_agent_factory(None)
             loop.remove_signal_handler(signal.SIGINT)
 
 

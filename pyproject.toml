@@ -18,6 +18,7 @@ members = [
     "examples/gas_town",
     "examples/realtime_smoke",
     "examples/realtime_chat",
+    "axio-tools-agents",
 ]
 
 [tool.uv.sources]
@@ -26,6 +27,7 @@ axio-audio               = { workspace = true }
 axio-context-sqlite      = { workspace = true }
 axio-repl                = { workspace = true }
 axio-tools-docker        = { workspace = true }
+axio-tools-agents        = { workspace = true }
 axio-tools-local         = { workspace = true }
 axio-tools-mcp           = { workspace = true }
 axio-transport-anthropic = { workspace = true }

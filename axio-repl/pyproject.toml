@@ -8,6 +8,7 @@ license = {text = "MIT"}
 keywords = ["llm", "agent", "ai", "repl", "coding-assistant"]
 dependencies = [
     "axio",
+    "axio-tools-agents",
     "axio-tools-local",
     "axio-transport-openai",
     "aiohttp>=3.11",
