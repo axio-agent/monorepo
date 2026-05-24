@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 import sys
+import time
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -21,8 +22,13 @@ def shell_stream(**kwargs: Any) -> AsyncGenerator[tuple[str, str], None]:
     return stream(**kwargs)
 
 
-def large_output_command(line_chars: int = 300) -> str:
-    code = f"for i in range(20): print(f'line{{i:02d}}-' + 'x' * {line_chars})"
+def large_output_command(line_chars: int = 300, lines: int = 20) -> str:
+    code = f"for i in range({lines}): print(f'line{{i:02d}}-' + 'x' * {line_chars})"
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+
+
+def failing_large_output_command() -> str:
+    code = "import sys\nfor i in range(20): print(f'line{i:02d}-' + 'x' * 300)\nsys.exit(7)"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
@@ -53,6 +59,11 @@ class TestShellBasic:
         assert "b" in result
         assert "c" in result
 
+    async def test_output_text_matching_large_output_notice_is_not_special(self) -> None:
+        result = await sh("printf '[output is too large, not internal\\nkeep\\n'")
+        assert "[output is too large, not internal" in result
+        assert result.index("[output is too large, not internal") < result.index("keep")
+
     async def test_large_output_saved_to_file(self, tmp_path: Path) -> None:
         result = await sh(large_output_command(), cwd=str(tmp_path))
         match = re.search(r"saved to ([^;]+);", result)
@@ -62,6 +73,7 @@ class TestShellBasic:
         assert output_path.exists()
         assert "output is too large" in result
         assert "showing first 5 and last 5 lines within 4096 chars" in result
+        assert len(result) <= 4096
         for i in range(5):
             assert f"line{i:02d}-" in result
         for i in range(5, 15):
@@ -71,6 +83,18 @@ class TestShellBasic:
         saved = output_path.read_text()
         assert sum(1 for line in saved.splitlines() if "stdout] line" in line) == 20
         assert "inline output cap: 4096 chars" in saved
+
+    async def test_large_output_nonzero_keeps_five_tail_lines(self, tmp_path: Path) -> None:
+        result = await sh(failing_large_output_command(), cwd=str(tmp_path))
+        assert "exit code: 7" in result
+        for i in range(15, 20):
+            assert f"line{i:02d}-" in result
+        assert len(result) <= 4096
+
+    async def test_large_output_does_not_duplicate_threshold_crossing_tail(self, tmp_path: Path) -> None:
+        result = await sh(large_output_command(line_chars=900, lines=6), cwd=str(tmp_path))
+        assert result.count("line05-") == 1
+        assert len(result) <= 4096
 
 
 class TestShellCwd:
@@ -121,6 +145,32 @@ class TestShellStreaming:
         assert chunks[1] == ("stdout", "b\n")
         assert chunks[2] == ("stdout", "c\n")
 
+    async def test_stream_yields_initial_output_before_process_exits(self) -> None:
+        code = "import time; print('start', flush=True); time.sleep(0.5); print('end', flush=True)"
+        started = time.monotonic()
+        first_elapsed: float | None = None
+        chunks: list[tuple[str, str]] = []
+        async for chunk in shell_stream(command=f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}", timeout=2):
+            chunks.append(chunk)
+            if chunk == ("stdout", "start\n") and first_elapsed is None:
+                first_elapsed = time.monotonic() - started
+        assert first_elapsed is not None
+        assert first_elapsed < 0.4
+        assert chunks == [("stdout", "start\n"), ("stdout", "end\n")]
+
+    async def test_stream_yields_small_output_after_first_five_lines_before_process_exits(self) -> None:
+        code = "import time\nfor i in range(7):\n print(f'line{i}', flush=True)\n time.sleep(0.2)"
+        started = time.monotonic()
+        line5_elapsed: float | None = None
+        chunks: list[tuple[str, str]] = []
+        async for chunk in shell_stream(command=f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}", timeout=3):
+            chunks.append(chunk)
+            if chunk == ("stdout", "line5\n") and line5_elapsed is None:
+                line5_elapsed = time.monotonic() - started
+        assert line5_elapsed is not None
+        assert line5_elapsed < 1.3
+        assert chunks == [(("stdout", f"line{i}\n")) for i in range(7)]
+
     async def test_stream_stderr_separate_key(self) -> None:
         chunks: list[tuple[str, str]] = []
         async for chunk in shell_stream(command="echo out; echo err >&2"):
@@ -165,22 +215,19 @@ class TestShellStreaming:
         chunks: list[tuple[str, str]] = []
         async for chunk in shell_stream(command=large_output_command(), cwd=str(tmp_path)):
             chunks.append(chunk)
+        assert {key for key, _ in chunks} <= {"stdout", "stderr"}
         text = "".join(t for _, t in chunks)
         assert "output is too large" in text
-        for i in range(5):
-            assert f"line{i:02d}-" in text
-        for i in range(5, 15):
-            assert f"line{i:02d}-" not in text
-        for i in range(15, 20):
-            assert f"line{i:02d}-" in text
+        assert "line00-" in text
+        assert "line19-" in text
+        assert sum(1 for line in text.splitlines() if line.startswith("line")) < 20
         match = re.search(r"saved to ([^;]+);", text)
         assert match is not None
         assert Path(match.group(1)).exists()
 
     async def test_stream_head_tail_content_stays_within_budget(self, tmp_path: Path) -> None:
-        chunks: list[tuple[str, str]] = []
-        async for chunk in shell_stream(command=large_output_command(line_chars=1000), cwd=str(tmp_path)):
-            chunks.append(chunk)
-        output_text = "".join(t for _, t in chunks if "output is too large" not in t)
-        assert len(output_text) <= 4096
-        assert "[truncated]" in output_text
+        result = await sh(large_output_command(line_chars=1000), cwd=str(tmp_path))
+        assert len(result) <= 4096
+        assert "line00-" in result
+        assert "line19-" in result
+        assert "[truncated]" in result

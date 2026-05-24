@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
 import tempfile
 import time
@@ -18,6 +19,15 @@ _INLINE_HEAD_LINES = 5
 _INLINE_TAIL_LINES = 5
 _PREFIX_TRUNCATION_MARKER = "\n...[truncated]\n"
 _SUFFIX_TRUNCATION_MARKER = "[truncated]...\n"
+_LIMIT_RE = re.compile(r"within (?P<limit>\d+) chars")
+
+
+class _LargeOutputNotice(str):
+    pass
+
+
+class _ShellControl(str):
+    pass
 
 
 def _kill_process(proc: asyncio.subprocess.Process) -> None:
@@ -141,7 +151,7 @@ def _fit_head_tail_to_budget(
     return _take_prefix(head_records, head_budget), _take_suffix(tail_records, tail_budget)
 
 
-def _format_records(records: list[OutputRecord]) -> str:
+def _format_records_plain(records: list[OutputRecord]) -> str:
     """Merge consecutive same-stream records within 0.5s into log entries.
 
     Produces structured output so the model sees stdout vs stderr with
@@ -164,6 +174,50 @@ def _format_records(records: list[OutputRecord]) -> str:
         header = f"[{_format_timestamp(first_ts)} {key}]"
         lines.append(f"{header} {text.rstrip(chr(10))}")
     return "\n".join(lines)
+
+
+def _is_large_output_notice(record: OutputRecord) -> bool:
+    return isinstance(record[2], _LargeOutputNotice)
+
+
+def _is_control_record(record: OutputRecord) -> bool:
+    return isinstance(record[2], _ShellControl)
+
+
+def _notice_limit(record: OutputRecord) -> int:
+    match = _LIMIT_RE.search(record[2])
+    return int(match.group("limit")) if match is not None else _MAX_INLINE_OUTPUT_CHARS
+
+
+def _format_large_records(records: list[OutputRecord], notice_index: int) -> str:
+    notice = records[notice_index]
+    limit = _notice_limit(notice)
+    output_records = [
+        record for i, record in enumerate(records) if i != notice_index and not _is_control_record(record)
+    ]
+    control_records = [record for i, record in enumerate(records) if i != notice_index and _is_control_record(record)]
+
+    head_records = output_records[:_INLINE_HEAD_LINES]
+    tail_start = max(len(output_records) - _INLINE_TAIL_LINES, len(head_records))
+    tail_records = output_records[tail_start:]
+
+    raw_budget = limit
+    while True:
+        visible_head, visible_tail = _fit_head_tail_to_budget(head_records, tail_records, raw_budget)
+        result = _format_records_plain([*visible_head, notice, *visible_tail, *control_records])
+        overflow = len(result) - limit
+        if overflow <= 0:
+            return result
+        if raw_budget <= 0:
+            return result[:limit]
+        raw_budget = max(0, raw_budget - overflow)
+
+
+def _format_records(records: list[OutputRecord]) -> str:
+    for i, record in enumerate(records):
+        if _is_large_output_notice(record):
+            return _format_large_records(records, i)
+    return _format_records_plain(records)
 
 
 async def _shell_stream(
@@ -218,9 +272,11 @@ async def _shell_stream(
     t0 = time.monotonic()
     output_chars = 0
     output_record_count = 0
+    yielded_output_count = 0
+    streamed_output_chars = 0
     large_output = False
+    notice_emitted = False
     buffered_records: list[OutputRecord] = []
-    head_records: list[OutputRecord] = []
     tail_records: list[OutputRecord] = []
     output_log: TextIO | None = None
     output_log_path: str | None = None
@@ -243,47 +299,71 @@ async def _shell_stream(
         if len(tail_records) > _INLINE_TAIL_LINES:
             del tail_records[0]
 
-    def _record_output(key: str, text: str) -> None:
-        nonlocal large_output, output_chars, output_record_count
+    def _large_output_notice() -> OutputRecord:
+        path = _ensure_output_log()
+        text = _LargeOutputNotice(
+            f"[output is too large, saved to {path}; showing first {_INLINE_HEAD_LINES} "
+            f"and last {_INLINE_TAIL_LINES} lines within {max_output_chars} chars because output "
+            f"exceeded {max_output_chars} chars]\n"
+        )
+        return (_elapsed(), "stderr", text)
+
+    def _emit_large_output_notice() -> list[tuple[str, str]]:
+        nonlocal notice_emitted
+        if notice_emitted:
+            return []
+        notice_emitted = True
+        notice = _large_output_notice()
+        if output_log is not None:
+            _write_output_record(output_log, notice[0], notice[1], notice[2])
+        return [(notice[1], notice[2])]
+
+    def _record_output(key: str, text: str) -> list[tuple[str, str]]:
+        nonlocal large_output, output_chars, output_record_count, streamed_output_chars, yielded_output_count
         ts = _elapsed()
         record = (ts, key, text)
         output_chars += len(text)
         output_record_count += 1
+        _append_tail(record)
 
         if not large_output:
             buffered_records.append((ts, key, text))
             if output_chars > max_output_chars:
                 large_output = True
-                head_records.extend(buffered_records[:_INLINE_HEAD_LINES])
-                tail_records.extend(buffered_records[-_INLINE_TAIL_LINES:])
                 _ensure_output_log()
                 buffered_records.clear()
-            return
+                chunks: list[tuple[str, str]] = []
+                if output_record_count <= _INLINE_HEAD_LINES:
+                    remaining = max_output_chars - streamed_output_chars
+                    clipped = _clip_prefix(record, remaining)
+                    if clipped is not None:
+                        yielded_output_count += 1
+                        streamed_output_chars += len(clipped[2])
+                        chunks.append((clipped[1], clipped[2]))
+                chunks.extend(_emit_large_output_notice())
+                return chunks
+
+            yielded_output_count += 1
+            streamed_output_chars += len(text)
+            return [(key, text)]
 
         assert output_log is not None
         _write_output_record(output_log, ts, key, text)
-        _append_tail(record)
+        return []
 
     def _record_control(key: str, text: str) -> OutputRecord:
-        record = (_elapsed(), key, text)
+        record = (_elapsed(), key, _ShellControl(text))
         if output_log is not None:
             _write_output_record(output_log, record[0], key, text)
         return record
 
-    def _summary_records() -> list[OutputRecord]:
+    def _pending_records() -> list[OutputRecord]:
         if not large_output:
-            return list(buffered_records)
+            return buffered_records[yielded_output_count:]
 
-        path = _ensure_output_log()
-        notice = (
-            f"[output is too large, saved to {path}; showing first {_INLINE_HEAD_LINES} "
-            f"and last {_INLINE_TAIL_LINES} lines within {max_output_chars} chars because output "
-            f"exceeded {max_output_chars} chars]\n"
-        )
-        overlap = max(0, len(head_records) + len(tail_records) - output_record_count)
+        overlap = max(0, _INLINE_HEAD_LINES + len(tail_records) - output_record_count)
         visible_tail = tail_records[overlap:] if overlap else tail_records
-        visible_head, visible_tail = _fit_head_tail_to_budget(head_records, visible_tail, max_output_chars)
-        return [*visible_head, (_elapsed(), "stderr", notice), *visible_tail]
+        return _take_suffix(visible_tail, max_output_chars)
 
     try:
         done_count = 0
@@ -300,7 +380,8 @@ async def _shell_stream(
             if item is None:
                 done_count += 1
             else:
-                _record_output(*item)
+                for chunk in _record_output(*item):
+                    yield chunk
 
         if not timed_out:
             await asyncio.gather(stdout_task, stderr_task)
@@ -313,7 +394,7 @@ async def _shell_stream(
 
     if timed_out:
         timeout_control_records = [_record_control("stderr", f"[timeout: command exceeded {timeout}s]")]
-        for _, key, text in [*_summary_records(), *timeout_control_records]:
+        for _, key, text in [*_pending_records(), *timeout_control_records]:
             yield (key, text)
         if output_log is not None:
             output_log.close()
@@ -323,7 +404,7 @@ async def _shell_stream(
     returncode = await proc.wait()
     if returncode != 0:
         control_records.append(_record_control("stderr", f"[exit code: {returncode}]"))
-    for _, key, text in [*_summary_records(), *control_records]:
+    for _, key, text in [*_pending_records(), *control_records]:
         yield (key, text)
     if output_log is not None:
         output_log.close()
