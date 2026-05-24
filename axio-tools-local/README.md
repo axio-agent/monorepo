@@ -74,7 +74,11 @@ asyncio.run(shell(command="echo hello", cwd=".", timeout=30))
 asyncio.run(shell(command="cat", stdin="hello"))
 ```
 
-Parameters: `command: str`, `timeout: int = 5`, `cwd: str = "."`, `stdin: str | None = None`
+Parameters: `command: str`, `timeout: int = 5`, `cwd: str = "."`, `stdin: str | None = None`, `max_output_chars: int = 4096`
+
+If output exceeds `max_output_chars`, the tool saves the full stdout/stderr log
+to a local file and returns only the first 5 and last 5 output lines. Those
+inline lines are also capped to `max_output_chars` total.
 
 ### patch_file
 
