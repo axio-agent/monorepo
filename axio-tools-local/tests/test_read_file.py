@@ -138,6 +138,11 @@ class TestReadFileRange:
 
 
 class TestReadFileTruncation:
+    async def test_default_limit_rejects_large_file(self, tmp_cwd: Path) -> None:
+        (tmp_cwd / "f.txt").write_text("a" * 32769)
+        with pytest.raises(ValueError, match="explicit max_chars"):
+            await read_file(filename="f.txt")
+
     async def test_truncated_at_max_chars(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "f.txt").write_text("a" * 200)
         result = await read(tmp_cwd, "f.txt", max_chars=10)
@@ -145,8 +150,13 @@ class TestReadFileTruncation:
 
     async def test_no_truncation_within_limit(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "f.txt").write_text("hello\n")
-        result = await read(tmp_cwd, "f.txt", max_chars=32768)
+        result = await read(tmp_cwd, "f.txt")
         assert "[truncated]" not in result
+
+    async def test_line_range_can_read_small_slice_from_large_file(self, tmp_cwd: Path) -> None:
+        (tmp_cwd / "f.txt").write_text("first\n" + ("a" * 40000) + "\nlast\n")
+        result = await read(tmp_cwd, "f.txt", start_line=1, end_line=1)
+        assert result == "first\n"
 
 
 class TestReadFileBinary:
@@ -159,6 +169,12 @@ class TestReadFileBinary:
         (tmp_cwd / "b.dat").write_bytes(bytes(range(256)))
         result = await read(tmp_cwd, "b.dat", binary_as_hex=True, max_chars=20)
         assert len(result) < 600
+        assert "[truncated]" in result
+
+    async def test_binary_default_limit_rejects_large_file(self, tmp_cwd: Path) -> None:
+        (tmp_cwd / "b.dat").write_bytes(b"\xff" * 16385)
+        with pytest.raises(ValueError, match="explicit max_chars"):
+            await read_file(filename="b.dat", binary_as_hex=True)
 
     async def test_binary_raises_without_hex(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "b.dat").write_bytes(b"\x80\x81\xff")

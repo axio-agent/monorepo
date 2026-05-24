@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import shlex
+import sys
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -16,6 +19,11 @@ async def sh(command: str, **kwargs: Any) -> str:
 def shell_stream(**kwargs: Any) -> AsyncGenerator[tuple[str, str], None]:
     stream = cast(Callable[..., AsyncGenerator[tuple[str, str], None]], getattr(shell, "stream"))
     return stream(**kwargs)
+
+
+def large_output_command(line_chars: int = 300) -> str:
+    code = f"for i in range(20): print(f'line{{i:02d}}-' + 'x' * {line_chars})"
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
 class TestShellBasic:
@@ -44,6 +52,25 @@ class TestShellBasic:
         assert "a" in result
         assert "b" in result
         assert "c" in result
+
+    async def test_large_output_saved_to_file(self, tmp_path: Path) -> None:
+        result = await sh(large_output_command(), cwd=str(tmp_path))
+        match = re.search(r"saved to ([^;]+);", result)
+        assert match is not None
+        output_path = Path(match.group(1))
+        assert output_path.parent == tmp_path
+        assert output_path.exists()
+        assert "output is too large" in result
+        assert "showing first 5 and last 5 lines within 4096 chars" in result
+        for i in range(5):
+            assert f"line{i:02d}-" in result
+        for i in range(5, 15):
+            assert f"line{i:02d}-" not in result
+        for i in range(15, 20):
+            assert f"line{i:02d}-" in result
+        saved = output_path.read_text()
+        assert sum(1 for line in saved.splitlines() if "stdout] line" in line) == 20
+        assert "inline output cap: 4096 chars" in saved
 
 
 class TestShellCwd:
@@ -133,3 +160,27 @@ class TestShellStreaming:
         assert "stderr]" in result
         assert "out" in result
         assert "err" in result
+
+    async def test_stream_caps_large_output(self, tmp_path: Path) -> None:
+        chunks: list[tuple[str, str]] = []
+        async for chunk in shell_stream(command=large_output_command(), cwd=str(tmp_path)):
+            chunks.append(chunk)
+        text = "".join(t for _, t in chunks)
+        assert "output is too large" in text
+        for i in range(5):
+            assert f"line{i:02d}-" in text
+        for i in range(5, 15):
+            assert f"line{i:02d}-" not in text
+        for i in range(15, 20):
+            assert f"line{i:02d}-" in text
+        match = re.search(r"saved to ([^;]+);", text)
+        assert match is not None
+        assert Path(match.group(1)).exists()
+
+    async def test_stream_head_tail_content_stays_within_budget(self, tmp_path: Path) -> None:
+        chunks: list[tuple[str, str]] = []
+        async for chunk in shell_stream(command=large_output_command(line_chars=1000), cwd=str(tmp_path)):
+            chunks.append(chunk)
+        output_text = "".join(t for _, t in chunks if "output is too large" not in t)
+        assert len(output_text) <= 4096
+        assert "[truncated]" in output_text
