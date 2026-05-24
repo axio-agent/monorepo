@@ -25,3 +25,23 @@ async def test_one_shot_renderer_replays_buffered_background_output(
     output = capsys.readouterr().out
     assert "background report" in output
     assert "[1in/2out tokens]" in output
+
+
+async def test_one_shot_renderer_replays_each_buffered_background_agent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    renderer = ReplRenderer(buffer_background_events=True)
+
+    await renderer.render("child-a", TextDelta(index=0, delta="first report"))
+    await renderer.render("child-b", TextDelta(index=0, delta="second report"))
+
+    assert capsys.readouterr().out == ""
+
+    renderer.set_focus("child-a")
+    first_output = capsys.readouterr().out
+    assert "first report" in first_output
+    assert "second report" not in first_output
+
+    renderer.set_focus("child-b")
+    second_output = capsys.readouterr().out
+    assert "second report" in second_output

@@ -1070,6 +1070,8 @@ async def main() -> None:
                 await renderer.notice(f"[waiting for {len(records)} background agents]")
                 renderer.set_focus(records[0].id)
             await wait_local_background_agents_idle([record.id for record in records])
+            for record in records[1:]:
+                renderer.set_focus(record.id)
             await renderer.mark_idle()
 
         def _on_sigint() -> None:
