@@ -15,6 +15,7 @@ from axio_tools_agents.peers import (
     spawn_agent,
     stop_agent,
     stop_local_background_agents,
+    wait_local_background_agents_idle,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "spawn_agent",
     "stop_agent",
     "stop_local_background_agents",
+    "wait_local_background_agents_idle",
 ]

@@ -106,6 +106,7 @@ class _BackgroundAgent:
     context: ContextStore
     peer: PeerServer
     inbox: asyncio.Queue[_QueuedPrompt] = field(default_factory=asyncio.Queue)
+    idle_waiters: list[asyncio.Future[None]] = field(default_factory=list)
     runner: asyncio.Task[None] | None = None
     current_turn: asyncio.Task[None] | None = None
     stopping: bool = False
@@ -114,14 +115,30 @@ class _BackgroundAgent:
 _background_agents: dict[str, _BackgroundAgent] = {}
 
 
+def _is_background_idle(background: _BackgroundAgent) -> bool:
+    current_turn = background.current_turn
+    return (current_turn is None or current_turn.done()) and background.inbox.empty()
+
+
+def _notify_idle(background: _BackgroundAgent) -> None:
+    if not _is_background_idle(background):
+        return
+    waiters = background.idle_waiters
+    background.idle_waiters = []
+    for waiter in waiters:
+        if not waiter.done():
+            waiter.set_result(None)
+
+
 def _finish_pending_prompts(background: _BackgroundAgent) -> None:
     while True:
         try:
             queued = background.inbox.get_nowait()
         except asyncio.QueueEmpty:
-            return
+            break
         if queued.done is not None and not queued.done.done():
             queued.done.set_result(None)
+    _notify_idle(background)
 
 
 def _safe_slug(value: str) -> str:
@@ -556,6 +573,7 @@ async def _run_background_agent(background: _BackgroundAgent) -> None:
                 background.current_turn = None
                 if queued.done is not None and not queued.done.done():
                     queued.done.set_result(None)
+                _notify_idle(background)
             if background.stopping:
                 break
     finally:
@@ -616,6 +634,23 @@ def local_background_agent_records() -> list[PeerRecord]:
 
 def is_local_background_agent(agent_id: str) -> bool:
     return agent_id in _background_agents
+
+
+async def wait_local_background_agents_idle(agent_ids: list[str] | None = None) -> None:
+    selected = set(agent_ids) if agent_ids is not None else None
+    while True:
+        waiters: list[asyncio.Future[None]] = []
+        for agent_id, background in list(_background_agents.items()):
+            if selected is not None and agent_id not in selected:
+                continue
+            if _is_background_idle(background):
+                continue
+            waiter = asyncio.get_running_loop().create_future()
+            background.idle_waiters.append(waiter)
+            waiters.append(waiter)
+        if not waiters:
+            return
+        await asyncio.gather(*waiters)
 
 
 async def enqueue_local_agent_prompt(agent_id: str, prompt: str, *, wait: bool = False) -> bool:

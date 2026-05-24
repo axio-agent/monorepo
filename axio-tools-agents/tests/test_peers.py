@@ -18,12 +18,14 @@ from axio_tools_agents.peers import (
     enqueue_local_agent_prompt,
     format_message_for_dialog,
     interrupt_agent,
+    is_local_background_agent,
     list_peers,
     send_message,
     set_spawn_agent_factory,
     spawn_agent,
     stop_agent,
     stop_local_background_agents,
+    wait_local_background_agents_idle,
 )
 
 
@@ -249,5 +251,51 @@ async def test_stop_agent_releases_waiting_local_prompt(tmp_path: Path) -> None:
         stopped = await stop_agent(agent_id=agent_id, reason="done")
         assert stopped.startswith("Sent stop")
         assert await asyncio.wait_for(waiter, timeout=1)
+    finally:
+        await sender.close()
+
+
+class _DelayedTransport:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[Tool[object]],
+        system: str,
+    ) -> AsyncIterator[StreamEvent]:
+        prompt = messages[-1].content[0].text  # type: ignore[attr-defined]
+        self.calls.append(prompt)
+        self.started.set()
+        await self.release.wait()
+        yield TextDelta(index=0, delta="done")
+        yield IterationEnd(iteration=len(self.calls), stop_reason=StopReason.end_turn, usage=Usage(0, 0))
+
+
+async def test_wait_local_background_agents_idle_waits_for_current_turn(tmp_path: Path) -> None:
+    transport = _DelayedTransport()
+    sender = await PeerServer("sender", kind="test", handler=_noop_handler, project=str(tmp_path)).start()
+
+    async def factory(inherit_context: bool) -> tuple[Agent, MemoryContextStore]:
+        return Agent(system="child", transport=transport), MemoryContextStore()
+
+    set_spawn_agent_factory(factory)
+    try:
+        result = await spawn_agent(task="slow")
+        agent_id = result.split("agent_id=", 1)[1].split(" ", 1)[0]
+        await asyncio.wait_for(transport.started.wait(), timeout=1)
+
+        waiter = asyncio.create_task(wait_local_background_agents_idle([agent_id]))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        transport.release.set()
+        await asyncio.wait_for(waiter, timeout=1)
+        assert is_local_background_agent(agent_id)
+
+        stopped = await stop_agent(agent_id=agent_id, reason="done")
+        assert stopped.startswith("Sent stop")
     finally:
         await sender.close()
