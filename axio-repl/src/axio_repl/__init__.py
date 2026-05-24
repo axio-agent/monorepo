@@ -234,6 +234,7 @@ def build_system_prompt(
     model: ModelSpec,
     tools: list[Tool[Any]],
     agents_text: str = "",
+    parent_peer_id: str | None = None,
 ) -> str:
     caps = model.capabilities
     ctx_k = model.context_window // 1000
@@ -335,6 +336,11 @@ def build_system_prompt(
                 "/agents, interrupt with /agent-interrupt, and stop with /agent-stop. Only the focused agent "
                 "streams fully; background agents are summarized between focused streams.",
             ]
+        if parent_peer_id is not None and any(t.name == "send_message" for t in tools):
+            lines.append(
+                f"- This REPL session is registered as peer {parent_peer_id!r}. When reporting back by IPC, use "
+                f"send_message(agent_id={parent_peer_id!r}, message=<report>)."
+            )
     lines.append("")
 
     if agents_text:
@@ -796,19 +802,20 @@ def _apply_model(
     root: Path,
     agents_text: str,
     arg: str,
+    parent_peer_id: str | None = None,
 ) -> None:
     try:
         transport.model = _resolve_model_arg(transport, arg)
     except KeyError:
         matches = transport.models.search(arg)
     else:
-        agent.system = build_system_prompt(root, transport.model, tools, agents_text)
+        agent.system = build_system_prompt(root, transport.model, tools, agents_text, parent_peer_id=parent_peer_id)
         print(f"Switched to {BOLD}{transport.model.id}{RESET}")
         return
 
     if len(matches) == 1:
         transport.model = next(iter(matches.values()))
-        agent.system = build_system_prompt(root, transport.model, tools, agents_text)
+        agent.system = build_system_prompt(root, transport.model, tools, agents_text, parent_peer_id=parent_peer_id)
         print(f"Switched to {BOLD}{transport.model.id}{RESET}")
     elif len(matches) == 0:
         print(f"No model matching {arg!r}. Available: {', '.join(transport.models.keys())}")
@@ -1011,7 +1018,13 @@ async def main() -> None:
                 for t in agent.tools
                 if t.name != "spawn_agent"
             ]
-            child_system = build_system_prompt(root, child_transport.model, child_tools, agents_text)
+            child_system = build_system_prompt(
+                root,
+                child_transport.model,
+                child_tools,
+                agents_text,
+                parent_peer_id=parent_peer_id,
+            )
             return agent.copy(
                 transport=child_transport,
                 system=child_system,
@@ -1024,7 +1037,7 @@ async def main() -> None:
         # Agent-dependent commands.
         commands["/model"] = Command(
             lambda: _show_model(transport),
-            lambda a: _apply_model(transport, agent, tools, root, agents_text, a),
+            lambda a: _apply_model(transport, agent, tools, root, agents_text, a, parent_peer_id),
         )
         commands["/iterations"] = Command(
             lambda: _show_iterations(agent),
@@ -1039,6 +1052,7 @@ async def main() -> None:
         inbox_task: asyncio.Task[str] | None = None
         peer_queue: asyncio.Queue[str] = asyncio.Queue()
         peer_server: PeerServer | None = None
+        parent_peer_id: str | None = None
 
         async def _on_peer_message(message: PeerMessage) -> None:
             await peer_queue.put(format_message_for_dialog(message))
@@ -1074,6 +1088,15 @@ async def main() -> None:
                 renderer.set_focus(record.id)
             await renderer.mark_idle()
 
+        async def _drain_peer_messages() -> None:
+            while True:
+                try:
+                    peer_prompt = peer_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                await renderer.notice("[peer message queued]")
+                await _run_turn(peer_prompt)
+
         def _on_sigint() -> None:
             nonlocal prompt_task
             if renderer.focused_agent != "main":
@@ -1084,11 +1107,6 @@ async def main() -> None:
         loop.add_signal_handler(signal.SIGINT, _on_sigint)
 
         try:
-            if args.prompt:
-                await _run_turn(args.prompt)
-                await _run_one_shot_background_agents()
-                return
-
             try:
                 peer_server = await PeerServer(
                     _peer_name(root),
@@ -1096,8 +1114,23 @@ async def main() -> None:
                     handler=_on_peer_message,
                     cwd=str(root),
                 ).start()
+                parent_peer_id = peer_server.id
+                agent.system = build_system_prompt(
+                    root,
+                    transport.model,
+                    tools,
+                    agents_text,
+                    parent_peer_id=parent_peer_id,
+                )
             except OSError as exc:
                 print(f"{DIM}[peer messaging disabled: {exc}]{RESET}")
+
+            if args.prompt:
+                await _run_turn(args.prompt)
+                await _run_one_shot_background_agents()
+                renderer.set_focus("main")
+                await _drain_peer_messages()
+                return
 
             agent_commands = ["/agents", "/agent-focus", "/agent-interrupt", "/agent-stop"]
             commands_list = ", ".join(["/help", *commands, *agent_commands, "/quit"])

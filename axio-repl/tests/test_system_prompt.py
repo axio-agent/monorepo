@@ -117,6 +117,23 @@ class TestToolRules:
         prompt = build_system_prompt(_ROOT, model, [])
         assert "Never refuse safe requests" in prompt
 
+    def test_agent_parent_peer_id_included_for_spawn_tool(self) -> None:
+        model = ModelSpec(id="test", capabilities=_CHAT_CAPS)
+        prompt = build_system_prompt(
+            _ROOT,
+            model,
+            [_tool("spawn_agent"), _tool("send_message")],
+            parent_peer_id="parent-123",
+        )
+        assert "parent-123" in prompt
+        assert "send_message(agent_id='parent-123'" in prompt
+
+    def test_agent_parent_peer_id_included_for_child_without_spawn_tool(self) -> None:
+        model = ModelSpec(id="test", capabilities=_CHAT_CAPS)
+        prompt = build_system_prompt(_ROOT, model, [_tool("send_message")], parent_peer_id="parent-123")
+        assert "parent-123" in prompt
+        assert "send_message(agent_id='parent-123'" in prompt
+
 
 class TestAgentsText:
     def test_agents_text_appended(self) -> None:
