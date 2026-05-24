@@ -133,6 +133,46 @@ def test_default_models_inherited() -> None:
     assert "gpt-4.1-mini" in t.models
 
 
+def test_resolve_model_exact() -> None:
+    t = OpenRouterTransport()
+
+    spec = t.resolve_model("gpt-4.1-mini")
+
+    assert spec.id == "gpt-4.1-mini"
+
+
+def test_resolve_model_variant_uses_base_metadata() -> None:
+    base = ModelSpec(
+        id="z-ai/glm-4.7",
+        capabilities=frozenset({Capability.text, Capability.tool_use}),
+        context_window=256_000,
+        max_output_tokens=16_384,
+        input_cost=0.2,
+        output_cost=1.0,
+    )
+    t = OpenRouterTransport(models=ModelRegistry([base]))
+
+    spec = t.resolve_model("z-ai/glm-4.7:nitro")
+
+    assert spec == ModelSpec(
+        id="z-ai/glm-4.7:nitro",
+        capabilities=base.capabilities,
+        context_window=base.context_window,
+        max_output_tokens=base.max_output_tokens,
+        input_cost=base.input_cost,
+        output_cost=base.output_cost,
+    )
+
+
+def test_resolve_model_variant_missing_base_raises_requested_id() -> None:
+    t = OpenRouterTransport(models=ModelRegistry())
+
+    with pytest.raises(KeyError) as exc_info:
+        t.resolve_model("z-ai/glm-4.7:nitro")
+
+    assert exc_info.value.args == ("z-ai/glm-4.7:nitro",)
+
+
 # ---------------------------------------------------------------------------
 # fetch_models
 # ---------------------------------------------------------------------------
