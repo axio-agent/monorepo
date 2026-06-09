@@ -4,6 +4,8 @@ import os
 from axio.blocks import AudioBlock, AudioMediaType, ImageBlock, ImageMediaType, TextBlock, VideoBlock, VideoMediaType
 from axio.field import StrictStr
 
+from .patch_file import clear_patched
+
 type ReadFileResult = str | list[TextBlock | ImageBlock | AudioBlock | VideoBlock]
 type MediaFileContent = list[TextBlock | ImageBlock | AudioBlock | VideoBlock]
 
@@ -131,6 +133,7 @@ async def read_file(
 
     def _blocking() -> ReadFileResult:
         path = os.path.join(os.getcwd(), filename)
+        clear_patched(os.path.realpath(path))
         ext = os.path.splitext(path)[1].lower()
         if ext in _AUDIO_EXTENSIONS:
             return _read_audio(path, filename, ext)

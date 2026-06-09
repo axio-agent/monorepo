@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from axio_tools_local.patch_file import patch_file
+from axio_tools_local.read_file import read_file
 
 
 @pytest.fixture()
@@ -151,6 +152,56 @@ class TestNewlineHandling:
         assert f.read_text() == "a\nB\nc"
 
 
+class TestValidation:
+    async def test_from_line_zero_rejected(self, tmp_cwd: Path) -> None:
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")
+        with pytest.raises(ValueError, match="from_line=0"):
+            await patch(f, 0, 1, "x")
+
+    async def test_from_line_negative_rejected(self, tmp_cwd: Path) -> None:
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")
+        with pytest.raises(ValueError, match="from_line=-1"):
+            await patch(f, -1, 1, "x")
+
+    async def test_from_line_beyond_end_rejected(self, tmp_cwd: Path) -> None:
+        """from_line > N+1 is not allowed (N+1 is valid for append-insert)."""
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")  # 3 lines
+        with pytest.raises(ValueError, match="from_line=5"):
+            await patch(f, 5, 5, "x")
+
+    async def test_to_line_beyond_end_rejected(self, tmp_cwd: Path) -> None:
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")  # 3 lines
+        with pytest.raises(ValueError, match="to_line=4"):
+            await patch(f, 2, 4, "x")
+
+    async def test_gap_range_rejected(self, tmp_cwd: Path) -> None:
+        """from_line > to_line + 1 is a gap range and must be rejected."""
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\nd\ne\n")
+        with pytest.raises(ValueError, match="to_line=2"):
+            await patch(f, 4, 2, "x")
+
+    async def test_file_unchanged_on_validation_error(self, tmp_cwd: Path) -> None:
+        """File must not be modified if validation fails."""
+        f = tmp_cwd / "f.txt"
+        original = "a\nb\nc\n"
+        f.write_text(original)
+        with pytest.raises(ValueError):
+            await patch(f, 0, 1, "x")
+        assert f.read_text() == original
+
+    async def test_from_line_n_plus_1_allowed(self, tmp_cwd: Path) -> None:
+        """from_line = N+1, to_line = N is the valid append-insert pattern."""
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")  # 3 lines; from_line=4, to_line=3 is valid
+        await patch(f, 4, 3, "appended\n")
+        assert f.read_text() == "a\nb\nc\nappended\n"
+
+
 class TestEdgeCases:
     async def test_file_not_found(self, tmp_cwd: Path) -> None:
         with pytest.raises(FileNotFoundError):
@@ -180,3 +231,83 @@ class TestEdgeCases:
         f.write_text("привет\nмир\n")
         await patch(f, 1, 1, "hello\n")
         assert f.read_text() == "hello\nмир\n"
+
+
+class TestDoublePatching:
+    async def test_second_patch_rejected(self, tmp_cwd: Path) -> None:
+        """Patching the same file twice without re-reading must raise RuntimeError."""
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")
+        await patch(f, 1, 1, "A\n")
+        with pytest.raises(RuntimeError, match="already patched"):
+            await patch(f, 2, 2, "B\n")
+
+    async def test_read_clears_block(self, tmp_cwd: Path) -> None:
+        """Re-reading the file after a patch allows patching again."""
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")
+        await patch(f, 1, 1, "A\n")
+        await read_file(filename=f.name)
+        await patch(f, 2, 2, "B\n")
+        assert f.read_text() == "A\nB\nc\n"
+
+    async def test_failed_patch_does_not_block(self, tmp_cwd: Path) -> None:
+        """A patch that fails validation must not consume the single-patch slot."""
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")
+        with pytest.raises(ValueError):
+            await patch(f, 0, 1, "x")
+        # No error — file was never successfully patched.
+        await patch(f, 1, 1, "A\n")
+        assert f.read_text() == "A\nb\nc\n"
+
+    async def test_different_files_independent(self, tmp_cwd: Path) -> None:
+        """Patching different files does not interfere with each other's slots."""
+        a = tmp_cwd / "a.txt"
+        b = tmp_cwd / "b.txt"
+        a.write_text("a1\na2\n")
+        b.write_text("b1\nb2\n")
+        await patch_file(file_path=a.name, from_line=1, to_line=1, content="A1\n")
+        await patch_file(file_path=b.name, from_line=1, to_line=1, content="B1\n")
+        assert a.read_text() == "A1\na2\n"
+        assert b.read_text() == "B1\nb2\n"
+
+    async def test_rejected_second_patch_leaves_file_with_only_first_patch(self, tmp_cwd: Path) -> None:
+        """When the second patch is rejected, the file must contain exactly the first patch result."""
+        f = tmp_cwd / "f.txt"
+        f.write_text("a\nb\nc\n")
+        await patch(f, 1, 1, "A\n")
+        with pytest.raises(RuntimeError):
+            await patch(f, 2, 2, "B\n")
+        assert f.read_text() == "A\nb\nc\n"
+
+
+class TestNullBytesAndBinaryFiles:
+    async def test_null_bytes_in_preserved_lines_survive(self, tmp_cwd: Path) -> None:
+        """Null bytes in lines that are NOT being replaced must not be stripped."""
+        f = tmp_cwd / "f.txt"
+        f.write_bytes(b"line1\nline2\x00null\nline3\n")
+        await patch(f, 1, 1, "replaced\n")
+        result = f.read_bytes()
+        assert b"line2\x00null" in result, "null byte in preserved line was stripped"
+        assert result.startswith(b"replaced\n")
+
+    async def test_binary_file_raises_clear_error(self, tmp_cwd: Path) -> None:
+        """Patching a non-UTF-8 binary file must raise an error before any write."""
+        f = tmp_cwd / "f.bin"
+        f.write_bytes(bytes(range(128, 200)))
+        original = f.read_bytes()
+        with pytest.raises(UnicodeDecodeError):
+            await patch(f, 1, 1, "hello\n")
+        assert f.read_bytes() == original, "binary file was modified despite decode error"
+
+
+class TestSymlinks:
+    async def test_symlink_to_file_is_followed(self, tmp_cwd: Path) -> None:
+        """patch_file follows symlinks and patches the target file."""
+        target = tmp_cwd / "target.txt"
+        link = tmp_cwd / "link.txt"
+        target.write_text("a\nb\nc\n")
+        link.symlink_to(target)
+        await patch_file(file_path=link.name, from_line=2, to_line=2, content="B\n")
+        assert target.read_text() == "a\nB\nc\n"

@@ -97,6 +97,7 @@ async def read_file(
     write_file or patch_file."""
     sandbox: DockerSandbox = CONTEXT.get()
     path = _resolve_path(sandbox.workdir, filename)
+    sandbox._patched_files.discard(path)
     raw = await sandbox.read_file_bytes(path)
     try:
         text = raw.decode()
@@ -179,18 +180,36 @@ async def patch_file(file_path: str, from_line: int, to_line: int, content: str,
     from_line and to_line are both inclusive (from_line=2, to_line=4 replaces
     lines 2, 3, 4). To insert without deleting, set to_line = from_line - 1.
     Always read the file first with line_numbers=True to get correct line numbers.
+    Patch each file at most once per read — re-read with line_numbers=True after
+    patching before issuing another patch to the same file.
     Use this for surgical edits instead of rewriting the whole file with
     write_file."""
     sandbox: DockerSandbox = CONTEXT.get()
     path = _resolve_path(sandbox.workdir, file_path)
+    if path in sandbox._patched_files:
+        raise RuntimeError(
+            f"{file_path!r} was already patched since the last read. "
+            "Re-read the file with line_numbers=True to get updated line numbers before patching again."
+        )
     raw = await sandbox.read_file_bytes(path)
     lines = raw.decode().splitlines(keepends=True)
+    n = len(lines)
+    if not (1 <= from_line <= n + 1):
+        raise ValueError(
+            f"from_line={from_line} out of range; file has {n} lines (valid: 1..{n + 1})"
+        )
+    if not (from_line - 1 <= to_line <= n):
+        raise ValueError(
+            f"to_line={to_line} out of range (valid: {from_line - 1}..{n})"
+        )
     content_lines = content.splitlines(keepends=True)
     if content_lines and not content_lines[-1].endswith("\n"):
         content_lines[-1] += "\n"
     new_lines = lines[: from_line - 1] + content_lines + lines[to_line:]
-    await sandbox.write_file(path, "".join(new_lines), mode=mode)
-    return f"{len(new_lines)} lines written to {path}"
+    result = "".join(new_lines)
+    await sandbox.write_file(path, result, mode=mode)
+    sandbox._patched_files.add(path)
+    return f"{len(result)} bytes written to {path}"
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +321,7 @@ class DockerSandbox:
         self.privileged = privileged
         self.ulimits: dict[str, int | tuple[int, int]] = ulimits or {}
         self.tmpfs: dict[str, str] = tmpfs or {}
+        self._patched_files: set[str] = set()
         self.ports: dict[int, int] = ports or {}
         self.platform = platform
         self.extra_hosts: dict[str, str] = extra_hosts or {}
