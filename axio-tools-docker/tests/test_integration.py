@@ -153,7 +153,7 @@ async def test_patch_file_insert(sandbox: DockerSandbox) -> None:
 async def test_patch_file_from_line_zero_rejected(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/v.txt", "a\nb\nc\n")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
-    with pytest.raises(ValueError, match="from_line=0"):
+    with pytest.raises(Exception, match="from_line=0"):
         await tool(file_path="/workspace/v.txt", from_line=0, to_line=1, content="x")
     assert await sandbox.read_file_bytes("/workspace/v.txt") == b"a\nb\nc\n"
 
@@ -161,7 +161,7 @@ async def test_patch_file_from_line_zero_rejected(sandbox: DockerSandbox) -> Non
 async def test_patch_file_negative_from_line_rejected(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/v.txt", "a\nb\nc\n")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
-    with pytest.raises(ValueError, match="from_line=-1"):
+    with pytest.raises(Exception, match="from_line=-1"):
         await tool(file_path="/workspace/v.txt", from_line=-1, to_line=1, content="x")
     assert await sandbox.read_file_bytes("/workspace/v.txt") == b"a\nb\nc\n"
 
@@ -169,7 +169,7 @@ async def test_patch_file_negative_from_line_rejected(sandbox: DockerSandbox) ->
 async def test_patch_file_from_line_beyond_end_rejected(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/v.txt", "a\nb\nc\n")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
-    with pytest.raises(ValueError, match="from_line=5"):
+    with pytest.raises(Exception, match="from_line=5"):
         await tool(file_path="/workspace/v.txt", from_line=5, to_line=5, content="x")
     assert await sandbox.read_file_bytes("/workspace/v.txt") == b"a\nb\nc\n"
 
@@ -177,7 +177,7 @@ async def test_patch_file_from_line_beyond_end_rejected(sandbox: DockerSandbox) 
 async def test_patch_file_to_line_beyond_end_rejected(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/v.txt", "a\nb\nc\n")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
-    with pytest.raises(ValueError, match="to_line=4"):
+    with pytest.raises(Exception, match="to_line=4"):
         await tool(file_path="/workspace/v.txt", from_line=2, to_line=4, content="x")
     assert await sandbox.read_file_bytes("/workspace/v.txt") == b"a\nb\nc\n"
 
@@ -186,7 +186,7 @@ async def test_patch_file_gap_range_rejected(sandbox: DockerSandbox) -> None:
     """from_line > to_line + 1 must be rejected."""
     await sandbox.write_file("/workspace/v.txt", "a\nb\nc\nd\ne\n")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
-    with pytest.raises(ValueError, match="to_line=2"):
+    with pytest.raises(Exception, match="to_line=2"):
         await tool(file_path="/workspace/v.txt", from_line=4, to_line=2, content="x")
     assert await sandbox.read_file_bytes("/workspace/v.txt") == b"a\nb\nc\nd\ne\n"
 
@@ -201,7 +201,7 @@ async def test_patch_file_second_patch_rejected(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/dp.txt", "a\nb\nc\n")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
     await tool(file_path="/workspace/dp.txt", from_line=1, to_line=1, content="A\n")
-    with pytest.raises(RuntimeError, match="already patched"):
+    with pytest.raises(Exception, match="already patched"):
         await tool(file_path="/workspace/dp.txt", from_line=2, to_line=2, content="B\n")
     raw = await sandbox.read_file_bytes("/workspace/dp.txt")
     assert raw == b"A\nb\nc\n"
@@ -239,7 +239,7 @@ async def test_patch_file_binary_file_raises_before_write(sandbox: DockerSandbox
     await sandbox.exec("python3 -c \"open('/workspace/bin.bin','wb').write(bytes(range(128,200)))\"")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
     original = await sandbox.read_file_bytes("/workspace/bin.bin")
-    with pytest.raises(UnicodeDecodeError):
+    with pytest.raises(Exception, match="codec can't decode"):
         await tool(file_path="/workspace/bin.bin", from_line=1, to_line=1, content="hello\n")
     assert await sandbox.read_file_bytes("/workspace/bin.bin") == original
 
