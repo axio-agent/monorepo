@@ -64,13 +64,9 @@ async def patch_file(
 
             n = len(lines)
             if not (1 <= from_line <= n + 1):
-                raise ValueError(
-                    f"from_line={from_line} out of range; file has {n} lines (valid: 1..{n + 1})"
-                )
+                raise ValueError(f"from_line={from_line} out of range; file has {n} lines (valid: 1..{n + 1})")
             if not (from_line - 1 <= to_line <= n):
-                raise ValueError(
-                    f"to_line={to_line} out of range (valid: {from_line - 1}..{n})"
-                )
+                raise ValueError(f"to_line={to_line} out of range (valid: {from_line - 1}..{n})")
 
             content_lines = content.splitlines(keepends=True)
             if content_lines and not content_lines[-1].endswith("\n"):
