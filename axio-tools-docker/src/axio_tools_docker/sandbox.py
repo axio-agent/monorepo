@@ -182,6 +182,13 @@ async def patch_file(file_path: str, from_line: int, to_line: int, content: str,
     Always read the file first with line_numbers=True to get correct line numbers.
     Patch each file at most once per read — re-read with line_numbers=True after
     patching before issuing another patch to the same file.
+    Content is inserted verbatim — indentation is NOT adjusted. Every line in
+    content must carry its full absolute indentation (spaces/tabs) as it should
+    appear in the file. A common mistake: in a multi-line string the first line
+    starts right after the opening quote (0 indent) while continuation lines
+    pick up the surrounding call indentation — this produces inconsistent
+    indentation and syntax errors. Verify that all lines share the same base
+    indent before calling.
     Use this for surgical edits instead of rewriting the whole file with
     write_file."""
     sandbox: DockerSandbox = CONTEXT.get()
