@@ -206,6 +206,25 @@ def _google_auth_available() -> bool:
         return False
 
 
+def _vertexai_from_env() -> bool:
+    """Resolve the backend from the environment.
+
+    ``ANTHROPIC_VERTEXAI`` is this transport's own switch, consistent with the
+    ``ANTHROPIC_API_KEY`` and ``ANTHROPIC_BASE_URL`` it already reads.
+
+    ``GOOGLE_GENAI_USE_VERTEXAI`` is honoured after it, for compatibility, but it
+    belongs to the Google Gen AI SDK: anything configuring *that* library for
+    Vertex AI silently redirects Claude traffic here too, which is surprising when
+    the two are unrelated. Set ``ANTHROPIC_VERTEXAI=false`` to opt this transport
+    out while leaving the Google variable in place.
+    """
+    for name in ("ANTHROPIC_VERTEXAI", "GOOGLE_GENAI_USE_VERTEXAI"):
+        value = os.environ.get(name, "").strip().lower()
+        if value:
+            return value in ("true", "1")
+    return False
+
+
 def _get_vertex_access_token() -> str:
     import google.auth
     import google.auth.transport.requests
@@ -243,7 +262,7 @@ class AnthropicTransport(CompletionTransport):
         if isinstance(self.vertexai, str):
             self.vertexai = self.vertexai.lower() in ("true", "1")
         if self.vertexai is None:
-            self.vertexai = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+            self.vertexai = _vertexai_from_env()
         if self.vertexai and not _google_auth_available():
             # An explicit request is intent, and silently serving it from a
             # different backend would be worse than failing: with no api_key set

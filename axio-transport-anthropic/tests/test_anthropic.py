@@ -132,6 +132,38 @@ def test_explicit_vertexai_false_is_unaffected(monkeypatch: Any) -> None:
     assert AnthropicTransport(vertexai=False).vertexai is False
 
 
+def test_anthropic_vertexai_takes_precedence_over_the_google_variable(monkeypatch: Any) -> None:
+    """The Google Gen AI SDK's variable must not be the only way to steer this transport.
+
+    Anything configuring that unrelated library for Vertex AI would otherwise
+    redirect Claude traffic with no way to opt out short of unsetting it.
+    """
+    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: True)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+
+    monkeypatch.setenv("ANTHROPIC_VERTEXAI", "false")
+    assert AnthropicTransport(api_key="sk-test").vertexai is False
+
+    monkeypatch.setenv("ANTHROPIC_VERTEXAI", "true")
+    assert AnthropicTransport(api_key="sk-test").vertexai is True
+
+
+def test_the_google_variable_is_still_honoured_when_the_anthropic_one_is_absent(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: True)
+    monkeypatch.delenv("ANTHROPIC_VERTEXAI", raising=False)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    assert AnthropicTransport(api_key="sk-test").vertexai is True
+
+
+def test_anthropic_vertexai_alone_selects_vertex(monkeypatch: Any) -> None:
+    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: True)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    monkeypatch.setenv("ANTHROPIC_VERTEXAI", "1")
+    assert AnthropicTransport(api_key="sk-test").vertexai is True
+
+
 def test_google_auth_available_requires_the_requests_extra(monkeypatch: Any) -> None:
     """``_get_vertex_access_token`` imports ``google.auth.transport.requests``.
 
