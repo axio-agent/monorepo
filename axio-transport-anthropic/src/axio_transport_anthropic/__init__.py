@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib.util
 import json
 import logging
 import os
@@ -185,6 +186,20 @@ def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _google_auth_available() -> bool:
+    """Check whether ``google.auth`` is importable, without actually importing it.
+
+    ``find_spec`` can itself raise (e.g. ``ModuleNotFoundError`` for an
+    unimportable parent package, ``ValueError`` for a partially-installed
+    namespace package) — its failure modes aren't fully enumerable, so any
+    exception is treated as "not available".
+    """
+    try:
+        return importlib.util.find_spec("google.auth") is not None
+    except Exception:
+        return False
+
+
 def _get_vertex_access_token() -> str:
     import google.auth
     import google.auth.transport.requests
@@ -220,6 +235,16 @@ class AnthropicTransport(CompletionTransport):
             self.vertexai = self.vertexai.lower() in ("true", "1")
         if self.vertexai is None:
             self.vertexai = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+        if self.vertexai and not _google_auth_available():
+            # Falls back to the direct Anthropic API. If api_key/ANTHROPIC_API_KEY is
+            # unset this surfaces as a 401 from api.anthropic.com rather than the
+            # previous, clearer ModuleNotFoundError - the trade-off for not requiring
+            # google-auth to construct a transport that never uses Vertex AI.
+            logger.warning(
+                "Vertex AI was requested (explicitly or via GOOGLE_GENAI_USE_VERTEXAI) "
+                "but google-auth is not installed; falling back to the direct Anthropic API."
+            )
+            self.vertexai = False
 
     def _build_url(self) -> str:
         if self.vertexai:

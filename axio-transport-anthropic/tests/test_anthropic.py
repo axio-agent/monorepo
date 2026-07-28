@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import pytest
 from axio.blocks import TextBlock
 from axio.messages import Message
 from axio.models import ModelRegistry
 
+import axio_transport_anthropic
 from axio_transport_anthropic import (
     ANTHROPIC_MODELS,
     AnthropicTransport,
@@ -65,6 +68,45 @@ def test_string_settings_coercion() -> None:
         vertexai="true",  # type: ignore[arg-type]
     )
     assert t.vertexai is True
+
+
+# ---------------------------------------------------------------------------
+# Vertex AI env-var auto-detection requires google-auth
+# ---------------------------------------------------------------------------
+
+
+def test_env_vertexai_without_google_auth_falls_back_to_direct_api(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: False)
+    with caplog.at_level(logging.WARNING, logger="axio_transport_anthropic"):
+        t = AnthropicTransport(api_key="sk-test")
+    assert t.vertexai is False
+    assert any("google-auth" in r.message for r in caplog.records)
+
+
+def test_env_vertexai_with_google_auth_available(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: True)
+    t = AnthropicTransport(api_key="sk-test")
+    assert t.vertexai is True
+
+
+def test_env_vertexai_unset_is_false(monkeypatch: Any) -> None:
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+    t = AnthropicTransport(api_key="sk-test")
+    assert t.vertexai is False
+
+
+def test_explicit_vertexai_true_downgraded_when_google_auth_missing(
+    monkeypatch: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: False)
+    with caplog.at_level(logging.WARNING, logger="axio_transport_anthropic"):
+        t = AnthropicTransport(vertexai=True, project="proj")
+    assert t.vertexai is False
+    assert any("google-auth" in r.message for r in caplog.records)
 
 
 def test_models_registry() -> None:
