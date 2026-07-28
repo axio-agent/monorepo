@@ -602,7 +602,7 @@ tui = [
     { name = "textual" },
 ]
 vertexai = [
-    { name = "google-auth" },
+    { name = "google-auth", extra = ["requests"] },
 ]
 
 [package.dev-dependencies]
@@ -619,7 +619,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.11" },
     { name = "axio", editable = "axio" },
-    { name = "google-auth", marker = "extra == 'vertexai'", specifier = ">=2.49" },
+    { name = "google-auth", extras = ["requests"], marker = "extra == 'vertexai'", specifier = ">=2.49" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=2.1.0" },
 ]
 provides-extras = ["vertexai", "tui"]
@@ -1364,6 +1364,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+requests = [
+    { name = "requests" },
+]
 urllib3 = [
     { name = "packaging" },
     { name = "urllib3" },

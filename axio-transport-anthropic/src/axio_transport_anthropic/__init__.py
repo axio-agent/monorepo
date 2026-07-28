@@ -187,7 +187,13 @@ def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
 
 
 def _google_auth_available() -> bool:
-    """Check whether ``google.auth`` is importable, without actually importing it.
+    """Check whether the Vertex AI credential path is importable, without importing it.
+
+    Both names are required because :func:`_get_vertex_access_token` imports
+    ``google.auth.transport.requests``, and that module raises ``ImportError``
+    when ``requests`` is absent — ``google-auth`` installed without its
+    ``requests`` extra satisfies a ``google.auth`` check and still fails at
+    request time, which is the failure this guard exists to prevent.
 
     ``find_spec`` can itself raise (e.g. ``ModuleNotFoundError`` for an
     unimportable parent package, ``ValueError`` for a partially-installed
@@ -195,7 +201,7 @@ def _google_auth_available() -> bool:
     exception is treated as "not available".
     """
     try:
-        return importlib.util.find_spec("google.auth") is not None
+        return all(importlib.util.find_spec(name) is not None for name in ("google.auth", "requests"))
     except Exception:
         return False
 
@@ -231,18 +237,29 @@ class AnthropicTransport(CompletionTransport):
     retry_base_delay: float = 5.0
 
     def __post_init__(self) -> None:
+        # Whether the caller named a backend, as opposed to inheriting one from
+        # the environment. The two deserve different failure modes below.
+        explicit = self.vertexai is not None
         if isinstance(self.vertexai, str):
             self.vertexai = self.vertexai.lower() in ("true", "1")
         if self.vertexai is None:
             self.vertexai = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
         if self.vertexai and not _google_auth_available():
-            # Falls back to the direct Anthropic API. If api_key/ANTHROPIC_API_KEY is
-            # unset this surfaces as a 401 from api.anthropic.com rather than the
-            # previous, clearer ModuleNotFoundError - the trade-off for not requiring
-            # google-auth to construct a transport that never uses Vertex AI.
+            # An explicit request is intent, and silently serving it from a
+            # different backend would be worse than failing: with no api_key set
+            # it resurfaces as an opaque 401 from api.anthropic.com. Ambient
+            # configuration is a different case - it is a machine-wide default
+            # that should not break a transport which never touches Vertex AI -
+            # so that one degrades with a warning instead.
+            if explicit:
+                raise ImportError(
+                    "vertexai was requested explicitly, but google-auth[requests] is not "
+                    "installed. Install it, or leave vertexai unset to use the direct "
+                    "Anthropic API."
+                )
             logger.warning(
-                "Vertex AI was requested (explicitly or via GOOGLE_GENAI_USE_VERTEXAI) "
-                "but google-auth is not installed; falling back to the direct Anthropic API."
+                "GOOGLE_GENAI_USE_VERTEXAI selects Vertex AI but google-auth[requests] is "
+                "not installed; falling back to the direct Anthropic API."
             )
             self.vertexai = False
 
