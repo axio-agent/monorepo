@@ -433,6 +433,12 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                 choice = choices[0]
                 delta: dict[str, Any] = choice.get("delta") or {}
 
+                # llama.cpp and DeepSeek-style servers hand thoughts over in
+                # their own field instead of wrapping them in <think> tags, so
+                # ThinkTagParser never sees them.
+                if delta.get("reasoning_content"):
+                    yield ReasoningDelta(index=0, delta=delta["reasoning_content"])
+
                 if "content" in delta and delta["content"] is not None:
                     for kind, text in think_parser.feed(delta["content"]):
                         if kind == "reasoning":
@@ -474,6 +480,9 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                 if choices:
                     choice = choices[0]
                     delta = choice.get("delta", {})
+
+                    if delta.get("reasoning_content"):
+                        yield ReasoningDelta(index=0, delta=delta["reasoning_content"])
 
                     if "content" in delta and delta["content"] is not None:
                         for kind, text in think_parser.feed(delta["content"]):
