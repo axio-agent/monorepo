@@ -381,6 +381,7 @@ def setup_history() -> None:
 class _AgentRenderState:
     def __init__(self) -> None:
         self.in_text = False
+        self.in_reasoning = False
         self.arg_streams: dict[str, ToolArgStream] = {}
         self.streamed_tool_ids: set[str] = set()
         self.field_first_delta = True
@@ -486,12 +487,27 @@ class ReplRenderer:
         if not isinstance(event, IterationEnd):
             self._prepare_input_output()
         state = self._switch_agent(agent_id)
+        # Reasoning streams in as one delta per token, so the quote marker and
+        # the colour reset belong to the run as a whole, not to every delta.
+        # Closing it here covers every kind of event that can follow.
+        if state.in_reasoning and not isinstance(event, ReasoningDelta):
+            sys.stdout.write(f"{RESET}\n")
+            sys.stdout.flush()
+            state.in_reasoning = False
         match event:
             case ReasoningDelta(delta=delta):
                 if state.in_text:
                     print()
                     state.in_text = False
-                sys.stdout.write(f"{DIM}> {delta}{RESET}")
+                if not state.in_reasoning:
+                    # <think> is usually followed by a newline, which would open
+                    # the quote with an empty line.
+                    delta = delta.lstrip("\n")
+                    if not delta:
+                        return
+                    sys.stdout.write(f"{DIM}> ")
+                    state.in_reasoning = True
+                sys.stdout.write(delta.replace("\n", "\n> "))
                 sys.stdout.flush()
 
             case TextDelta(delta=delta):
