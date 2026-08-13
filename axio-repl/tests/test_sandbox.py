@@ -35,16 +35,18 @@ async def test_host_mode_drops_sandbox_only_tools(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(_sandbox, "ast_grep_available", lambda: False)
     tools: list[Tool[Any]] = [Tool(name="shell", handler=_noop), Tool(name="run_python", handler=_noop)]
     async with AsyncExitStack() as stack:
-        result, desc = await _sandbox.build_tools(stack, tools, "none", "img", Path("/tmp"))
+        result, desc, tool_root = await _sandbox.build_tools(stack, tools, "none", "img", Path("/tmp"))
     assert [t.name for t in result] == ["shell"]
     assert desc.startswith("host")
+    # On the host the tools see the same path the user does.
+    assert tool_root == Path("/tmp")
 
 
 @pytest.mark.asyncio
 async def test_host_mode_adds_ast_grep_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_sandbox, "ast_grep_available", lambda: True)
     async with AsyncExitStack() as stack:
-        result, _ = await _sandbox.build_tools(stack, [], "none", "img", Path("/tmp"))
+        result, _, _root = await _sandbox.build_tools(stack, [], "none", "img", Path("/tmp"))
     assert [t.name for t in result] == ["ast_grep"]
 
 

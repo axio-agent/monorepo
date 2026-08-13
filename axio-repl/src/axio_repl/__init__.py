@@ -989,9 +989,11 @@ async def main() -> None:
         }
         _apply_cli_args(args, commands)
 
-        tools, sandbox_desc = await _sandbox.build_tools(stack, list(TOOLS), args.sandbox, args.sandbox_image, root)
+        tools, sandbox_desc, tool_root = await _sandbox.build_tools(
+            stack, list(TOOLS), args.sandbox, args.sandbox_image, root
+        )
         print(f"Tools: {BOLD}{sandbox_desc}{RESET}")
-        system = build_system_prompt(root, transport.model, tools, agents_text)
+        system = build_system_prompt(tool_root, transport.model, tools, agents_text)
         agent = Agent(
             system=system,
             tools=tools,
@@ -1016,7 +1018,7 @@ async def main() -> None:
                 if t.name != "spawn_agent"
             ]
             child_system = build_system_prompt(
-                root,
+                tool_root,
                 child_transport.model,
                 child_tools,
                 agents_text,
@@ -1034,7 +1036,7 @@ async def main() -> None:
         # Agent-dependent commands.
         commands["/model"] = Command(
             lambda: _show_model(transport),
-            lambda a: _apply_model(transport, agent, tools, root, agents_text, a, parent_peer_id),
+            lambda a: _apply_model(transport, agent, tools, tool_root, agents_text, a, parent_peer_id),
         )
         commands["/iterations"] = Command(
             lambda: _show_iterations(agent),
@@ -1113,7 +1115,7 @@ async def main() -> None:
                 ).start()
                 parent_peer_id = peer_server.id
                 agent.system = build_system_prompt(
-                    root,
+                    tool_root,
                     transport.model,
                     tools,
                     agents_text,

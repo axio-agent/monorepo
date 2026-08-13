@@ -116,13 +116,17 @@ async def build_tools(
     mode: str,
     image: str,
     workspace: Path,
-) -> tuple[list[Tool[Any]], str]:
-    """Return the toolset to hand the agent, plus a one-line description of it."""
+) -> tuple[list[Tool[Any]], str, Path]:
+    """Return the toolset, a one-line description, and the root the tools see.
+
+    In a container the workspace is mounted elsewhere than on the host, and the
+    system prompt has to state the path the model can actually act on.
+    """
     if mode == "none" or (mode == "auto" and not docker_available()):
         result = [t for t in tools if t.name not in SANDBOX_ONLY_TOOL_NAMES]
         if ast_grep_available():
             result.append(Tool(name="ast_grep", handler=_make_host_ast_grep()))
-        return result, "host — tools run directly on this machine"
+        return result, "host — tools run directly on this machine", workspace
 
     from axio_tools_docker.sandbox import DockerSandbox
 
@@ -141,4 +145,4 @@ async def build_tools(
     merged.extend(overrides.values())
     for name in SANDBOX_ONLY_TOOL_NAMES & available.keys():
         merged.append(available[name])
-    return merged, f"docker — {image}, no network, {workspace} mounted at {WORKDIR}"
+    return merged, f"docker — {image}, no network, {workspace} mounted at {WORKDIR}", Path(WORKDIR)
