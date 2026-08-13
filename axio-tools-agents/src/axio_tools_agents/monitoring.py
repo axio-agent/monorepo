@@ -18,6 +18,7 @@ import asyncio
 import os
 from pathlib import Path
 
+from axio import background
 from axio.field import StrictStr
 
 from axio_tools_agents.peers import (
@@ -71,6 +72,17 @@ async def _watch_pids(pids: list[int]) -> str:
         await asyncio.sleep(POLL_INTERVAL)
 
 
+async def _watch_tasks(handles: list[str]) -> str:
+    while True:
+        for handle in handles:
+            call = background.get(handle)
+            if call is None:
+                return f"unknown task handle: {handle}"
+            if call.state != "running":
+                return f"task finished: {handle}"
+        await background.next_completion()
+
+
 async def _watch_message() -> str:
     message = await next_peer_message()
     return f"message from {message.from_name} ({message.from_id})"
@@ -101,6 +113,7 @@ def _agent_report(agent_ids: list[str]) -> list[str]:
 
 async def monitor(
     agents: list[StrictStr] | None = None,
+    tasks: list[StrictStr] | None = None,
     paths: list[StrictStr] | None = None,
     pids: list[int] | None = None,
     messages: bool = True,
@@ -111,9 +124,12 @@ async def monitor(
 
     Blocks until one of the watched conditions fires, then reports what happened
     and the state of everything watched. Watch spawned agents by id (`agents`),
-    files or directories (`paths`), processes (`pids`), or incoming messages
-    from other agents (`messages`, on by default). With `wait_all=true` and
-    `agents` given, it returns only once every one of them has finished.
+    detached tool calls by handle (`tasks`), files or directories (`paths`),
+    processes (`pids`), or incoming messages from other agents (`messages`, on
+    by default). Finished tasks are reported with their full output — this is
+    how a call made with background=true delivers its result. With
+    `wait_all=true` and `agents` given, it returns only once every one of them
+    has finished.
 
     Returns on timeout as well, reporting what is still outstanding, so a
     result is never an error — decide from the report whether to wait again.
@@ -121,10 +137,13 @@ async def monitor(
     finished here and its failure is reported, which polling cannot tell you.
     """
     agent_ids = [str(a) for a in agents or []]
+    task_handles = [str(t) for t in tasks or []]
     watched: dict[str, asyncio.Task[str]] = {}
 
     if agent_ids:
         watched["agents"] = asyncio.create_task(_watch_agents(agent_ids, wait_all))
+    if task_handles:
+        watched["tasks"] = asyncio.create_task(_watch_tasks(task_handles))
     if paths:
         watched["paths"] = asyncio.create_task(_watch_paths([str(p) for p in paths]))
     if pids:
@@ -133,7 +152,7 @@ async def monitor(
         watched["messages"] = asyncio.create_task(_watch_message())
 
     if not watched:
-        return "monitor: nothing to watch — pass agents, paths, pids, or messages=true"
+        return "monitor: nothing to watch — pass agents, tasks, paths, pids, or messages=true"
 
     done, pending = await asyncio.wait(watched.values(), timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
     for task in pending:
@@ -149,6 +168,9 @@ async def monitor(
     if agent_ids:
         lines.append("Agents:")
         lines += _agent_report(agent_ids)
+    if task_handles:
+        lines.append("Tasks:")
+        lines += [f"  {background.describe(h)}" for h in task_handles]
     return "\n".join(lines)
 
 

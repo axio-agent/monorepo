@@ -279,6 +279,10 @@ def build_system_prompt(
             "- Never use generate_image as a substitute for real UI testing.",
             "- Never run destructive shell commands (rm -rf, git reset --hard) without user confirmation.",
             "- For large files, read specific line ranges instead of the entire file.",
+            "- Any tool call accepts background=true: it returns a handle at once and keeps running, and you "
+            "collect the output later with monitor(tasks=[handle]). Use it for calls slow enough to be worth "
+            "doing while you carry on — a test suite, a build, a long download. Do not use it when you need the "
+            "result to decide your next step, and never for quick reads: the handle costs an extra round trip.",
         ]
         if any(t.name == "spawn_agent" for t in tools):
             lines += [
