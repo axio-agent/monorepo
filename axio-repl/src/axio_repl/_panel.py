@@ -6,23 +6,81 @@ the screen buffer. prompt_toolkit reserves only the lines it draws, and
 patch_stdout redraws the input when a background agent prints underneath it —
 which is what made typing unusable while a swarm was reporting back.
 
-The summary is a pure function so the state it reports can be tested without a
-terminal.
+Everything the line reports is a pure function of state passed in, so what it
+says can be tested without a terminal.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from axio import background
+from axio.models import ModelSpec
+from axio.types import Usage
 from axio_tools_agents.peers import background_agent_state, local_background_agent_records
 
 HISTORY_PATH = Path.home() / ".axio_repl_history"
 
+SEPARATOR = " │ "
+
+MAIN_AGENT = "main"
+
+
+@dataclass
+class SessionStats:
+    """What the session has spent, and how full its context is.
+
+    Usage is recorded per iteration rather than per turn so the line moves while
+    an answer is still being written; a turn's total is the sum of its
+    iterations, so counting both would double everything.
+
+    Cost is priced at the model in use when the tokens were spent, which is the
+    right answer for a spawned agent sharing the parent's model and an
+    approximation for one that does not.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost: float = 0.0
+    context_tokens: int = 0
+    per_model: dict[str, Usage] = field(default_factory=dict)
+
+    def record(self, agent_id: str, usage: Usage, model: ModelSpec | None) -> None:
+        self.input_tokens += usage.input_tokens
+        self.output_tokens += usage.output_tokens
+        if agent_id == MAIN_AGENT:
+            # The prompt of the latest iteration is what occupies the window
+            # now: it grows with the conversation and drops when it is compacted.
+            self.context_tokens = usage.input_tokens
+        if model is None:
+            return
+        self.per_model[model.id] = self.per_model.get(model.id, Usage(0, 0)) + usage
+        self.cost += (usage.input_tokens * model.input_cost + usage.output_tokens * model.output_cost) / 1_000_000
+
+
+def compact(value: int) -> str:
+    """A token count short enough to sit in a status line."""
+    if value < 1_000:
+        return str(value)
+    if value < 1_000_000:
+        return f"{value / 1_000:.1f}k".replace(".0k", "k")
+    return f"{value / 1_000_000:.2f}M".replace(".00M", "M")
+
+
+def format_cost(cost: float) -> str:
+    if cost == 0:
+        return "$0"
+    if cost < 0.01:
+        return f"${cost:.4f}"
+    if cost < 10:
+        return f"${cost:.3f}"
+    return f"${cost:.2f}"
+
 
 def agent_summary(now: float | None = None) -> str:
-    """One line describing background agents and detached tool calls.
+    """Background agents and detached tool calls, when there are any.
 
     Empty when there is nothing running — the line should not cost space until
     it has something to say.
@@ -50,17 +108,39 @@ def agent_summary(now: float | None = None) -> str:
     if done:
         parts.append(f"{len(done)} ready to collect")
 
-    return " │ ".join(parts)
+    return SEPARATOR.join(parts)
 
 
-def make_session() -> Any:
-    """A prompt session with history and the status line attached."""
+def status_line(model: ModelSpec | None, stats: SessionStats) -> str:
+    """The whole line: which model, how full, how much spent, what is running."""
+    parts: list[str] = []
+    if model is not None:
+        parts.append(model.id)
+        if model.context_window:
+            parts.append(f"ctx {compact(stats.context_tokens)}/{compact(model.context_window)}")
+    parts.append(f"{compact(stats.input_tokens)} in / {compact(stats.output_tokens)} out")
+    parts.append(format_cost(stats.cost))
+    agents = agent_summary()
+    if agents:
+        parts.append(agents)
+    return SEPARATOR.join(parts)
+
+
+def make_session(status: Any = None) -> Any:
+    """A prompt session with history and the status line attached.
+
+    The default toolbar style is reverse video, which paints a solid white band
+    across the bottom of the terminal. Dim text on the terminal's own background
+    keeps the line readable without turning it into a wall.
+    """
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.styles import Style
 
     return PromptSession(
         history=FileHistory(str(HISTORY_PATH)),
-        bottom_toolbar=lambda: agent_summary() or None,
+        bottom_toolbar=status or (lambda: agent_summary() or None),
+        style=Style.from_dict({"bottom-toolbar": "noreverse bg:default fg:#808080"}),
         # Redraw while idle so finished agents show up without a keypress.
         refresh_interval=0.5,
     )

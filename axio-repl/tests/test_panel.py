@@ -3,6 +3,8 @@ from collections.abc import AsyncGenerator
 
 import pytest
 from axio import background
+from axio.models import ModelSpec
+from axio.types import Usage
 
 from axio_repl import _panel
 
@@ -72,3 +74,95 @@ async def test_finished_calls_are_flagged_until_collected(monkeypatch: pytest.Mo
 
     background.describe(handle)  # reading it marks it collected
     assert "ready to collect" not in _panel.agent_summary()
+
+
+_M3 = ModelSpec(id="MiniMaxAI/MiniMax-M3", context_window=1_000_000, input_cost=0.3, output_cost=1.2)
+
+
+def test_a_fresh_session_still_says_which_model() -> None:
+    line = _panel.status_line(_M3, _panel.SessionStats())
+
+    assert "MiniMaxAI/MiniMax-M3" in line
+    assert "ctx 0/1M" in line
+    assert "$0" in line
+
+
+def test_tokens_of_every_agent_are_counted() -> None:
+    stats = _panel.SessionStats()
+
+    stats.record("main", Usage(88_622, 5_169), _M3)
+    stats.record("child-1", Usage(19_666, 1_908), _M3)
+
+    assert stats.input_tokens == 108_288
+    assert stats.output_tokens == 7_077
+    assert "108.3k in / 7.1k out" in _panel.status_line(_M3, stats)
+
+
+def test_only_the_main_agent_sets_how_full_the_window_is() -> None:
+    # A child's prompt is its own context, not the one the user is filling.
+    stats = _panel.SessionStats()
+
+    stats.record("main", Usage(30_000, 10), _M3)
+    stats.record("child-1", Usage(900_000, 10), _M3)
+
+    assert stats.context_tokens == 30_000
+
+
+def test_the_window_shrinks_when_the_context_does() -> None:
+    # Compaction is the point: the latest prompt is what occupies the window,
+    # not the largest one ever sent.
+    stats = _panel.SessionStats()
+
+    stats.record("main", Usage(500_000, 10), _M3)
+    stats.record("main", Usage(20_000, 10), _M3)
+
+    assert stats.context_tokens == 20_000
+
+
+def test_cost_follows_the_model_that_was_charged() -> None:
+    stats = _panel.SessionStats()
+    cheap = ModelSpec(id="cheap", input_cost=0.1, output_cost=0.2)
+
+    stats.record("main", Usage(1_000_000, 1_000_000), _M3)
+    stats.record("child", Usage(1_000_000, 1_000_000), cheap)
+
+    assert stats.cost == pytest.approx(0.3 + 1.2 + 0.1 + 0.2)
+    assert stats.per_model["cheap"] == Usage(1_000_000, 1_000_000)
+
+
+def test_usage_without_a_model_still_counts_tokens() -> None:
+    stats = _panel.SessionStats()
+
+    stats.record("main", Usage(10, 20), None)
+
+    assert (stats.input_tokens, stats.output_tokens, stats.cost) == (10, 20, 0.0)
+
+
+def test_counts_stay_short_enough_for_one_line() -> None:
+    assert _panel.compact(0) == "0"
+    assert _panel.compact(999) == "999"
+    assert _panel.compact(1_000) == "1k"
+    assert _panel.compact(8_587) == "8.6k"
+    assert _panel.compact(1_000_000) == "1M"
+    assert _panel.compact(10_123_456) == "10.12M"
+
+
+def test_a_cost_too_small_to_show_is_still_shown() -> None:
+    assert _panel.format_cost(0) == "$0"
+    assert _panel.format_cost(0.0026) == "$0.0026"
+    assert _panel.format_cost(4.0067) == "$4.007"
+    assert _panel.format_cost(123.456) == "$123.46"
+
+
+def test_the_toolbar_is_not_reverse_video() -> None:
+    # Its default is, which paints a solid white band across the terminal.
+    from prompt_toolkit.styles import default_ui_style, merge_styles
+
+    session = _panel.make_session(lambda: "x")
+    merged = merge_styles([default_ui_style(), session.style])
+
+    assert default_ui_style().get_attrs_for_style_str("class:bottom-toolbar").reverse is True
+    for cls in ("class:bottom-toolbar", "class:bottom-toolbar.text"):
+        attrs = merged.get_attrs_for_style_str(cls)
+        assert attrs.reverse is False, cls
+        assert attrs.bgcolor == "default", cls

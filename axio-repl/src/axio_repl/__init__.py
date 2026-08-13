@@ -375,12 +375,18 @@ class ReplRenderer:
         *,
         buffer_background_events: bool = False,
         on_background_report: Callable[[str, str], None] | None = None,
+        stats: _panel.SessionStats | None = None,
+        current_model: Callable[[], ModelSpec | None] | None = None,
     ) -> None:
         self._lock = asyncio.Lock()
         self._buffer_background_events = buffer_background_events
         # Where a background agent's answer goes. Without somewhere to put it,
         # the only trace of a finished agent is how many characters it wrote.
         self._on_background_report = on_background_report
+        # Every agent's events pass through here, which makes this the one place
+        # that sees the whole session's spend.
+        self._stats = stats
+        self._current_model = current_model
         self._states: dict[str, _AgentRenderState] = {}
         self._active_agent: str | None = None
         self._focused_agent = "main"
@@ -427,6 +433,9 @@ class ReplRenderer:
 
     async def render(self, agent_id: str, event: StreamEvent) -> None:
         async with self._lock:
+            if isinstance(event, IterationEnd) and self._stats is not None:
+                model = self._current_model() if self._current_model is not None else None
+                self._stats.record(agent_id, event.usage, model)
             if agent_id == self._focused_agent:
                 self._render_locked(agent_id, event)
                 if isinstance(event, Error | SessionEndEvent):
@@ -1063,7 +1072,6 @@ async def main() -> None:
     transport_cls, _ = _select_transport(args.transport)
     root = Path.cwd().resolve()
     agents_text = load_agents_instructions(root)
-    prompt_session = _panel.make_session()
 
     async with aiohttp.ClientSession() as session, AsyncExitStack() as stack:
         transport = transport_cls(session=session)
@@ -1154,11 +1162,15 @@ async def main() -> None:
         def _queue_background_report(agent_id: str, text: str) -> None:
             peer_queue.put_nowait(f"Report from background agent {agent_id}:\n\n{text}")
 
+        stats = _panel.SessionStats()
         renderer = ReplRenderer(
             buffer_background_events=args.prompt is not None,
             on_background_report=_queue_background_report,
+            stats=stats,
+            current_model=lambda: transport.model,
         )
         set_agent_event_handler(renderer.render)
+        prompt_session = _panel.make_session(lambda: _panel.status_line(transport.model, stats))
         prompt_task: asyncio.Task[None] | None = None
         input_task: asyncio.Task[str] | None = None
         inbox_task: asyncio.Task[str] | None = None
