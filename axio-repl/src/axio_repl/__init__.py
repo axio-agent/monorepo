@@ -45,6 +45,7 @@ from axio.events import (
     ToolUseStart,
     VideoOutput,
 )
+from axio.exceptions import StreamError
 from axio.field import StrictStr
 from axio.models import Capability, ModelSpec
 from axio.tool import Tool
@@ -158,6 +159,13 @@ def _select_transport(name: str | None) -> tuple[Callable[..., Any], str]:
                 f"Unknown transport {name!r}. Available: {', '.join(sorted(available))}",
                 file=sys.stderr,
             )
+            sys.exit(1)
+        # Auto-detection picks a transport because its key is set; naming one
+        # skipped the question entirely, and an unset key surfaced as a stack
+        # trace from the first API call instead of the answer "set this".
+        env_vars = _TRANSPORT_ENV_VARS.get(name, [])
+        if env_vars and not _transport_has_credentials(name):
+            print(f"No API key for {name}. Set {' or '.join(env_vars)}.", file=sys.stderr)
             sys.exit(1)
         return available[name], ""
 
@@ -1023,7 +1031,11 @@ async def main() -> None:
 
     async with aiohttp.ClientSession() as session, AsyncExitStack() as stack:
         transport = transport_cls(session=session)
-        await transport.fetch_models()
+        try:
+            await transport.fetch_models()
+        except StreamError as exc:
+            print(f"Cannot reach {transport.name}: {exc}", file=sys.stderr)
+            sys.exit(1)
         _adopt_catalogue_metadata(transport)
 
         if args.model:

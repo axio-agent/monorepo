@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from axio.models import Capability, ModelRegistry, ModelSpec
 
-from axio_repl import _adopt_catalogue_metadata, _apply_model, _resolve_model_arg
+from axio_repl import _adopt_catalogue_metadata, _apply_model, _resolve_model_arg, _select_transport
 
 _BASE_MODEL = ModelSpec(
     id="z-ai/glm-4.7",
@@ -72,3 +72,25 @@ def test_a_model_missing_from_the_catalogue_is_left_alone() -> None:
     _adopt_catalogue_metadata(transport)
 
     assert transport.model.id == "nobody/knows-this"
+
+
+def test_naming_a_transport_without_its_key_says_which_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Auto-detection asks this question for you; naming a transport used to skip
+    # it, and the answer arrived as a traceback from the first API call.
+    monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _select_transport("nebius")
+
+    assert exc_info.value.code == 1
+    assert "NEBIUS_API_KEY" in capsys.readouterr().err
+
+
+def test_naming_a_transport_with_its_key_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEBIUS_API_KEY", "test-key")
+
+    cls, _ = _select_transport("nebius")
+
+    assert cls is not None
