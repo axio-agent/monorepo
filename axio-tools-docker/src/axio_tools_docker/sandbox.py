@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any, cast
 
 import aiodocker
+from aiodocker.exceptions import DockerError
 from axio.tool import CONTEXT, Tool
 
 logger = logging.getLogger(__name__)
@@ -526,7 +527,15 @@ class DockerSandbox:
     async def get_archive(self, path: str) -> tarfile.TarFile:
         """Fetch a path from the container as a TarFile object."""
         assert self._container is not None
-        return cast(tarfile.TarFile, await self._container.get_archive(path=path))
+        try:
+            return cast(tarfile.TarFile, await self._container.get_archive(path=path))
+        except DockerError as exc:
+            # A missing path is an ordinary outcome for an agent exploring a
+            # tree, so report it as such: the engine's phrasing carries a
+            # container id the caller can do nothing with.
+            if exc.status == 404:
+                raise FileNotFoundError(f"No such file or directory: {path}") from exc
+            raise
 
     async def read_file_bytes(self, path: str) -> bytes:
         """Read a file from inside the container and return raw bytes."""
