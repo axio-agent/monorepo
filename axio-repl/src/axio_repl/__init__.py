@@ -15,6 +15,7 @@ import atexit
 import copy
 import dataclasses
 import os
+import shutil
 import signal
 import sys
 from collections.abc import Callable
@@ -769,12 +770,29 @@ def _apply_cli_args(args: object, commands: dict[str, Command]) -> None:
 # ── model ──
 
 
+def _columnise(items: list[str], width: int, gap: int = 2) -> list[str]:
+    """Lay items out in columns, filling downwards the way ls does."""
+    if not items:
+        return []
+    column_width = max(len(i) for i in items) + gap
+    columns = max(1, width // column_width)
+    rows = -(-len(items) // columns)
+    lines = []
+    for row in range(rows):
+        cells = [items[i].ljust(column_width) for c in range(columns) if (i := c * rows + row) < len(items)]
+        lines.append("".join(cells).rstrip())
+    return lines
+
+
 def _show_model(transport: Any) -> None:
     model = transport.model
     caps = ", ".join(sorted(c.value for c in model.capabilities))
     print(f"Current model: {BOLD}{model.id}{RESET}")
     print(f"Capabilities: {caps}")
-    print(f"Available: {', '.join(transport.models.keys())}")
+    print("Available:")
+    width = shutil.get_terminal_size((100, 24)).columns
+    for line in _columnise(sorted(transport.models.keys()), max(20, width - 2)):
+        print(f"  {line}")
 
 
 def _resolve_model_arg(transport: Any, model_id: str) -> ModelSpec:
@@ -782,6 +800,30 @@ def _resolve_model_arg(transport: Any, model_id: str) -> ModelSpec:
     if callable(resolver):
         return cast(ModelSpec, resolver(model_id))
     return cast(ModelSpec, transport.models[model_id])
+
+
+def _choose_model(transport: Any, arg: str) -> ModelSpec | None:
+    """Resolve *arg* to one model, reporting why when it cannot."""
+    try:
+        return _resolve_model_arg(transport, arg)
+    except KeyError:
+        pass
+
+    matches = transport.models.search(arg)
+    if len(matches) == 1:
+        return cast(ModelSpec, next(iter(matches.values())))
+
+    # Ids are usually vendor-prefixed, so typing the bare name names one model
+    # exactly even when it is a substring of several others.
+    exact = [m for k, m in matches.items() if k.rsplit("/", 1)[-1] == arg]
+    if len(exact) == 1:
+        return cast(ModelSpec, exact[0])
+
+    if not matches:
+        print(f"No model matching {arg!r}. Available: {', '.join(transport.models.keys())}")
+    else:
+        print(f"Ambiguous — matches: {', '.join(matches.keys())}")
+    return None
 
 
 def _apply_model(
@@ -793,23 +835,12 @@ def _apply_model(
     arg: str,
     parent_peer_id: str | None = None,
 ) -> None:
-    try:
-        transport.model = _resolve_model_arg(transport, arg)
-    except KeyError:
-        matches = transport.models.search(arg)
-    else:
-        agent.system = build_system_prompt(root, transport.model, tools, agents_text, parent_peer_id=parent_peer_id)
-        print(f"Switched to {BOLD}{transport.model.id}{RESET}")
+    chosen = _choose_model(transport, arg)
+    if chosen is None:
         return
-
-    if len(matches) == 1:
-        transport.model = next(iter(matches.values()))
-        agent.system = build_system_prompt(root, transport.model, tools, agents_text, parent_peer_id=parent_peer_id)
-        print(f"Switched to {BOLD}{transport.model.id}{RESET}")
-    elif len(matches) == 0:
-        print(f"No model matching {arg!r}. Available: {', '.join(transport.models.keys())}")
-    else:
-        print(f"Ambiguous — matches: {', '.join(matches.keys())}")
+    transport.model = chosen
+    agent.system = build_system_prompt(root, transport.model, tools, agents_text, parent_peer_id=parent_peer_id)
+    print(f"Switched to {BOLD}{transport.model.id}{RESET}")
 
 
 # ── thinking ──
