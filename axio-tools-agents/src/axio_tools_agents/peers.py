@@ -19,6 +19,8 @@ from axio.context import ContextStore
 from axio.events import Error, StreamEvent
 from axio.field import StrictStr
 
+from axio_tools_agents.names import generate_name
+
 MAX_MESSAGE_CHARS = 200_000
 MAX_WIRE_BYTES = MAX_MESSAGE_CHARS * 4 + 4096
 
@@ -773,7 +775,10 @@ async def spawn_agent(
     conversation. The spawned agent remains available for IPC until it is
     explicitly stopped. This returns immediately and never carries the child's
     answer — wait for it with monitor(agents=[id]), which also tells you if the
-    child died instead of finishing."""
+    child died instead of finishing. Pass a short `name` describing the child's
+    job — "docs-audit", "transport-review" — since you will be reading it back
+    in list_peers and monitor; without one the child is named at random, which
+    identifies it but tells you nothing."""
     if _spawn_agent_factory is None:
         return "spawn_agent is not configured"
 
@@ -781,7 +786,7 @@ async def spawn_agent(
     parent = current_peer()
     project = parent.project if parent is not None else _current_project()
     cwd = parent.cwd if parent is not None else _normalize_project(None)
-    base_name = name or f"spawn_agent:{task[:40]}"
+    base_name = name or generate_name()
     background = await _start_background_agent(
         agent=agent,
         context=context,

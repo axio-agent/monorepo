@@ -347,3 +347,36 @@ async def test_running_out_of_iterations_reaches_the_parent(tmp_path: Path) -> N
     assert state == "idle"
     assert error is not None
     assert "2 iterations" in error
+
+
+async def test_a_spawned_agent_gets_a_two_word_name() -> None:
+    # Named from its task, an agent produced ids like
+    # spawn_agent-You-are-analyzing-the-axio-monorepo--4058046-fc69dbe1, which
+    # every later call had to carry.
+    from axio_tools_agents.names import ADJECTIVES, SURNAMES
+
+    transport = _LoopingTransport()
+
+    async def factory(inherit_context: bool) -> tuple[Agent, MemoryContextStore]:
+        agent = Agent(system="child", tools=[], transport=transport, max_iterations=1)
+        return agent, MemoryContextStore()
+
+    set_spawn_agent_factory(factory)
+    result = await spawn_agent(task="Analyse the whole monorepo and report back in detail")
+
+    name = result.split("name=", 1)[1].strip().strip("'\"").split(".")[0].strip("'\"")
+    adjective, _, surname = name.partition("_")
+    assert adjective in ADJECTIVES, name
+    assert surname in SURNAMES, name
+
+
+async def test_an_explicit_name_is_kept() -> None:
+    transport = _LoopingTransport()
+
+    async def factory(inherit_context: bool) -> tuple[Agent, MemoryContextStore]:
+        return Agent(system="child", tools=[], transport=transport, max_iterations=1), MemoryContextStore()
+
+    set_spawn_agent_factory(factory)
+    result = await spawn_agent(task="anything", name="docs-audit")
+
+    assert "name='docs-audit'" in result
