@@ -143,3 +143,40 @@ async def test_an_incoming_message_says_the_turn_must_end() -> None:
         await task
     assert "health-check" in result
     assert "finish this turn" in result
+
+
+@pytest.mark.asyncio
+async def test_naming_what_to_wait_for_excludes_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A child reporting in early used to end a wait_all over three children, so
+    # the caller was told "a message arrived" while all three were still running.
+    from axio_tools_agents import peers
+
+    monkeypatch.setattr(peers, "_pending_probe", lambda: 5)
+    path = "/nonexistent/never/changes"
+
+    result = await monitor(paths=[path], timeout=0.05)
+
+    assert "Timed out" in result
+    assert "message" not in result
+
+
+@pytest.mark.asyncio
+async def test_messages_are_watched_when_nothing_else_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    from axio_tools_agents import peers
+
+    monkeypatch.setattr(peers, "_pending_probe", lambda: 5)
+
+    result = await monitor(timeout=5)
+
+    assert "5 message(s) have arrived" in result
+
+
+@pytest.mark.asyncio
+async def test_messages_can_still_be_asked_for_alongside(monkeypatch: pytest.MonkeyPatch) -> None:
+    from axio_tools_agents import peers
+
+    monkeypatch.setattr(peers, "_pending_probe", lambda: 5)
+
+    result = await monitor(paths=["/nonexistent/never/changes"], messages=True, timeout=5)
+
+    assert "5 message(s) have arrived" in result

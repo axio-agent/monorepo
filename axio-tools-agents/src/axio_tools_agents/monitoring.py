@@ -155,7 +155,7 @@ async def monitor(
     tasks: list[StrictStr] | None = None,
     paths: list[StrictStr] | None = None,
     pids: list[int] | None = None,
-    messages: bool = True,
+    messages: bool | None = None,
     wait_all: bool = False,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
@@ -164,17 +164,23 @@ async def monitor(
     Blocks until one of the watched conditions fires, then reports what happened
     and the state of everything watched. Watch spawned agents by id (`agents`),
     detached tool calls by handle (`tasks`), files or directories (`paths`),
-    processes (`pids`), or incoming messages from other agents (`messages`, on
-    by default). Finished tasks are reported with their full output — this is
-    how a call made with background=true delivers its result. With
-    `wait_all=true` and `agents` given, it returns only once every one of them
-    has finished.
+    processes (`pids`), or incoming messages from other agents (`messages`).
+    Finished tasks are reported with their full output — this is how a call made
+    with background=true delivers its result. With `wait_all=true` and `agents`
+    given, it returns only once every one of them has finished.
+
+    Messages are watched only when nothing else is named, or when you ask for
+    them with `messages=true`. Naming what to wait for and then returning on an
+    unrelated message would make `wait_all` mean nothing: a child that reports
+    in early ends the wait for every other child.
 
     Returns on timeout as well, reporting what is still outstanding, so a
     result is never an error — decide from the report whether to wait again.
     Prefer this over calling list_peers repeatedly: a crashed agent counts as
     finished here and its failure is reported, which polling cannot tell you.
     """
+    if messages is None:
+        messages = not (agents or tasks or paths or pids)
     agent_ids, misrouted, strangers = _route_agent_ids([str(a) for a in agents or []])
     task_handles = [str(t) for t in tasks or []] + misrouted
     watched: dict[str, asyncio.Task[str]] = {}
