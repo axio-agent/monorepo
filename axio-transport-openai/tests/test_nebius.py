@@ -637,3 +637,26 @@ def test_thinking_extra_params_can_override() -> None:
     )
     payload = t.build_payload([], [], "")
     assert payload["enable_thinking"] is False
+
+
+async def test_the_unset_context_length_is_not_taken_literally(
+    fake_server: tuple[FakeNebiusServer, str],
+    transport: NebiusTransport,
+) -> None:
+    server, _ = fake_server
+    server.models_response = {
+        "data": [
+            # Nebius publishes this for sixteen of its twenty-nine models.
+            {"id": "MiniMaxAI/MiniMax-M2.5", "context_length": 8000},
+            # And for two of them we know the real number, from their own text.
+            {"id": "MiniMaxAI/MiniMax-M3", "context_length": 8000},
+            # A number it did fill in is its own to be right about.
+            {"id": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "context_length": 262_144},
+        ]
+    }
+
+    await transport.fetch_models()
+
+    assert transport.models["MiniMaxAI/MiniMax-M2.5"].context_window == 128_000
+    assert transport.models["MiniMaxAI/MiniMax-M3"].context_window == 1_000_000
+    assert transport.models["nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"].context_window == 262_144

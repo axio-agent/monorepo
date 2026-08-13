@@ -19,6 +19,34 @@ logger = logging.getLogger(__name__)
 
 _UNSET = ModelSpec(id="<not initialized: call fetch_models() first>", context_window=0, max_output_tokens=0)
 
+UNSET_CONTEXT_LENGTH = 8000
+"""The value Nebius publishes when it has not filled the field in.
+
+Sixteen of the twenty-nine models in the catalogue carry exactly this number,
+among them a 428B MoE whose own description in the neighbouring field reads
+"1M context". Taken literally it says the prompt overflowed before the first
+token, which starves the answer or refuses the request outright.
+"""
+
+DEFAULT_CONTEXT_LENGTH = 128_000
+
+CONTEXT_LENGTH_OVERRIDES: dict[str, int] = {
+    # Stated by Nebius itself, in each model's own description field.
+    "MiniMaxAI/MiniMax-M3": 1_000_000,
+    "moonshotai/Kimi-K3": 1_000_000,
+}
+"""What to use instead, for models whose real window we can point at.
+
+Consulted only where the published length is the unset marker: a number Nebius
+actually filled in is theirs to be right about.
+"""
+
+
+def _context_window(model_id: str, published: Any) -> int:
+    if not published or int(published) == UNSET_CONTEXT_LENGTH:
+        return CONTEXT_LENGTH_OVERRIDES.get(model_id, DEFAULT_CONTEXT_LENGTH)
+    return int(published)
+
 
 @dataclass(slots=True)
 class NebiusTransport(ThinkingMixin, OpenAITransport):
@@ -81,7 +109,7 @@ class NebiusTransport(ThinkingMixin, OpenAITransport):
         pricing = entry.get("pricing", {})
         return ModelSpec(
             id=entry["id"],
-            context_window=int(entry.get("context_length", 128_000)),
+            context_window=_context_window(model_id, entry.get("context_length")),
             max_output_tokens=int(entry.get("max_output_tokens", 25_000)),
             capabilities=frozenset(caps),
             input_cost=float(pricing.get("prompt", 0)) * 1_000_000,
