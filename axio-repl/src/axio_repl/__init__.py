@@ -292,6 +292,12 @@ def build_system_prompt(
                 "results will appear later unless you have arranged one of those delivery paths.",
                 "- Use list_peers() to discover running agents in this project, or list_peers(all_projects=true) "
                 "to inspect all local agent ids. Use send_message(agent_id=..., message=...) for IPC by global id.",
+                "- To wait, call monitor(...) — never poll. Calling list_peers repeatedly costs a full turn each "
+                "time and cannot tell you that a child has died, so it can loop forever. monitor blocks until "
+                "something actually happens: monitor(agents=[...], wait_all=true) to join spawned children, "
+                "monitor(messages=true) to wait for a child to report back, and paths=/pids= to wait on files or "
+                "processes. It reports a crashed child as finished, with its error, and a timeout returns what is "
+                "still outstanding rather than failing — so decide from that report whether to wait again.",
                 "- Use interrupt_agent(agent_id=...) to cancel a spawned agent's current response while keeping it "
                 "alive. Use stop_agent(agent_id=...) only when the child should exit. A parent may interrupt or "
                 "stop its own children by id.",

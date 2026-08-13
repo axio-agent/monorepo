@@ -451,7 +451,8 @@ class PeerServer:
 async def list_peers(all_projects: bool = False) -> str:
     """List other running axio agents. By default only peers in the current
     project are returned. Pass all_projects=true to inspect peers from every
-    project on this host."""
+    project on this host. This is a snapshot for discovery — to wait for an
+    agent, call monitor() rather than calling this in a loop."""
     records = _visible_records(await list_peer_records(), all_projects=all_projects)
     if not records:
         if all_projects:
@@ -742,7 +743,9 @@ async def spawn_agent(
     default the spawned agent starts with an empty context. Set
     inherit_context=true only when the spawned agent must see the current
     conversation. The spawned agent remains available for IPC until it is
-    explicitly stopped."""
+    explicitly stopped. This returns immediately and never carries the child's
+    answer — wait for it with monitor(agents=[id]), which also tells you if the
+    child died instead of finishing."""
     if _spawn_agent_factory is None:
         return "spawn_agent is not configured"
 
