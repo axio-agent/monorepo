@@ -15,10 +15,10 @@ import atexit
 import copy
 import dataclasses
 import os
-import re
 import signal
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
+from contextlib import AsyncExitStack
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, NamedTuple, cast
@@ -71,6 +71,8 @@ from axio_tools_local.read_file import read_file
 from axio_tools_local.shell import shell
 from axio_tools_local.write_file import write_file
 
+from axio_repl import _sandbox, _search
+
 _readline: Any
 try:
     import readline as _readline
@@ -104,48 +106,7 @@ async def search_files(
 ) -> str:
     """Search for text or regex patterns in files under a directory.
     Returns matching lines with file paths and line numbers."""
-
-    def _search() -> str:
-        base = Path(path).resolve()
-        if not base.exists():
-            return f"error: path not found: {path}"
-
-        try:
-            pattern = re.compile(query) if regex else None
-        except re.error as exc:
-            return f"error: invalid regex: {exc}"
-
-        skip = {".git", ".venv", "__pycache__", "node_modules"}
-        matches: list[str] = []
-
-        files = [base] if base.is_file() else list(_iter_files(base, skip))
-        for file_path in files:
-            if len(matches) >= max_results:
-                break
-            try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for idx, line in enumerate(text.splitlines(), start=1):
-                found = pattern.search(line) if pattern else (query in line)
-                if found:
-                    matches.append(f"{file_path}:{idx}: {line}")
-                    if len(matches) >= max_results:
-                        break
-
-        if not matches:
-            return f"No matches for {query!r}"
-        return "\n".join(matches)
-
-    return await asyncio.to_thread(_search)
-
-
-def _iter_files(base: Path, skip: set[str]) -> Iterator[Path]:
-    for current_dir, dirs, files in os.walk(base):
-        dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
-        for name in sorted(files):
-            if not name.startswith("."):
-                yield Path(current_dir) / name
+    return await asyncio.to_thread(_search.search, query, path, regex, max_results)
 
 
 # ── Tools ────────────────────────────────────────────────────────────
@@ -981,6 +942,13 @@ async def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=None, help="Max output tokens")
     parser.add_argument("--max-iterations", type=int, default=50)
     parser.add_argument("--debug", action="store_true", help="Log request/response bodies to stderr")
+    parser.add_argument(
+        "--sandbox",
+        choices=("auto", "docker", "none"),
+        default="auto",
+        help="Run file and shell tools inside a Docker container (default: auto — used when a daemon is reachable)",
+    )
+    parser.add_argument("--sandbox-image", default="python:3.12-slim", help="Image for --sandbox docker")
     args = parser.parse_args()
 
     transport_cls, _ = _select_transport(args.transport)
@@ -988,7 +956,7 @@ async def main() -> None:
     agents_text = load_agents_instructions(root)
     setup_history()
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession() as session, AsyncExitStack() as stack:
         transport = transport_cls(session=session)
         await transport.fetch_models()
 
@@ -1009,7 +977,8 @@ async def main() -> None:
         }
         _apply_cli_args(args, commands)
 
-        tools = list(TOOLS)
+        tools, sandbox_desc = await _sandbox.build_tools(stack, list(TOOLS), args.sandbox, args.sandbox_image, root)
+        print(f"Tools: {BOLD}{sandbox_desc}{RESET}")
         system = build_system_prompt(root, transport.model, tools, agents_text)
         agent = Agent(
             system=system,

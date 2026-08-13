@@ -461,6 +461,11 @@ dependencies = [
     { name = "axio-transport-openai" },
 ]
 
+[package.optional-dependencies]
+docker = [
+    { name = "axio-tools-docker" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
@@ -474,9 +479,11 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.11" },
     { name = "axio", editable = "axio" },
     { name = "axio-tools-agents", editable = "axio-tools-agents" },
+    { name = "axio-tools-docker", marker = "extra == 'docker'", editable = "axio-tools-docker" },
     { name = "axio-tools-local", editable = "axio-tools-local" },
     { name = "axio-transport-openai", editable = "axio-transport-openai" },
 ]
+provides-extras = ["docker"]
 
 [package.metadata.requires-dev]
 dev = [
