@@ -8,7 +8,15 @@ from typing import Any
 from axio.agent import Agent
 from axio.blocks import TextBlock
 from axio.context import MemoryContextStore
-from axio.events import IterationEnd, ReasoningDelta, SessionEndEvent, StreamEvent, TextDelta, ToolResult
+from axio.events import (
+    Error,
+    IterationEnd,
+    ReasoningDelta,
+    SessionEndEvent,
+    StreamEvent,
+    TextDelta,
+    ToolResult,
+)
 from axio.messages import Message
 from axio.testing import StubTransport, make_echo_tool, make_text_response, make_tool_use_response
 from axio.tool import Tool
@@ -211,6 +219,22 @@ class TestMaxIterations:
         last = events[-1]
         assert isinstance(last, SessionEndEvent)
         assert last.stop_reason == StopReason.error
+
+    async def test_max_iterations_is_announced_not_only_logged(self) -> None:
+        """An agent watched from elsewhere must not look like it succeeded."""
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=_ok)
+        transport = StubTransport(
+            [
+                make_tool_use_response("echo", "c1", {"msg": "hi"}, 1),
+                make_tool_use_response("echo", "c2", {"msg": "hi"}, 2),
+            ]
+        )
+        agent = Agent(system="test", tools=[tool], transport=transport, max_iterations=1)
+        events = [e async for e in agent.run_stream("go", MemoryContextStore())]
+
+        errors = [e for e in events if isinstance(e, Error)]
+        assert len(errors) == 1
+        assert "1 iterations" in str(errors[0].exception)
 
 
 class TestLastIterationMessage:

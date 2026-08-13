@@ -26,6 +26,7 @@ from typing import Any, NamedTuple, cast
 
 import aiohttp
 from axio.agent import Agent
+from axio.blocks import TextBlock
 from axio.context import MemoryContextStore
 from axio.events import (
     AudioOutput,
@@ -47,6 +48,7 @@ from axio.events import (
 )
 from axio.exceptions import StreamError
 from axio.field import StrictStr
+from axio.messages import Message
 from axio.models import Capability, ModelSpec
 from axio.tool import Tool
 from axio.tool_args import ToolArgStream
@@ -76,6 +78,24 @@ from axio_tools_local.shell import shell
 from axio_tools_local.write_file import write_file
 
 from axio_repl import _panel, _sandbox, _search
+
+LAST_ITERATION_HINT = Message(
+    role="system",
+    content=[
+        TextBlock(
+            text=(
+                "This is your final iteration: no further tool calls will be executed. "
+                "Answer now with what you have, and say plainly what you could not finish."
+            )
+        )
+    ],
+)
+"""Delivered on the last iteration an agent is allowed.
+
+Without it, running out of iterations produces nothing at all: the agent spends
+its last turn on a tool call that is never dispatched, and the caller waiting on
+it gets silence where the report should be.
+"""
 
 AGENT_NAME = "axio-repl"
 AGENT_VERSION = "0.2.3"
@@ -1065,6 +1085,7 @@ async def main() -> None:
             tools=tools,
             transport=transport,
             max_iterations=args.max_iterations,
+            last_iteration_message=LAST_ITERATION_HINT,
         )
         ctx = MemoryContextStore()
 
@@ -1095,6 +1116,7 @@ async def main() -> None:
                 system=child_system,
                 tools=child_tools,
                 max_iterations=min(agent.max_iterations, 25),
+                last_iteration_message=LAST_ITERATION_HINT,
             ), child_ctx
 
         set_spawn_agent_factory(_make_spawn_agent)

@@ -524,6 +524,10 @@ class Agent:
                         return
 
             logger.warning("Max iterations (%d) reached", self.max_iterations)
+            # Announced, not only logged: an agent that ran out of iterations
+            # produced no answer, and a caller watching it from another process
+            # otherwise sees the same "finished" as one that succeeded.
+            yield Error(exception=RuntimeError(f"Stopped after {self.max_iterations} iterations without finishing"))
             yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
             session_end_emitted = True
 
