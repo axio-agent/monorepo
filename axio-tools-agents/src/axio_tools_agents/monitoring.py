@@ -107,9 +107,31 @@ async def _watch_agents(agent_ids: list[str], wait_all: bool) -> str:
     while True:
         for agent_id in agent_ids:
             state, _ = background_agent_state(agent_id)
-            if state in ("idle", "unknown"):
+            if state == "idle":
                 return f"agent finished: {agent_id}"
+            if state == "unknown":
+                return f"agent gone: {agent_id}"
         await asyncio.sleep(POLL_INTERVAL)
+
+
+def _route_agent_ids(agent_ids: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """Sort ids into agents, task handles passed by mistake, and strangers.
+
+    Waiting on an id nobody knows is indistinguishable from waiting on one that
+    has finished: there is nothing to wait for either way, so the wait returns
+    at once and reports success. That answer is a lie whenever the id is simply
+    wrong - which it is every time a background task handle lands here, since
+    spawn_agent hands one out and it is not an agent id.
+    """
+    agents, handles, strangers = [], [], []
+    for agent_id in agent_ids:
+        if background.get(agent_id) is not None:
+            handles.append(agent_id)
+        elif background_agent_state(agent_id)[0] == "unknown":
+            strangers.append(agent_id)
+        else:
+            agents.append(agent_id)
+    return agents, handles, strangers
 
 
 def _agent_report(agent_ids: list[str]) -> list[str]:
@@ -148,9 +170,14 @@ async def monitor(
     Prefer this over calling list_peers repeatedly: a crashed agent counts as
     finished here and its failure is reported, which polling cannot tell you.
     """
-    agent_ids = [str(a) for a in agents or []]
-    task_handles = [str(t) for t in tasks or []]
+    agent_ids, misrouted, strangers = _route_agent_ids([str(a) for a in agents or []])
+    task_handles = [str(t) for t in tasks or []] + misrouted
     watched: dict[str, asyncio.Task[str]] = {}
+    notes = []
+    if misrouted:
+        notes.append(f"watched as tasks, not agents (spawn_agent returns task handles): {', '.join(misrouted)}")
+    if strangers:
+        notes.append(f"no such agent, not watched (see list_peers for live ids): {', '.join(strangers)}")
 
     if agent_ids:
         watched["agents"] = asyncio.create_task(_watch_agents(agent_ids, wait_all))
@@ -164,7 +191,8 @@ async def monitor(
         watched["messages"] = asyncio.create_task(_watch_message())
 
     if not watched:
-        return "monitor: nothing to watch — pass agents, tasks, paths, pids, or messages=true"
+        nothing = "monitor: nothing to watch — pass agents, tasks, paths, pids, or messages=true"
+        return "\n".join([nothing, *notes])
 
     done, pending = await asyncio.wait(watched.values(), timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
     for task in pending:
@@ -177,6 +205,7 @@ async def monitor(
         triggers.append(f"watch failed: {exc}" if exc is not None else task.result())
 
     lines = [f"Triggered: {t}" for t in triggers] or [f"Timed out after {timeout:g}s with nothing triggered"]
+    lines += [f"Note: {n}" for n in notes]
     if agent_ids:
         lines.append("Agents:")
         lines += _agent_report(agent_ids)

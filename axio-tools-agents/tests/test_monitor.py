@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import pytest
+from axio import background
 
 from axio_tools_agents import monitoring as monitor_module
 from axio_tools_agents.monitoring import monitor
@@ -69,10 +70,10 @@ async def test_unknown_agent_is_reported_as_such() -> None:
     assert state == "unknown"
     assert error is None
     result = await monitor(agents=["no-such-agent"], messages=False, timeout=5)
-    # An id that names nothing counts as finished: waiting on it forever is the
-    # failure mode this tool exists to prevent.
-    assert "agent finished" in result
-    assert "no-such-agent: unknown" in result
+    # It must not hang, and it must not claim the thing finished either: the id
+    # names nothing, and "finished" would be read as "the work is done".
+    assert "no such agent" in result
+    assert "agent finished" not in result
 
 
 @pytest.mark.asyncio
@@ -95,3 +96,22 @@ async def test_no_pending_messages_still_waits(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(peers, "_pending_probe", lambda: 0)
     result = await monitor(timeout=0.05)
     assert "Timed out" in result
+
+
+@pytest.mark.asyncio
+async def test_a_task_handle_passed_as_an_agent_is_watched_as_a_task() -> None:
+    # spawn_agent hands out a background task handle and tells the caller to
+    # collect it with tasks=[...]; passing it to agents=[...] used to return
+    # "all watched agents are idle" instantly, before the agent had done a thing.
+    async def slow() -> str:
+        await asyncio.sleep(30)
+        return "done"
+
+    handle = background.start("spawn_agent", slow())
+    try:
+        result = await monitor(agents=[handle], messages=False, timeout=0.5)
+        assert "idle" not in result
+        assert "watched as tasks" in result
+        assert handle in result
+    finally:
+        await background.cancel_all()
