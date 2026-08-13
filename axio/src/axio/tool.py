@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import json
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -12,10 +13,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from types import MappingProxyType
-from typing import Any, get_type_hints
+from typing import Any, get_args, get_type_hints
 
 from .exceptions import GuardError, HandlerError
-from .field import MISSING, FieldInfo, get_field_info
+from .field import MISSING, FieldInfo, bare_type, get_field_info
 from .permission import PermissionGuard
 from .schema import build_tool_schema
 from .types import ToolName
@@ -37,6 +38,40 @@ SCHEMA_JSON_TYPE_MAP: dict[str, type] = {
     "array": list,
     "object": dict,
 }
+
+
+def _coerce_scalar(value: str, target: type) -> Any:
+    if target is bool:
+        low = value.strip().lower()
+        return {"true": True, "false": False}.get(low, value)
+    if target in (int, float):
+        try:
+            return target(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _coerce_model_argument(value: Any, hint: Any) -> Any:
+    """Forgive the argument types models most often get wrong.
+
+    A list arrives as '["a","b"]', a number as "10", a flag as "true". The
+    schema advertises the real type, so this does not invite the mistake - it
+    just avoids spending a whole turn telling the model about one. Anything that
+    does not convert cleanly is left alone to fail validation as before.
+    """
+    if not isinstance(value, bool) and isinstance(value, str):
+        targets = {bare_type(hint), *(bare_type(a) for a in get_args(hint))}
+        if list in targets:
+            try:
+                parsed = json.loads(value)
+            except (ValueError, TypeError):
+                return value
+            return parsed if isinstance(parsed, list) else value
+        for target in (bool, int, float):
+            if target in targets:
+                return _coerce_scalar(value, target)
+    return value
 
 
 def hint_from_json_schema(prop_schema: dict[str, Any]) -> Any:
@@ -178,6 +213,7 @@ class Tool[T]:
                 if fi.default is not MISSING and name not in required_set:
                     kwargs[name] = fi.default
             else:
+                kwargs[name] = _coerce_model_argument(kwargs[name], hint)
                 fi.validate(kwargs[name], name, hint)
         missing = [name for name in required_set if name not in kwargs]
         if missing:
