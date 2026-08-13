@@ -109,6 +109,12 @@ class OpenRouterTransport(ThinkingMixin, OpenAITransport):
         top: dict[str, Any] = entry.get("top_provider", {})
         context_window = int(entry.get("context_length") or top.get("context_length") or 128_000)
         max_output_tokens = int(top.get("max_completion_tokens") or 8_000)
+        # 49 of the ~400 models in the catalogue report the whole context window
+        # as their output limit, which means "no separate cap" rather than "you
+        # may ask for all of it". Asking for it is rejected outright: the prompt
+        # no longer fits beside the reservation.
+        if max_output_tokens >= context_window:
+            max_output_tokens = context_window // 4
 
         pricing: dict[str, Any] = entry.get("pricing", {})
         return ModelSpec(
