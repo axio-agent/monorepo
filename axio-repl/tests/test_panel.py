@@ -166,3 +166,25 @@ def test_the_toolbar_is_not_reverse_video() -> None:
         attrs = merged.get_attrs_for_style_str(cls)
         assert attrs.reverse is False, cls
         assert attrs.bgcolor == "default", cls
+
+
+async def test_ctrl_c_at_the_prompt_interrupts_instead_of_ending_the_read() -> None:
+    # The prompt is up for the whole session now, and it puts the terminal in
+    # raw mode - so Ctrl+C arrives as a keypress, not as SIGINT, and the handler
+    # that used to stop a running turn never fires.
+    from axio_repl import ReplRenderer, _read_input_async
+
+    interrupts: list[int] = []
+    answers: list[object] = [KeyboardInterrupt(), KeyboardInterrupt(), "carry on"]
+
+    class _Session:
+        async def prompt_async(self, prompt: str) -> str:
+            answer = answers.pop(0)
+            if isinstance(answer, BaseException):
+                raise answer
+            return str(answer)
+
+    result = await _read_input_async(_Session(), ReplRenderer(), lambda: interrupts.append(1))
+
+    assert result == "carry on"
+    assert len(interrupts) == 2

@@ -722,14 +722,22 @@ def _save_media(data: bytes, media_type: str) -> str:
 # ── Input handling ───────────────────────────────────────────────────
 
 
-async def _read_input_async(session: Any, renderer: ReplRenderer) -> str:
+async def _read_input_async(session: Any, renderer: ReplRenderer, on_interrupt: Callable[[], None]) -> str:
     from prompt_toolkit.patch_stdout import patch_stdout
 
     renderer.set_input_active(True)
     try:
         # raw=True keeps our own ANSI colouring intact while the prompt is up.
         with patch_stdout(raw=True):
-            return str(await session.prompt_async("repl> ")).strip()
+            while True:
+                try:
+                    return str(await session.prompt_async("repl> ")).strip()
+                except KeyboardInterrupt:
+                    # The prompt is up for the whole session now, and it puts the
+                    # terminal in raw mode - so Ctrl+C arrives here as a keypress
+                    # and never reaches the signal handler that used to stop a
+                    # running turn. Do its job, and go back to waiting.
+                    on_interrupt()
     finally:
         renderer.set_input_active(False)
 
@@ -1283,7 +1291,7 @@ async def main() -> None:
 
             while True:
                 if input_task is None:
-                    input_task = asyncio.create_task(_read_input_async(prompt_session, renderer))
+                    input_task = asyncio.create_task(_read_input_async(prompt_session, renderer, _on_sigint))
                 if inbox_task is None:
                     inbox_task = asyncio.create_task(peer_queue.get())
 
@@ -1308,6 +1316,10 @@ async def main() -> None:
                     break
                 finally:
                     input_task = None
+                # Back before the turn runs, not after it. A turn is exactly
+                # when the prompt is wanted: to read the status line, and to
+                # type the next thing without waiting for the answer.
+                input_task = asyncio.create_task(_read_input_async(prompt_session, renderer, _on_sigint))
 
                 if not user_input:
                     continue
