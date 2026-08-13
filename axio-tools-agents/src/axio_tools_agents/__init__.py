@@ -1,3 +1,4 @@
+from axio_tools_agents.monitoring import monitor
 from axio_tools_agents.peers import (
     PeerMessage,
     PeerRecord,
@@ -19,6 +20,7 @@ from axio_tools_agents.peers import (
 )
 
 __all__ = [
+    "monitor",
     "enqueue_local_agent_prompt",
     "PeerMessage",
     "PeerRecord",

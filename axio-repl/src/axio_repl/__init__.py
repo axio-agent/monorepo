@@ -48,6 +48,7 @@ from axio.field import StrictStr
 from axio.models import Capability, ModelSpec
 from axio.tool import Tool
 from axio.tool_args import ToolArgStream
+from axio_tools_agents.monitoring import monitor
 from axio_tools_agents.peers import (
     PeerMessage,
     PeerServer,
@@ -120,6 +121,7 @@ TOOLS: list[Tool[Any]] = [
     Tool(name="shell", handler=shell),
     Tool(name="interrupt_agent", handler=interrupt_agent),
     Tool(name="list_peers", handler=list_peers),
+    Tool(name="monitor", handler=monitor),
     Tool(name="send_message", handler=send_message),
     Tool(name="spawn_agent", handler=spawn_agent, concurrency=3),
     Tool(name="stop_agent", handler=stop_agent),
