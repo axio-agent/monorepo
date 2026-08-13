@@ -11,7 +11,7 @@ import os
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 import aiohttp
 from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
@@ -605,6 +605,10 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             raise StreamError(f"Provider error during streaming: {msg}")
         yield IterationEnd(iteration=0, stop_reason=stop, usage=usage)
 
+    # Endpoint this transport streams from, relative to base_url. Subclasses
+    # speaking a different OpenAI API override it.
+    stream_path: ClassVar[str] = "chat/completions"
+
     def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:
         return self._do_stream(messages, tools, system)
 
@@ -612,7 +616,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         self, messages: list[Message], tools: list[Tool[Any]], system: str
     ) -> AsyncIterator[StreamEvent]:
         assert self.session is not None, "session is required for streaming"
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        url = f"{self.base_url.rstrip('/')}/{self.stream_path}"
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         payload = self.build_payload(messages, tools, system)
 
