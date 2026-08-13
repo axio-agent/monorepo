@@ -114,3 +114,18 @@ async def test_a_half_written_line_waits_while_the_prompt_is_up(
         renderer.set_input_active(False)
         await renderer.render("main", TextDelta(index=0, delta=" and the rest"))
         assert flush.call_count == 1
+
+
+async def test_an_arriving_message_is_shown_not_only_forwarded(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # It used to reach the model's prompt and nothing else, so the only account
+    # of a spawned agent's report was the model's summary of it.
+    renderer = ReplRenderer()
+
+    await renderer.incoming("Report from background agent child:\n\n## Findings\nAll good.")
+
+    output = capsys.readouterr().out
+    assert "## Findings" in output
+    assert "All good." in output
+    assert "incoming" in output

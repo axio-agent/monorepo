@@ -442,6 +442,19 @@ class ReplRenderer:
             self._foreground_streaming = False
             self._flush_background_summaries_locked()
 
+    async def incoming(self, text: str) -> None:
+        """Put an arriving message on screen, not only into the model's prompt.
+
+        A report from a spawned agent was fed to the model and never shown, so
+        the only account of it the user ever saw was the model's summary of
+        something they could not read.
+        """
+        async with self._lock:
+            if self._active_agent is not None and self._state(self._active_agent).in_text:
+                print()
+                self._state(self._active_agent).in_text = False
+            print(f"\n{DIM}{'─' * 3} incoming {'─' * 3}{RESET}\n{text}\n")
+
     async def notice(self, text: str) -> None:
         async with self._lock:
             if self._active_agent is not None and self._state(self._active_agent).in_text:
@@ -1204,7 +1217,8 @@ async def main() -> None:
 
         async def _run_peer_turn(first: str) -> None:
             prompts = _collect_queued(first)
-            await renderer.notice(f"[{len(prompts)} message(s) queued]")
+            for prompt in prompts:
+                await renderer.incoming(prompt)
             await _run_turn("\n\n".join(prompts))
 
         async def _drain_peer_messages() -> None:
