@@ -14,6 +14,7 @@ import asyncio
 import atexit
 import copy
 import dataclasses
+import logging
 import os
 import shutil
 import signal
@@ -770,6 +771,31 @@ def _apply_cli_args(args: object, commands: dict[str, Command]) -> None:
 # ── model ──
 
 
+class _ConciseFormatter(logging.Formatter):
+    """Drop the traceback, keep the message.
+
+    A tool failing is ordinary for an agent — a missing file is a normal
+    outcome of exploring, not an incident — and the model is told about it
+    through the tool result anyway. Dumping a stack trace per failure buries
+    the session, and background agents make it worse by interleaving.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        record = copy.copy(record)
+        record.exc_info = None
+        record.exc_text = None
+        return super().format(record)
+
+
+def setup_logging(debug: bool) -> None:
+    handler = logging.StreamHandler(sys.stderr)
+    fmt = "%(levelname)s %(name)s: %(message)s"
+    handler.setFormatter(logging.Formatter(fmt) if debug else _ConciseFormatter(fmt))
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(logging.DEBUG if debug else logging.WARNING)
+
+
 def _columnise(items: list[str], width: int, gap: int = 2) -> list[str]:
     """Lay items out in columns, filling downwards the way ls does."""
     if not items:
@@ -994,6 +1020,7 @@ async def main() -> None:
     parser.add_argument("--sandbox-image", default="python:3.12-slim", help="Image for --sandbox docker")
     args = parser.parse_args()
 
+    setup_logging(args.debug)
     transport_cls, _ = _select_transport(args.transport)
     root = Path.cwd().resolve()
     agents_text = load_agents_instructions(root)
