@@ -84,7 +84,8 @@ async def test_already_delivered_messages_do_not_block(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(peers, "_pending_probe", lambda: 3)
     result = await monitor(timeout=5)
-    assert "3 message(s) already waiting" in result
+    assert "3 message(s) have arrived" in result
+    assert "finish this turn" in result
 
 
 @pytest.mark.asyncio

@@ -90,7 +90,12 @@ async def _watch_message() -> str:
     # cannot be consumed until this turn ends.
     waiting = pending_message_count()
     if waiting:
-        return f"{waiting} message(s) already waiting to be read"
+        # Saying only that they exist invites the caller to ask again, and again:
+        # they are delivered as the next prompt, so the turn has to end first.
+        return (
+            f"{waiting} message(s) have arrived. They are delivered as your next prompt, so stop calling "
+            f"tools and finish this turn to read them — calling monitor again will only repeat this."
+        )
     message = await next_peer_message()
     return f"message from {message.from_name} ({message.from_id})"
 
