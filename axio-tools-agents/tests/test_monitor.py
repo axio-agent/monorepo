@@ -115,3 +115,31 @@ async def test_a_task_handle_passed_as_an_agent_is_watched_as_a_task() -> None:
         assert handle in result
     finally:
         await background.cancel_all()
+
+
+@pytest.mark.asyncio
+async def test_an_incoming_message_says_the_turn_must_end() -> None:
+    # Naming the sender is not reading the message: it is delivered as the next
+    # prompt, so a caller told only "message from X" calls monitor again.
+    from axio_tools_agents import peers
+
+    async def deliver() -> None:
+        await asyncio.sleep(0.05)
+        peers._notify_message(
+            peers.PeerMessage(
+                id="m-1",
+                from_id="child-1",
+                from_name="health-check",
+                to_id="parent",
+                body="done",
+                sent_at=0.0,
+            )
+        )
+
+    task = asyncio.create_task(deliver())
+    try:
+        result = await monitor(timeout=5)
+    finally:
+        await task
+    assert "health-check" in result
+    assert "finish this turn" in result

@@ -333,16 +333,25 @@ class _AgentRenderState:
         self.streamed_tool_ids: set[str] = set()
         self.field_first_delta = True
         self.field_key: str | None = None
-        self.background_text_chars = 0
+        self.background_text: list[str] = []
+        self.background_reported_chars = 0
         self.background_tools: list[str] = []
         self.background_errors: list[str] = []
         self.background_events: list[StreamEvent] = []
 
 
 class ReplRenderer:
-    def __init__(self, *, buffer_background_events: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        buffer_background_events: bool = False,
+        on_background_report: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._lock = asyncio.Lock()
         self._buffer_background_events = buffer_background_events
+        # Where a background agent's answer goes. Without somewhere to put it,
+        # the only trace of a finished agent is how many characters it wrote.
+        self._on_background_report = on_background_report
         self._states: dict[str, _AgentRenderState] = {}
         self._active_agent: str | None = None
         self._focused_agent = "main"
@@ -361,7 +370,8 @@ class ReplRenderer:
         state = self._state(agent_id)
         buffered = state.background_events
         state.background_events = []
-        state.background_text_chars = 0
+        state.background_text.clear()
+        state.background_reported_chars = 0
         state.background_tools.clear()
         state.background_errors.clear()
         self._background_pending.discard(agent_id)
@@ -544,7 +554,7 @@ class ReplRenderer:
             state.background_events.append(event)
         match event:
             case TextDelta(delta=delta):
-                state.background_text_chars += len(delta)
+                state.background_text.append(delta)
             case ToolUseStart(name=name):
                 if name not in state.background_tools:
                     state.background_tools.append(name)
@@ -555,12 +565,30 @@ class ReplRenderer:
                     if not self._foreground_streaming:
                         self._flush_background_summaries_locked()
             case SessionEndEvent():
+                self._deliver_background_report_locked(agent_id)
                 if not self._buffer_background_events:
                     self._background_pending.add(agent_id)
                     if not self._foreground_streaming:
                         self._flush_background_summaries_locked()
             case _:
                 pass
+
+    def _deliver_background_report_locked(self, agent_id: str) -> None:
+        """Hand a finished background agent's answer to the parent.
+
+        An agent that ran in the background wrote its answer to nobody: the
+        terminal shows another agent, and the text was only ever tallied. The
+        parent then has to ask it to repeat itself through send_message, which
+        is a second full run of an agent that already finished.
+        """
+        state = self._state(agent_id)
+        text = "".join(state.background_text).strip()
+        state.background_text.clear()
+        if not text:
+            return
+        state.background_reported_chars = len(text)
+        if self._on_background_report is not None:
+            self._on_background_report(agent_id, text)
 
     def _flush_background_summaries_locked(self) -> None:
         if not self._background_pending:
@@ -571,12 +599,12 @@ class ReplRenderer:
             parts = [f"{agent_id} completed"]
             if state.background_tools:
                 parts.append(f"tools={','.join(state.background_tools)}")
-            if state.background_text_chars:
-                parts.append(f"text={state.background_text_chars} chars")
+            if state.background_reported_chars:
+                parts.append(f"reported {state.background_reported_chars} chars")
             if state.background_errors:
                 parts.append(f"errors={len(state.background_errors)}")
             print(f"{DIM}[background {'; '.join(parts)}]{RESET}")
-            state.background_text_chars = 0
+            state.background_reported_chars = 0
             state.background_tools.clear()
             state.background_errors.clear()
         self._background_pending.clear()
@@ -1070,12 +1098,19 @@ async def main() -> None:
         )
 
         loop = asyncio.get_event_loop()
-        renderer = ReplRenderer(buffer_background_events=args.prompt is not None)
+        peer_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        def _queue_background_report(agent_id: str, text: str) -> None:
+            peer_queue.put_nowait(f"Report from background agent {agent_id}:\n\n{text}")
+
+        renderer = ReplRenderer(
+            buffer_background_events=args.prompt is not None,
+            on_background_report=_queue_background_report,
+        )
         set_agent_event_handler(renderer.render)
         prompt_task: asyncio.Task[None] | None = None
         input_task: asyncio.Task[str] | None = None
         inbox_task: asyncio.Task[str] | None = None
-        peer_queue: asyncio.Queue[str] = asyncio.Queue()
         # Lets monitor() see messages that arrived but have not been read:
         # they cannot be delivered until the current turn finishes.
         set_pending_message_probe(peer_queue.qsize)
@@ -1116,14 +1151,39 @@ async def main() -> None:
                 renderer.set_focus(record.id)
             await renderer.mark_idle()
 
-        async def _drain_peer_messages() -> None:
+        def _collect_queued(first: str) -> list[str]:
+            """Everything waiting, not just the one that woke us.
+
+            A turn per message means a turn per report when a swarm finishes
+            together: three answers arriving at once cost three full prefills of
+            the same context to deliver three paragraphs.
+            """
+            prompts = [first]
             while True:
                 try:
-                    peer_prompt = peer_queue.get_nowait()
+                    prompts.append(peer_queue.get_nowait())
                 except asyncio.QueueEmpty:
-                    return
-                await renderer.notice("[peer message queued]")
-                await _run_turn(peer_prompt)
+                    return prompts
+
+        async def _run_peer_turn(first: str) -> None:
+            nonlocal input_task
+            # The prompt cannot stay up while the answer streams underneath it:
+            # patch_stdout redraws mid-line and eats the start of the output.
+            if input_task is not None:
+                input_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await input_task
+                input_task = None
+            prompts = _collect_queued(first)
+            await renderer.notice(f"[{len(prompts)} message(s) queued]")
+            await _run_turn("\n\n".join(prompts))
+
+        async def _drain_peer_messages() -> None:
+            try:
+                first = peer_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            await _run_peer_turn(first)
 
         def _on_sigint() -> None:
             nonlocal prompt_task
@@ -1179,8 +1239,7 @@ async def main() -> None:
                 if inbox_task in done:
                     peer_prompt = inbox_task.result()
                     inbox_task = None
-                    await renderer.notice("[peer message queued]")
-                    await _run_turn(peer_prompt)
+                    await _run_peer_turn(peer_prompt)
                     continue
 
                 if input_task not in done:

@@ -97,7 +97,12 @@ async def _watch_message() -> str:
             f"tools and finish this turn to read them — calling monitor again will only repeat this."
         )
     message = await next_peer_message()
-    return f"message from {message.from_name} ({message.from_id})"
+    # Same as above: knowing who wrote is not reading what they wrote, and only
+    # ending the turn delivers it.
+    return (
+        f"a message from {message.from_name} ({message.from_id}) has arrived. It is delivered as your "
+        f"next prompt, so stop calling tools and finish this turn to read it."
+    )
 
 
 async def _watch_agents(agent_ids: list[str], wait_all: bool) -> str:
