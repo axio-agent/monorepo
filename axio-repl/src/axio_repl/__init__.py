@@ -284,6 +284,9 @@ def build_system_prompt(
                 "immediately with a global agent_id; it does not return the child agent's final answer.",
                 "- Spawned agents start with empty context by default. Set inherit_context=true only when the child "
                 "must see the current conversation; otherwise include all required instructions in task.",
+                "- Write the task you give a spawned agent in English, whatever language this conversation is in. "
+                "Models follow instructions more reliably in English, and the child has none of the context that "
+                "would let it recover from an ambiguous phrasing. Answer the user in their own language as usual.",
                 "- When spawning a child that must report back, tell it exactly how to deliver results: either "
                 "send_message(agent_id=<parent_id>, message=<report>) to the parent when done, or wait for the "
                 "REPL to focus/follow the child and print the child's final response. Do not tell the user that "
