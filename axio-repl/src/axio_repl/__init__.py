@@ -11,7 +11,6 @@ Run:
 from __future__ import annotations
 
 import asyncio
-import atexit
 import copy
 import dataclasses
 import logging
@@ -75,15 +74,7 @@ from axio_tools_local.read_file import read_file
 from axio_tools_local.shell import shell
 from axio_tools_local.write_file import write_file
 
-from axio_repl import _sandbox, _search
-
-_readline: Any
-try:
-    import readline as _readline
-except ImportError:
-    _readline = None
-
-readline: Any = _readline
+from axio_repl import _panel, _sandbox, _search
 
 AGENT_NAME = "axio-repl"
 AGENT_VERSION = "0.2.3"
@@ -328,29 +319,6 @@ def build_system_prompt(
 # ── Readline history ─────────────────────────────────────────────────
 
 
-def setup_history() -> None:
-    if readline is None:
-        return
-    history_path = Path.home() / ".axio_repl_history"
-    if history_path.exists():
-        try:
-            readline.read_history_file(str(history_path))
-        except (OSError, RuntimeError):
-            pass
-    try:
-        readline.set_history_length(5000)
-    except (AttributeError, ValueError):
-        pass
-
-    def _save() -> None:
-        try:
-            readline.write_history_file(str(history_path))
-        except (OSError, RuntimeError):
-            pass
-
-    atexit.register(_save)
-
-
 # ── Event rendering ──────────────────────────────────────────────────
 
 
@@ -565,8 +533,6 @@ class ReplRenderer:
                     print()
                     state.in_text = False
                 print(f"{DIM}[{usage.input_tokens}in/{usage.output_tokens}out tokens]{RESET}")
-                if self._redraw_input and self._input_active and readline is not None:
-                    readline.redisplay()
                 self._redraw_input = False
 
     def _record_background_event_locked(self, agent_id: str, event: StreamEvent) -> None:
@@ -611,8 +577,6 @@ class ReplRenderer:
             state.background_tools.clear()
             state.background_errors.clear()
         self._background_pending.clear()
-        if self._redraw_input and self._input_active and readline is not None:
-            readline.redisplay()
         self._redraw_input = False
 
     def _render_field_event(
@@ -680,28 +644,14 @@ def _save_media(data: bytes, media_type: str) -> str:
 # ── Input handling ───────────────────────────────────────────────────
 
 
-def _read_input() -> str:
-    """Read user input, collecting extra lines from a multiline paste."""
-    import select
+async def _read_input_async(session: Any, renderer: ReplRenderer) -> str:
+    from prompt_toolkit.patch_stdout import patch_stdout
 
-    first = input("repl> ")
-    lines = [first]
-    fd = sys.stdin.fileno()
-    while select.select([fd], [], [], 0.05)[0]:
-        chunk = os.read(fd, 65536)
-        if not chunk:
-            break
-        extra = chunk.decode(errors="replace").splitlines()
-        for line in extra:
-            print(f"  ... {line}")
-        lines.extend(extra)
-    return "\n".join(lines).strip()
-
-
-async def _read_input_async(loop: asyncio.AbstractEventLoop, renderer: ReplRenderer) -> str:
     renderer.set_input_active(True)
     try:
-        return await loop.run_in_executor(None, _read_input)
+        # raw=True keeps our own ANSI colouring intact while the prompt is up.
+        with patch_stdout(raw=True):
+            return str(await session.prompt_async("repl> ")).strip()
     finally:
         renderer.set_input_active(False)
 
@@ -1025,7 +975,7 @@ async def main() -> None:
     transport_cls, _ = _select_transport(args.transport)
     root = Path.cwd().resolve()
     agents_text = load_agents_instructions(root)
-    setup_history()
+    prompt_session = _panel.make_session()
 
     async with aiohttp.ClientSession() as session, AsyncExitStack() as stack:
         transport = transport_cls(session=session)
@@ -1200,7 +1150,7 @@ async def main() -> None:
 
             while True:
                 if input_task is None:
-                    input_task = asyncio.create_task(_read_input_async(loop, renderer))
+                    input_task = asyncio.create_task(_read_input_async(prompt_session, renderer))
                 if inbox_task is None:
                     inbox_task = asyncio.create_task(peer_queue.get())
 

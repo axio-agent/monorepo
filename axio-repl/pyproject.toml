@@ -12,6 +12,7 @@ dependencies = [
     "axio-tools-local",
     "axio-transport-openai",
     "aiohttp>=3.11",
+    "prompt-toolkit>=3.0",
 ]
 
 [project.optional-dependencies]
