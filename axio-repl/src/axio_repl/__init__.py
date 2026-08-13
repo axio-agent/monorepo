@@ -972,7 +972,7 @@ def _apply_iterations(agent: Agent, arg: str) -> None:
         # Zero reads as "no limit" and means the opposite: the loop runs no
         # iterations at all, so the agent answers nothing and reports that it
         # ran out. There is no unlimited - a large number is how you say it.
-        print(f"Max iterations must be at least 1. For no practical limit, use a large number: {BOLD}100000{RESET}")
+        print(f"Max iterations must be at least 1. The default, {BOLD}1000{RESET}, is already out of the way.")
         return
     agent.max_iterations = val
     print(f"Max iterations: {BOLD}{val}{RESET}")
@@ -1038,7 +1038,7 @@ async def main() -> None:
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--thinking", default=None, help="Thinking level or token budget (integer)")
     parser.add_argument("--max-tokens", type=int, default=None, help="Max output tokens")
-    parser.add_argument("--max-iterations", type=int, default=50)
+    parser.add_argument("--max-iterations", type=int, default=1000)
     parser.add_argument("--debug", action="store_true", help="Log request/response bodies to stderr")
     parser.add_argument(
         "--sandbox",
@@ -1121,7 +1121,7 @@ async def main() -> None:
                 transport=child_transport,
                 system=child_system,
                 tools=child_tools,
-                max_iterations=min(agent.max_iterations, 25),
+                max_iterations=agent.max_iterations,
                 last_iteration_message=LAST_ITERATION_HINT,
             ), child_ctx
 
