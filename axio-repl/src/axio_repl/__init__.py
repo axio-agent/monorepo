@@ -19,7 +19,7 @@ import shutil
 import signal
 import sys
 from collections.abc import Callable
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, NamedTuple, cast
@@ -782,6 +782,19 @@ def _resolve_model_arg(transport: Any, model_id: str) -> ModelSpec:
     return cast(ModelSpec, transport.models[model_id])
 
 
+def _adopt_catalogue_metadata(transport: Any) -> None:
+    """Replace the default model placeholder with the catalogue's own entry.
+
+    A transport's default is written as a bare ``ModelSpec``: an id and nothing
+    else, so it claims no capabilities, 128K of context and 8K of output. Left
+    that way after the catalogue is loaded, the agent reads it as "this model
+    cannot use tools" and runs with none of them - silently, since nothing about
+    the session says the tools were dropped.
+    """
+    with suppress(KeyError, AttributeError):
+        transport.model = _resolve_model_arg(transport, transport.model.id)
+
+
 def _choose_model(transport: Any, arg: str) -> ModelSpec | None:
     """Resolve *arg* to one model, reporting why when it cannot."""
     try:
@@ -983,6 +996,7 @@ async def main() -> None:
     async with aiohttp.ClientSession() as session, AsyncExitStack() as stack:
         transport = transport_cls(session=session)
         await transport.fetch_models()
+        _adopt_catalogue_metadata(transport)
 
         if args.model:
             try:

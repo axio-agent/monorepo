@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from axio.models import Capability, ModelRegistry, ModelSpec
 
-from axio_repl import _apply_model, _resolve_model_arg
+from axio_repl import _adopt_catalogue_metadata, _apply_model, _resolve_model_arg
 
 _BASE_MODEL = ModelSpec(
     id="z-ai/glm-4.7",
@@ -51,3 +51,24 @@ def test_apply_model_accepts_resolved_variant(capsys: pytest.CaptureFixture[str]
     assert "z-ai/glm-4.7:nitro" in agent.system
     captured = capsys.readouterr()
     assert "Switched to" in captured.out
+
+
+def test_default_placeholder_adopts_catalogue_metadata() -> None:
+    # What a transport ships as its default: an id, and nothing behind it.
+    transport = _VariantTransport()
+    transport.model = ModelSpec(id="z-ai/glm-4.7")
+    assert Capability.tool_use not in transport.model.capabilities
+
+    _adopt_catalogue_metadata(transport)
+
+    assert Capability.tool_use in transport.model.capabilities
+    assert transport.model.context_window == 256_000
+
+
+def test_a_model_missing_from_the_catalogue_is_left_alone() -> None:
+    transport = _VariantTransport()
+    transport.model = ModelSpec(id="nobody/knows-this")
+
+    _adopt_catalogue_metadata(transport)
+
+    assert transport.model.id == "nobody/knows-this"
