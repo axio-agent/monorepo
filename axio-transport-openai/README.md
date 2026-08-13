@@ -206,7 +206,18 @@ transport = OpenRouterTransport(
 | `base_url` | `https://openrouter.ai/api/v1` |
 | `model` | `google/gemini-2.5-pro-preview` |
 
-`fetch_models()` queries `/v1/models` and populates `transport.models` with all models returned by the API, including their context windows, output limits, capabilities (text, vision, tool use, embedding), and pricing.
+`fetch_models()` queries `/v1/models` and populates `transport.models` with all models returned by the API, including their context windows, output limits, capabilities (text, vision, tool use, reasoning, embedding), and pricing.
+
+Model ids follow `[<lab>/]<model>[:tier][@<provider>]`:
+
+| Id | Means |
+|---|---|
+| `z-ai/glm-4.7` | OpenRouter picks the provider |
+| `z-ai/glm-4.7:nitro` | OpenRouter's own routing tier, sent as part of the model name |
+| `z-ai/glm-4.7@Cerebras` | served by Cerebras only, via `provider.only` |
+| `z-ai/glm-4.7:nitro@DeepInfra` | both |
+
+The `@<provider>` part is not an OpenRouter model name: it is stripped off when the request is built and sent as `provider: {"only": [...]}`. Tier and provider suffixes stay in `model.id`, and the metadata of the base model applies to them.
 
 ### OpenAICompatibleTransport
 

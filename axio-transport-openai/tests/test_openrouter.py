@@ -10,7 +10,7 @@ from typing import Any
 import aiohttp
 import pytest
 from aiohttp import web
-from axio.events import IterationEnd, StreamEvent, TextDelta
+from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta
 from axio.exceptions import StreamError
 from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.types import StopReason, Usage
@@ -162,6 +162,35 @@ def test_resolve_model_variant_uses_base_metadata() -> None:
         input_cost=base.input_cost,
         output_cost=base.output_cost,
     )
+
+
+def test_resolve_model_pins_a_provider() -> None:
+    base = ModelSpec(id="z-ai/glm-4.7", context_window=200_000)
+    t = OpenRouterTransport(models=ModelRegistry([base]))
+
+    spec = t.resolve_model("z-ai/glm-4.7@Cerebras")
+
+    assert spec.id == "z-ai/glm-4.7@Cerebras"
+    assert spec.context_window == 200_000
+
+
+def test_resolve_model_pins_a_provider_on_a_variant() -> None:
+    base = ModelSpec(id="z-ai/glm-4.7", context_window=200_000)
+    t = OpenRouterTransport(models=ModelRegistry([base]))
+
+    spec = t.resolve_model("z-ai/glm-4.7:nitro@DeepInfra")
+
+    assert spec.id == "z-ai/glm-4.7:nitro@DeepInfra"
+    assert spec.context_window == 200_000
+
+
+def test_resolve_model_unknown_with_provider_raises_requested_id() -> None:
+    t = OpenRouterTransport(models=ModelRegistry())
+
+    with pytest.raises(KeyError) as exc_info:
+        t.resolve_model("nope/nope@Cerebras")
+
+    assert exc_info.value.args == ("nope/nope@Cerebras",)
 
 
 def test_resolve_model_variant_missing_base_raises_requested_id() -> None:
@@ -368,6 +397,75 @@ async def test_no_tools_no_capability(
     assert Capability.tool_use not in transport.models["text-only/model"].capabilities
 
 
+async def test_reasoning_capability_from_supported_parameters(
+    fake_server: tuple[FakeOpenRouterServer, str],
+    transport: OpenRouterTransport,
+) -> None:
+    server, _ = fake_server
+    server.models_response = {
+        "data": [
+            {"id": "thinks/a-lot", "supported_parameters": ["reasoning", "include_reasoning", "tools"]},
+            {"id": "thinks/not", "supported_parameters": ["tools"]},
+        ]
+    }
+
+    await transport.fetch_models()
+
+    assert Capability.reasoning in transport.models["thinks/a-lot"].capabilities
+    assert Capability.reasoning not in transport.models["thinks/not"].capabilities
+
+
+# ---------------------------------------------------------------------------
+# Request payload
+# ---------------------------------------------------------------------------
+
+
+async def test_provider_suffix_becomes_provider_only(
+    fake_server: tuple[FakeOpenRouterServer, str],
+    transport: OpenRouterTransport,
+) -> None:
+    server, _ = fake_server
+    transport.model = ModelSpec(id="z-ai/glm-4.7@Cerebras")
+    server.sse_responses.append(_text_chunks("Hi"))
+
+    await _collect(transport.stream([], [], ""))
+
+    payload = server.received_payloads[0]
+    assert payload["model"] == "z-ai/glm-4.7"
+    assert payload["provider"] == {"only": ["Cerebras"]}
+
+
+async def test_plain_model_sends_no_provider(
+    fake_server: tuple[FakeOpenRouterServer, str],
+    transport: OpenRouterTransport,
+) -> None:
+    server, _ = fake_server
+    transport.model = ModelSpec(id="z-ai/glm-4.7")
+    server.sse_responses.append(_text_chunks("Hi"))
+
+    await _collect(transport.stream([], [], ""))
+
+    payload = server.received_payloads[0]
+    assert payload["model"] == "z-ai/glm-4.7"
+    assert "provider" not in payload
+
+
+async def test_thinking_is_requested_the_openrouter_way(
+    fake_server: tuple[FakeOpenRouterServer, str],
+    transport: OpenRouterTransport,
+) -> None:
+    server, _ = fake_server
+    transport.model = ModelSpec(id="thinks/a-lot", capabilities=frozenset({Capability.reasoning}))
+    transport.thinking = True
+    server.sse_responses.append(_text_chunks("Hi"))
+
+    await _collect(transport.stream([], [], ""))
+
+    payload = server.received_payloads[0]
+    assert payload["reasoning"] == {"enabled": True}
+    assert "enable_thinking" not in payload
+
+
 # ---------------------------------------------------------------------------
 # Streaming (inherited from OpenAITransport)
 # ---------------------------------------------------------------------------
@@ -388,3 +486,19 @@ async def test_text_streaming(
     ends = [e for e in events if isinstance(e, IterationEnd)]
     assert ends[0].stop_reason == StopReason.end_turn
     assert ends[0].usage == Usage(10, 5)
+
+
+async def test_reasoning_deltas_are_read(
+    fake_server: tuple[FakeOpenRouterServer, str],
+    transport: OpenRouterTransport,
+) -> None:
+    # llama.cpp and DeepSeek send reasoning_content; OpenRouter sends plain
+    # reasoning. Reading only one spelling loses the thinking blocks entirely.
+    server, _ = fake_server
+    server.sse_responses.append(
+        _sse_chunk({"choices": [{"index": 0, "delta": {"reasoning": "pondering"}}]}) + _text_chunks("Hi")
+    )
+
+    events = await _collect(transport.stream([], [], ""))
+
+    assert [e.delta for e in events if isinstance(e, ReasoningDelta)] == ["pondering"]

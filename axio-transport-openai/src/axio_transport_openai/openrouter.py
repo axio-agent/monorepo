@@ -8,11 +8,21 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from axio.exceptions import StreamError
+from axio.messages import Message
 from axio.models import Capability, ModelSpec
+from axio.tool import Tool
 
 from axio_transport_openai import OpenAITransport, ThinkingMixin
 
 logger = logging.getLogger(__name__)
+
+
+def _split_provider(model_id: str) -> tuple[str, str | None]:
+    """Split ``model@provider`` into its parts, leaving a bare id untouched."""
+    base, sep, provider = model_id.rpartition("@")
+    if not sep or not base or not provider:
+        return model_id, None
+    return base, provider
 
 
 @dataclass(slots=True)
@@ -23,19 +33,41 @@ class OpenRouterTransport(ThinkingMixin, OpenAITransport):
     model: ModelSpec = ModelSpec(id="google/gemini-2.5-pro-preview")
     thinking: bool = False
 
+    def build_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
+        payload = super().build_payload(messages, tools, system)
+        # ThinkingMixin asks for enable_thinking, which OpenRouter does not
+        # understand: it takes a reasoning object and returns the trace in
+        # delta.reasoning.
+        if payload.pop("enable_thinking", None):
+            payload.setdefault("reasoning", {"enabled": True})
+        model_id, provider = _split_provider(str(payload.get("model", "")))
+        if provider:
+            payload["model"] = model_id
+            payload.setdefault("provider", {"only": [provider]})
+        return payload
+
     def resolve_model(self, model_id: str) -> ModelSpec:
-        """Resolve OpenRouter model IDs, including routed variants such as ``:nitro``."""
+        """Resolve ``[<lab>/]<model>[:tier][@<provider>]``.
+
+        The tier (``:nitro``, ``:free``) is OpenRouter's own routing suffix and
+        the registry may not list the variant, so its metadata comes from the
+        base model. The ``@provider`` suffix is ours: it is not part of any
+        model id, it pins serving to one provider and is peeled off into
+        ``provider.only`` when the request is built. Both stay in the resolved
+        id so the selection survives a round trip through ``/model``.
+        """
+        base_id, provider = _split_provider(model_id)
         try:
-            return self.models[model_id]
+            spec = self.models[base_id]
         except KeyError:
-            base_id, sep, _variant = model_id.rpartition(":")
-            if not sep or not base_id:
+            stripped, sep, _tier = base_id.rpartition(":")
+            if not sep or not stripped:
                 raise KeyError(model_id) from None
             try:
-                base = self.models[base_id]
+                spec = self.models[stripped]
             except KeyError:
                 raise KeyError(model_id) from None
-            return replace(base, id=model_id)
+        return spec if spec.id == model_id else replace(spec, id=model_id)
 
     async def fetch_models(self) -> None:
         """Fetch available models from OpenRouter ``/v1/models``."""
@@ -61,6 +93,10 @@ class OpenRouterTransport(ThinkingMixin, OpenAITransport):
         params: list[str] = entry.get("supported_parameters", [])
         if "tools" in params:
             caps.add(Capability.tool_use)
+        # OpenRouter advertises reasoning support here; without reading it the
+        # capability is never set, so thinking is never requested or announced.
+        if "reasoning" in params or "include_reasoning" in params:
+            caps.add(Capability.reasoning)
 
         arch: dict[str, Any] = entry.get("architecture", {})
         input_modalities: list[str] = arch.get("input_modalities", [])
