@@ -110,6 +110,9 @@ class _BackgroundAgent:
     runner: asyncio.Task[None] | None = None
     current_turn: asyncio.Task[None] | None = None
     stopping: bool = False
+    # A failed turn leaves the agent alive and waiting, so without this the
+    # parent cannot tell a crashed agent from one that finished its work.
+    last_error: str | None = None
 
 
 _background_agents: dict[str, _BackgroundAgent] = {}
@@ -118,6 +121,43 @@ _background_agents: dict[str, _BackgroundAgent] = {}
 def _is_background_idle(background: _BackgroundAgent) -> bool:
     current_turn = background.current_turn
     return (current_turn is None or current_turn.done()) and background.inbox.empty()
+
+
+_message_waiters: list[asyncio.Future[PeerMessage]] = []
+
+
+def _notify_message(message: PeerMessage) -> None:
+    waiters, _message_waiters[:] = list(_message_waiters), []
+    for waiter in waiters:
+        if not waiter.done():
+            waiter.set_result(message)
+
+
+async def next_peer_message() -> PeerMessage:
+    """Resolve when this process next receives a peer message.
+
+    Only messages arriving after the call are seen — a caller that needs to
+    avoid missing one already in flight should check its own inbox as well.
+    """
+    waiter: asyncio.Future[PeerMessage] = asyncio.get_running_loop().create_future()
+    _message_waiters.append(waiter)
+    return await waiter
+
+
+def background_agent_state(agent_id: str) -> tuple[str, str | None]:
+    """Return ``(state, error)`` for a background agent living in this process.
+
+    ``state`` is ``running``, ``idle`` or ``unknown``; ``error`` carries the last
+    failure, which survives the turn because the agent stays alive after one.
+    """
+    background = _background_agents.get(agent_id)
+    if background is None:
+        return "unknown", None
+    if background.stopping:
+        return "stopping", background.last_error
+    if not _is_background_idle(background):
+        return "running", background.last_error
+    return "idle", background.last_error
 
 
 def _notify_idle(background: _BackgroundAgent) -> None:
@@ -375,6 +415,9 @@ class PeerServer:
                 await _write_response(writer, {"ok": False, "error": "message too large"})
                 return
             await self._handler(message)
+            # Single delivery point for every incoming message in this process,
+            # so monitor() can block on one instead of polling for it.
+            _notify_message(message)
             await _write_response(writer, {"ok": True})
         except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError, ValueError) as exc:
             await _write_response(writer, {"ok": False, "error": f"bad request: {exc}"})
@@ -416,10 +459,19 @@ async def list_peers(all_projects: bool = False) -> str:
         return f"No peers registered for project: {_current_project()}"
     lines = ["Available peers:" if all_projects else f"Available peers for project {_current_project()}:"]
     for record in records:
-        lines.append(
+        line = (
             f"- id={record.id} name={record.name!r} kind={record.kind} "
             f"project={record.project} pid={record.pid} cwd={record.cwd}"
         )
+        # Spawned agents share the parent's pid, so liveness cannot be read from
+        # it: a crashed one looks alive for as long as the parent runs. Their
+        # real state is only known in-process.
+        if record.id in _background_agents:
+            state, error = background_agent_state(record.id)
+            line += f" state={state}"
+            if error:
+                line += f" last_error={error!r}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -559,6 +611,7 @@ async def _run_background_agent(background: _BackgroundAgent) -> None:
                 break
             turn = asyncio.create_task(_run_agent_turn(background=background, prompt=queued.prompt))
             background.current_turn = turn
+            background.last_error = None
             try:
                 await turn
             except asyncio.CancelledError:
@@ -567,6 +620,7 @@ async def _run_background_agent(background: _BackgroundAgent) -> None:
             # Background agents must survive a failed turn so that the parent can
             # inspect, interrupt, stop, or send a recovery prompt.
             except Exception as exc:
+                background.last_error = f"{type(exc).__name__}: {exc}"
                 if _agent_event_handler is not None:
                     await _agent_event_handler(background.peer.id, Error(exc))
             finally:
