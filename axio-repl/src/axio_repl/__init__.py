@@ -387,8 +387,6 @@ class ReplRenderer:
         self._foreground_streaming = False
         self._background_pending: set[str] = set()
         self._input_active = False
-        self._input_interrupted = False
-        self._redraw_input = False
 
     @property
     def focused_agent(self) -> str:
@@ -413,9 +411,19 @@ class ReplRenderer:
 
     def set_input_active(self, active: bool) -> None:
         self._input_active = active
-        if not active:
-            self._input_interrupted = False
-            self._redraw_input = False
+
+    def _flush(self) -> None:
+        """Push a half-written line out, unless the input prompt is up.
+
+        prompt_toolkit holds a line until its newline arrives, so that a partial
+        line and the prompt drawn below it never end up on the same row.
+        Flushing defeats that, and the output loses its first characters to the
+        next redraw. While the prompt is up the half-line therefore waits: text
+        appears by the line rather than by the token, which is what it costs to
+        be able to type at any moment.
+        """
+        if not self._input_active:
+            sys.stdout.flush()
 
     async def render(self, agent_id: str, event: StreamEvent) -> None:
         async with self._lock:
@@ -436,7 +444,6 @@ class ReplRenderer:
 
     async def notice(self, text: str) -> None:
         async with self._lock:
-            self._prepare_input_output()
             if self._active_agent is not None and self._state(self._active_agent).in_text:
                 print()
                 self._state(self._active_agent).in_text = False
@@ -444,14 +451,6 @@ class ReplRenderer:
 
     def _state(self, agent_id: str) -> _AgentRenderState:
         return self._states.setdefault(agent_id, _AgentRenderState())
-
-    def _prepare_input_output(self) -> None:
-        if not self._input_active:
-            return
-        if not self._input_interrupted:
-            print()
-            self._input_interrupted = True
-        self._redraw_input = True
 
     def _switch_agent(self, agent_id: str) -> _AgentRenderState:
         switched = self._active_agent != agent_id
@@ -465,20 +464,18 @@ class ReplRenderer:
         state = self._state(agent_id)
         if switched and state.field_key is not None:
             sys.stdout.write(f"\n  {YELLOW}{state.field_key} (continued){RESET}: {DIM}")
-            sys.stdout.flush()
+            self._flush()
             state.field_first_delta = True
         return state
 
     def _render_locked(self, agent_id: str, event: StreamEvent) -> None:  # noqa: C901
-        if not isinstance(event, IterationEnd):
-            self._prepare_input_output()
         state = self._switch_agent(agent_id)
         # Reasoning streams in as one delta per token, so the quote marker and
         # the colour reset belong to the run as a whole, not to every delta.
         # Closing it here covers every kind of event that can follow.
         if state.in_reasoning and not isinstance(event, ReasoningDelta):
             sys.stdout.write(f"{RESET}\n")
-            sys.stdout.flush()
+            self._flush()
             state.in_reasoning = False
         match event:
             case ReasoningDelta(delta=delta):
@@ -494,7 +491,7 @@ class ReplRenderer:
                     sys.stdout.write(f"{DIM}> ")
                     state.in_reasoning = True
                 sys.stdout.write(delta.replace("\n", "\n> "))
-                sys.stdout.flush()
+                self._flush()
 
             case TextDelta(delta=delta):
                 if not state.in_text:
@@ -504,7 +501,7 @@ class ReplRenderer:
                     state.in_text = False
                 else:
                     sys.stdout.write(delta)
-                sys.stdout.flush()
+                self._flush()
 
             case ImageOutput(data=data, media_type=mt):
                 if state.in_text:
@@ -532,7 +529,7 @@ class ReplRenderer:
                     print()
                     state.in_text = False
                 sys.stdout.write(f"\n{BOLD}{CYAN}\u25b6 {name}{RESET}")
-                sys.stdout.flush()
+                self._flush()
                 state.arg_streams[tid] = ToolArgStream(tid, index)
 
             case ToolInputDelta(tool_use_id=tid, partial_json=pj):
@@ -542,7 +539,7 @@ class ReplRenderer:
                         self._render_field_event(state, fe)
                     if stream.done:
                         sys.stdout.write("\n")
-                        sys.stdout.flush()
+                        self._flush()
                         del state.arg_streams[tid]
 
             case ToolOutputDelta(tool_use_id=tid, key=key, delta=delta):
@@ -551,7 +548,7 @@ class ReplRenderer:
                 state.streamed_tool_ids.add(tid)
                 color = RED if key == "stderr" else DIM
                 sys.stdout.write(f"{color}{delta}{RESET}")
-                sys.stdout.flush()
+                self._flush()
 
             case ToolResult(tool_use_id=tid, name=name, is_error=is_error, content=content):
                 if is_error:
@@ -562,7 +559,7 @@ class ReplRenderer:
                     sys.stdout.write(f"{RESET}\n")
                 else:
                     sys.stdout.write(f"{RESET}\n{GREEN}{content}{RESET}\n")
-                sys.stdout.flush()
+                self._flush()
 
             case IterationEnd():
                 pass
@@ -575,7 +572,6 @@ class ReplRenderer:
                     print()
                     state.in_text = False
                 print(f"{DIM}[{usage.input_tokens}in/{usage.output_tokens}out tokens]{RESET}")
-                self._redraw_input = False
 
     def _record_background_event_locked(self, agent_id: str, event: StreamEvent) -> None:
         state = self._state(agent_id)
@@ -622,7 +618,6 @@ class ReplRenderer:
     def _flush_background_summaries_locked(self) -> None:
         if not self._background_pending:
             return
-        self._prepare_input_output()
         for agent_id in sorted(self._background_pending):
             state = self._state(agent_id)
             parts = [f"{agent_id} completed"]
@@ -639,7 +634,6 @@ class ReplRenderer:
             state.background_tools.clear()
             state.background_errors.clear()
         self._background_pending.clear()
-        self._redraw_input = False
 
     def _render_field_event(
         self,
@@ -649,7 +643,7 @@ class ReplRenderer:
         match event:
             case ToolFieldStart(key=key):
                 sys.stdout.write(f"\n  {YELLOW}{key}{RESET}: {DIM}")
-                sys.stdout.flush()
+                self._flush()
                 state.field_key = key
                 state.field_first_delta = True
             case ToolFieldDelta(text=text):
@@ -657,10 +651,10 @@ class ReplRenderer:
                     sys.stdout.write("\n")
                 state.field_first_delta = False
                 sys.stdout.write(text)
-                sys.stdout.flush()
+                self._flush()
             case ToolFieldEnd():
                 sys.stdout.write(RESET)
-                sys.stdout.flush()
+                self._flush()
                 state.field_key = None
 
 
@@ -1209,14 +1203,6 @@ async def main() -> None:
                     return prompts
 
         async def _run_peer_turn(first: str) -> None:
-            nonlocal input_task
-            # The prompt cannot stay up while the answer streams underneath it:
-            # patch_stdout redraws mid-line and eats the start of the output.
-            if input_task is not None:
-                input_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await input_task
-                input_task = None
             prompts = _collect_queued(first)
             await renderer.notice(f"[{len(prompts)} message(s) queued]")
             await _run_turn("\n\n".join(prompts))

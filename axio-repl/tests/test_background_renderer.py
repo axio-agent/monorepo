@@ -94,3 +94,23 @@ async def test_a_background_failure_is_reported_with_its_reason(
     )
 
     assert "Stopped after 25 iterations" in capsys.readouterr().out
+
+
+async def test_a_half_written_line_waits_while_the_prompt_is_up(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Forcing it out is what put output and the prompt on the same row, and cost
+    # each line its first characters.
+    import sys
+    from unittest.mock import patch
+
+    renderer = ReplRenderer()
+
+    with patch.object(sys.stdout, "flush") as flush:
+        renderer.set_input_active(True)
+        await renderer.render("main", TextDelta(index=0, delta="half a line"))
+        assert flush.call_count == 0
+
+        renderer.set_input_active(False)
+        await renderer.render("main", TextDelta(index=0, delta=" and the rest"))
+        assert flush.call_count == 1
