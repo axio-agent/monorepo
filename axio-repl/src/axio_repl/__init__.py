@@ -84,8 +84,9 @@ LAST_ITERATION_HINT = Message(
     content=[
         TextBlock(
             text=(
-                "This is your final iteration: no further tool calls will be executed. "
-                "Answer now with what you have, and say plainly what you could not finish."
+                "This is your final iteration. A tool you call now will still run, but you will "
+                "never see its result - the run ends before you are asked again. Answer with what "
+                "you already have, and say plainly what you could not finish."
             )
         )
     ],
