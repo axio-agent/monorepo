@@ -126,12 +126,36 @@ def status_line(model: ModelSpec | None, stats: SessionStats) -> str:
     return SEPARATOR.join(parts)
 
 
+def submit_bindings() -> Any:
+    """Escape sends, so that Enter is free to be a newline.
+
+    A prompt worth typing into holds more than one line - a paragraph of task,
+    a pasted traceback - and Enter cannot both end a line and end the message.
+    Escape is bound without ``eager``: a lone press only becomes Escape once the
+    parser has waited long enough to rule out an arrow key, which begins with
+    the same byte.
+    """
+    from prompt_toolkit.key_binding import KeyBindings
+
+    bindings = KeyBindings()
+
+    @bindings.add("escape")
+    def _submit(event: Any) -> None:
+        event.current_buffer.validate_and_handle()
+
+    return bindings
+
+
 def make_session(status: Any = None) -> Any:
-    """A prompt session with history and the status line attached.
+    """A prompt session with history, the status line, and Escape to send.
 
     The default toolbar style is reverse video, which paints a solid white band
     across the bottom of the terminal. Dim text on the terminal's own background
     keeps the line readable without turning it into a wall.
+
+    Up recalls the previous message for editing once the cursor is on the first
+    line, and moves within the text before that - prompt_toolkit's own
+    behaviour for a multiline buffer, which is the one wanted here.
     """
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import FileHistory
@@ -141,6 +165,8 @@ def make_session(status: Any = None) -> Any:
         history=FileHistory(str(HISTORY_PATH)),
         bottom_toolbar=status or (lambda: agent_summary() or None),
         style=Style.from_dict({"bottom-toolbar": "noreverse bg:default fg:#808080"}),
+        multiline=True,
+        key_bindings=submit_bindings(),
         # Redraw while idle so finished agents show up without a keypress.
         refresh_interval=0.5,
     )

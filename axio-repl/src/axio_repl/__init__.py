@@ -1287,7 +1287,8 @@ async def main() -> None:
             agent_commands = ["/agents", "/agent-focus", "/agent-interrupt", "/agent-stop"]
             commands_list = ", ".join(["/help", *commands, *agent_commands, "/quit"])
             label = getattr(transport, "name", "unknown")
-            print(f"REPL ready ({label}). Commands: {commands_list}")
+            print(f"REPL ready ({label}). Esc sends, Enter is a newline, Up recalls.")
+            print(f"Commands: {commands_list}")
 
             while True:
                 if input_task is None:
