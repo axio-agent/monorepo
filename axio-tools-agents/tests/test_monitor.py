@@ -73,3 +73,24 @@ async def test_unknown_agent_is_reported_as_such() -> None:
     # failure mode this tool exists to prevent.
     assert "agent finished" in result
     assert "no-such-agent: unknown" in result
+
+
+@pytest.mark.asyncio
+async def test_already_delivered_messages_do_not_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The deadlock this prevents: spawned agents report back, their messages sit
+    # unread until the turn ends, and the turn is a monitor() call waiting for a
+    # message that has already arrived.
+    from axio_tools_agents import peers
+
+    monkeypatch.setattr(peers, "_pending_probe", lambda: 3)
+    result = await monitor(timeout=5)
+    assert "3 message(s) already waiting" in result
+
+
+@pytest.mark.asyncio
+async def test_no_pending_messages_still_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    from axio_tools_agents import peers
+
+    monkeypatch.setattr(peers, "_pending_probe", lambda: 0)
+    result = await monitor(timeout=0.05)
+    assert "Timed out" in result

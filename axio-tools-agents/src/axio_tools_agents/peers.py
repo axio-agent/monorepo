@@ -133,6 +133,28 @@ def _notify_message(message: PeerMessage) -> None:
             waiter.set_result(message)
 
 
+_pending_probe: Callable[[], int] | None = None
+
+
+def set_pending_message_probe(probe: Callable[[], int] | None) -> None:
+    """Register how to count messages this process has received but not read.
+
+    A foreground REPL queues them outside this module, and without a way to ask
+    it, waiting for "a message" would block behind messages already delivered.
+    """
+    global _pending_probe
+    _pending_probe = probe
+
+
+def pending_message_count() -> int:
+    peer = current_peer()
+    if peer is not None:
+        background = _background_agents.get(peer.id)
+        if background is not None:
+            return background.inbox.qsize()
+    return _pending_probe() if _pending_probe is not None else 0
+
+
 async def next_peer_message() -> PeerMessage:
     """Resolve when this process next receives a peer message.
 

@@ -24,6 +24,7 @@ from axio.field import StrictStr
 from axio_tools_agents.peers import (
     background_agent_state,
     next_peer_message,
+    pending_message_count,
     wait_local_background_agents_idle,
 )
 
@@ -84,6 +85,12 @@ async def _watch_tasks(handles: list[str]) -> str:
 
 
 async def _watch_message() -> str:
+    # Messages already delivered are the common case right after spawned agents
+    # report back: waiting for the *next* one would block behind them, and they
+    # cannot be consumed until this turn ends.
+    waiting = pending_message_count()
+    if waiting:
+        return f"{waiting} message(s) already waiting to be read"
     message = await next_peer_message()
     return f"message from {message.from_name} ({message.from_id})"
 

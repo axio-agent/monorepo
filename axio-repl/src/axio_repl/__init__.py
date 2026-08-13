@@ -62,6 +62,7 @@ from axio_tools_agents.peers import (
     local_background_agent_records,
     send_message,
     set_agent_event_handler,
+    set_pending_message_probe,
     set_spawn_agent_factory,
     spawn_agent,
     stop_agent,
@@ -1108,6 +1109,9 @@ async def main() -> None:
         input_task: asyncio.Task[str] | None = None
         inbox_task: asyncio.Task[str] | None = None
         peer_queue: asyncio.Queue[str] = asyncio.Queue()
+        # Lets monitor() see messages that arrived but have not been read:
+        # they cannot be delivered until the current turn finishes.
+        set_pending_message_probe(peer_queue.qsize)
         peer_server: PeerServer | None = None
         parent_peer_id: str | None = None
 
