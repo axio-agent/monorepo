@@ -968,6 +968,12 @@ def _apply_iterations(agent: Agent, arg: str) -> None:
     except ValueError:
         print(f"Invalid value: {arg!r}")
         return
+    if val < 1:
+        # Zero reads as "no limit" and means the opposite: the loop runs no
+        # iterations at all, so the agent answers nothing and reports that it
+        # ran out. There is no unlimited - a large number is how you say it.
+        print(f"Max iterations must be at least 1. For no practical limit, use a large number: {BOLD}100000{RESET}")
+        return
     agent.max_iterations = val
     print(f"Max iterations: {BOLD}{val}{RESET}")
 

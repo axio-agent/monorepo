@@ -5,12 +5,18 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from axio.models import Capability, ModelRegistry, ModelSpec
 
-from axio_repl import _adopt_catalogue_metadata, _apply_model, _resolve_model_arg, _select_transport
+from axio_repl import (
+    _adopt_catalogue_metadata,
+    _apply_iterations,
+    _apply_model,
+    _resolve_model_arg,
+    _select_transport,
+)
 
 _BASE_MODEL = ModelSpec(
     id="z-ai/glm-4.7",
@@ -94,3 +100,22 @@ def test_naming_a_transport_with_its_key_is_allowed(monkeypatch: pytest.MonkeyPa
     cls, _ = _select_transport("nebius")
 
     assert cls is not None
+
+
+def test_zero_iterations_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    # It reads as "no limit" and does the opposite: an agent that never calls
+    # the model and then reports that it ran out of iterations.
+    agent = cast(Any, SimpleNamespace(max_iterations=50))
+
+    _apply_iterations(agent, "0")
+
+    assert agent.max_iterations == 50
+    assert "at least 1" in capsys.readouterr().out
+
+
+def test_a_real_iteration_count_is_applied() -> None:
+    agent = cast(Any, SimpleNamespace(max_iterations=50))
+
+    _apply_iterations(agent, "200")
+
+    assert agent.max_iterations == 200
