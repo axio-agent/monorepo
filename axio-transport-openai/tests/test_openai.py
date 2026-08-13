@@ -1478,14 +1478,15 @@ def test_output_limit_is_untouched_when_it_already_fits() -> None:
     assert _fit_output_limit(payload, model) == 8_000
 
 
-def test_output_limit_never_drops_below_the_floor() -> None:
-    from axio_transport_openai import OUTPUT_FLOOR, _fit_output_limit
+def test_a_window_the_prompt_cannot_fit_is_not_believed() -> None:
+    from axio_transport_openai import _fit_output_limit
 
-    model = ModelSpec(id="m", context_window=4_000, max_output_tokens=4_000)
-    payload = {"messages": [{"role": "user", "content": "x" * 20_000}]}
+    # Nebius publishes 8000 for MiniMax-M3 and then serves a 20000-token prompt.
+    # Clamping to the arithmetic starves the answer over a number that is wrong.
+    model = ModelSpec(id="m", context_window=8_000, max_output_tokens=25_000)
+    payload = {"messages": [{"role": "user", "content": "x" * 80_000}]}
 
-    # The prompt alone overflows: report the API's error rather than invent one.
-    assert _fit_output_limit(payload, model) == OUTPUT_FLOOR
+    assert _fit_output_limit(payload, model) == 25_000
 
 
 def test_tools_count_against_the_window() -> None:

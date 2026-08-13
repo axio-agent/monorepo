@@ -437,9 +437,14 @@ touches; underestimating it gets the whole request rejected, so err upwards.
 """
 
 OUTPUT_FLOOR = 1024
-"""Never ask for less than this: below it the answer is useless anyway, and a
-prompt that leaves no room deserves the API's own error rather than a silently
-truncated reply."""
+"""Below this an answer is not worth asking for.
+
+Reaching it means the window cannot hold the prompt at all, and the arithmetic
+that says so rests on a context length the provider published - which is a claim
+like any other. Nebius lists MiniMax-M3 at 8000 tokens and then serves a 20000
+token prompt without complaint. So the floor is not a value to send: it is the
+point where our own estimate stops being worth trusting.
+"""
 
 
 def _fit_output_limit(payload: dict[str, Any], model: ModelSpec) -> int:
@@ -454,7 +459,12 @@ def _fit_output_limit(payload: dict[str, Any], model: ModelSpec) -> int:
         return model.max_output_tokens
     prompt = json.dumps([payload.get("messages"), payload.get("tools")], ensure_ascii=False)
     remaining = model.context_window - len(prompt) // CHARS_PER_TOKEN
-    return max(min(OUTPUT_FLOOR, model.max_output_tokens), min(model.max_output_tokens, remaining))
+    if remaining < OUTPUT_FLOOR:
+        # Asking for a sliver would truncate the answer mid-sentence over a
+        # window that may not be real. Ask for the declared maximum and let the
+        # provider answer with numbers it actually knows.
+        return model.max_output_tokens
+    return min(model.max_output_tokens, remaining)
 
 
 @dataclass(slots=True)
