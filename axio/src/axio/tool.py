@@ -24,6 +24,10 @@ type JSONSchema = dict[str, Any]
 
 logger = logging.getLogger(__name__)
 
+# Universal opt-in argument understood by the agent loop and never passed to a
+# handler; named here so the schema and the dispatcher cannot drift apart.
+BACKGROUND_PARAM = "background"
+
 # Maps JSON Schema primitive type names to Python types used for validation.
 SCHEMA_JSON_TYPE_MAP: dict[str, type] = {
     "string": str,
@@ -133,7 +137,21 @@ class Tool[T]:
 
     @property
     def input_schema(self) -> JSONSchema:
-        return copy.deepcopy(dict(self.schema))
+        schema = copy.deepcopy(dict(self.schema))
+        # Offered on every tool rather than a chosen few: whether a call is
+        # worth detaching depends on its arguments, not on the tool.
+        properties = schema.setdefault("properties", {})
+        if isinstance(properties, dict) and BACKGROUND_PARAM not in properties:
+            properties[BACKGROUND_PARAM] = {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Run detached and return a handle instead of the result. Use it when the call is slow "
+                    "enough to be worth doing while you carry on; collect the output later with "
+                    "monitor(tasks=[handle])."
+                ),
+            }
+        return schema
 
     @property
     def supports_streaming(self) -> bool:

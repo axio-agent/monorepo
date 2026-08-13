@@ -13,7 +13,7 @@ from axio.exceptions import GuardError, HandlerError
 from axio.field import Field, StrictStr
 from axio.permission import PermissionGuard
 from axio.schema import build_tool_schema
-from axio.tool import CONTEXT, Tool
+from axio.tool import BACKGROUND_PARAM, CONTEXT, Tool
 
 
 async def _empty() -> str:
@@ -446,7 +446,11 @@ class TestToolCustomSchema:
             "required": ["x"],
         }
         t: Tool[Any] = Tool(name="t", handler=_msg, schema=MappingProxyType(custom))
-        assert t.input_schema == custom
+        schema = t.input_schema
+        # The universal background argument is added to every advertised schema,
+        # including custom ones — otherwise those tools could not be detached.
+        assert schema["properties"].pop(BACKGROUND_PARAM)["type"] == "boolean"
+        assert schema == custom
 
     def test_auto_schema_when_not_provided(self) -> None:
         t: Tool[Any] = Tool(name="t", handler=_msg)
