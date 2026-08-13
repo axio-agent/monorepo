@@ -191,24 +191,33 @@ async def test_ctrl_c_at_the_prompt_interrupts_instead_of_ending_the_read() -> N
     assert len(interrupts) == 2
 
 
-async def test_escape_sends_and_enter_makes_a_newline() -> None:
-    # Enter cannot both end a line and end the message, and a prompt worth
-    # typing into holds a paragraph or a pasted traceback.
+async def test_escape_interrupts_and_sends_while_enter_only_sends() -> None:
+    # Enter is "and then this", which belongs after the answer being written.
+    # Escape is "stop, do this instead", worth nothing once the thing being
+    # stopped has finished.
     from typing import Any
 
     from prompt_toolkit.application import create_app_session
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
 
+    interrupts: list[int] = []
+
     with create_pipe_input() as pipe:
         with create_app_session(input=pipe, output=DummyOutput()):
-            session: Any = _panel.make_session(lambda: "status")
+            session: Any = _panel.make_session(lambda: "status", on_interrupt=lambda: interrupts.append(1))
 
-            pipe.send_text("hello\x1b")
-            assert await session.prompt_async("repl> ") == "hello"
+            pipe.send_text("sent with enter\r")
+            assert await session.prompt_async("repl> ") == "sent with enter"
+            assert interrupts == []
 
-            pipe.send_text("one\rtwo\x1b")
-            assert await session.prompt_async("repl> ") == "one\ntwo"
+            pipe.send_text("stop, do this\x1b")
+            assert await session.prompt_async("repl> ") == "stop, do this"
+            assert len(interrupts) == 1
+
+            pipe.send_text("\x1b")
+            assert await session.prompt_async("repl> ") == ""
+            assert len(interrupts) == 2
 
 
 async def test_up_recalls_the_last_message_for_editing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

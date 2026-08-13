@@ -129,3 +129,29 @@ async def test_an_arriving_message_is_shown_not_only_forwarded(
     assert "## Findings" in output
     assert "All good." in output
     assert "incoming" in output
+
+
+async def test_an_interrupted_answer_is_kept(capsys: pytest.CaptureFixture[str]) -> None:
+    # The agent stores an iteration once the model stops talking. Cut it off
+    # before that and the words are on screen and nowhere else, so the next turn
+    # is answered by a model with no memory of saying them.
+    renderer = ReplRenderer()
+
+    await renderer.render("main", TextDelta(index=0, delta="I looked at the "))
+    await renderer.render("main", TextDelta(index=0, delta="transport and"))
+
+    assert renderer.take_pending_text("main") == "I looked at the transport and"
+    assert renderer.take_pending_text("main") == ""
+
+
+async def test_a_finished_iteration_leaves_nothing_to_keep() -> None:
+    # It is already in the context; keeping it here too would say it twice.
+    from axio.events import IterationEnd
+    from axio.types import StopReason as _StopReason
+
+    renderer = ReplRenderer()
+
+    await renderer.render("main", TextDelta(index=0, delta="all done"))
+    await renderer.render("main", IterationEnd(iteration=1, stop_reason=_StopReason.end_turn, usage=Usage(1, 1)))
+
+    assert renderer.take_pending_text("main") == ""

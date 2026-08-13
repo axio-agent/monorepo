@@ -364,6 +364,7 @@ class _AgentRenderState:
         self.field_key: str | None = None
         self.background_text: list[str] = []
         self.background_reported_chars = 0
+        self.pending_text: list[str] = []
         self.background_tools: list[str] = []
         self.background_errors: list[str] = []
         self.background_events: list[StreamEvent] = []
@@ -417,6 +418,19 @@ class ReplRenderer:
 
     def set_input_active(self, active: bool) -> None:
         self._input_active = active
+
+    def take_pending_text(self, agent_id: str) -> str:
+        """What the agent had written when it was cut off, and not yet stored.
+
+        The agent appends an iteration to the context once the model stops
+        talking; interrupt it before that and the words are on screen and
+        nowhere else, so the next turn is answered by a model that never said
+        them.
+        """
+        state = self._state(agent_id)
+        text = "".join(state.pending_text).strip()
+        state.pending_text.clear()
+        return text
 
     def _flush(self) -> None:
         """Push a half-written line out, unless the input prompt is up.
@@ -518,6 +532,7 @@ class ReplRenderer:
             case TextDelta(delta=delta):
                 if not state.in_text:
                     state.in_text = True
+                state.pending_text.append(delta)
                 if "[Output truncated:" in delta:
                     sys.stdout.write(f"\n{RED}{delta.strip()}{RESET}\n")
                     state.in_text = False
@@ -584,7 +599,9 @@ class ReplRenderer:
                 self._flush()
 
             case IterationEnd():
-                pass
+                # The agent has written this iteration into the context itself;
+                # what is kept here is only ever the unfinished tail.
+                state.pending_text.clear()
 
             case Error(exception=exc):
                 print(f"\n{RED}Error: {exc}{RESET}", file=sys.stderr)
@@ -1178,7 +1195,10 @@ async def main() -> None:
             current_model=lambda: transport.model,
         )
         set_agent_event_handler(renderer.render)
-        prompt_session = _panel.make_session(lambda: _panel.status_line(transport.model, stats))
+        prompt_session = _panel.make_session(
+            lambda: _panel.status_line(transport.model, stats),
+            on_interrupt=lambda: _on_sigint(),
+        )
         prompt_task: asyncio.Task[None] | None = None
         input_task: asyncio.Task[str] | None = None
         inbox_task: asyncio.Task[str] | None = None
@@ -1197,6 +1217,13 @@ async def main() -> None:
             try:
                 await prompt_task
             except asyncio.CancelledError:
+                # Keep the half-written answer. The agent stores an iteration
+                # once the model stops talking, so an interrupted one is on
+                # screen and nowhere else - and the next turn would be answered
+                # by a model with no memory of saying it.
+                partial = renderer.take_pending_text("main")
+                if partial:
+                    await ctx.append(Message(role="assistant", content=[TextBlock(text=partial)]))
                 print(f"\n{DIM}[interrupted]{RESET}")
             finally:
                 prompt_task = None
@@ -1287,7 +1314,7 @@ async def main() -> None:
             agent_commands = ["/agents", "/agent-focus", "/agent-interrupt", "/agent-stop"]
             commands_list = ", ".join(["/help", *commands, *agent_commands, "/quit"])
             label = getattr(transport, "name", "unknown")
-            print(f"REPL ready ({label}). Esc sends, Enter is a newline, Up recalls.")
+            print(f"REPL ready ({label}). Enter sends, Esc interrupts and sends, Up recalls.")
             print(f"Commands: {commands_list}")
 
             while True:

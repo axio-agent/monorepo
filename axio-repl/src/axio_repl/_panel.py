@@ -126,47 +126,66 @@ def status_line(model: ModelSpec | None, stats: SessionStats) -> str:
     return SEPARATOR.join(parts)
 
 
-def submit_bindings() -> Any:
-    """Escape sends, so that Enter is free to be a newline.
+ESCAPE_FLUSH_SECONDS = 0.2
+"""How long a lone Escape byte waits to be told apart from a sequence.
 
-    A prompt worth typing into holds more than one line - a paragraph of task,
-    a pasted traceback - and Enter cannot both end a line and end the message.
-    Escape is bound without ``eager``: a lone press only becomes Escape once the
-    parser has waited long enough to rule out an arrow key, which begins with
-    the same byte.
+An arrow key arrives as three bytes beginning with the same one, so the parser
+holds an Escape until either the rest arrives or this elapses. The default is
+half a second, which for a key that sends the message reads as the key not
+working. Shortened rather than removed: over a slow link an arrow key can still
+arrive split across two reads, and the gap has to outlast that.
+"""
+
+
+def submit_bindings(on_interrupt: Any) -> Any:
+    """Escape cuts the turn short and sends what is typed; Enter waits its turn.
+
+    The two are different intentions. Enter is "and then this", which belongs
+    after the answer being written. Escape is "stop, do this instead", which is
+    worth nothing if it takes effect once the thing being stopped has finished.
+    An empty buffer makes it a plain interrupt.
+
+    Bound eagerly, because forty of the default bindings begin with Escape - all
+    the Alt+key ones - and a lone press is ambiguous against every one of them,
+    so the processor waits a further second before deciding. That is the cost:
+    Alt+b, Alt+f and their relatives no longer reach the buffer. Word motions
+    are worth less here than a key that answers when pressed.
     """
     from prompt_toolkit.key_binding import KeyBindings
 
     bindings = KeyBindings()
 
-    @bindings.add("escape")
-    def _submit(event: Any) -> None:
+    @bindings.add("escape", eager=True)
+    def _interrupt_and_submit(event: Any) -> None:
+        on_interrupt()
         event.current_buffer.validate_and_handle()
 
     return bindings
 
 
-def make_session(status: Any = None) -> Any:
+def make_session(status: Any = None, on_interrupt: Any = None) -> Any:
     """A prompt session with history, the status line, and Escape to send.
 
     The default toolbar style is reverse video, which paints a solid white band
     across the bottom of the terminal. Dim text on the terminal's own background
     keeps the line readable without turning it into a wall.
 
-    Up recalls the previous message for editing once the cursor is on the first
-    line, and moves within the text before that - prompt_toolkit's own
-    behaviour for a multiline buffer, which is the one wanted here.
+    Enter sends, as it always did, and what it sends waits for the turn in
+    flight. Escape interrupts that turn and sends immediately. Up walks back
+    through history, so the message just sent comes back to be edited rather
+    than retyped.
     """
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.styles import Style
 
-    return PromptSession(
+    session: Any = PromptSession(
         history=FileHistory(str(HISTORY_PATH)),
         bottom_toolbar=status or (lambda: agent_summary() or None),
         style=Style.from_dict({"bottom-toolbar": "noreverse bg:default fg:#808080"}),
-        multiline=True,
-        key_bindings=submit_bindings(),
+        key_bindings=submit_bindings(on_interrupt or (lambda: None)),
         # Redraw while idle so finished agents show up without a keypress.
         refresh_interval=0.5,
     )
+    session.app.ttimeoutlen = ESCAPE_FLUSH_SECONDS
+    return session
