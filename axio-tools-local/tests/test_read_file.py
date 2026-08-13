@@ -22,7 +22,7 @@ def tmp_cwd(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 async def read(tmp_cwd: Path, filename: str, **kwargs: Any) -> str:
-    result = await read_file(filename=filename, **kwargs)
+    result = await read_file(path=filename, **kwargs)
     assert isinstance(result, str)
     return result
 
@@ -141,7 +141,7 @@ class TestReadFileTruncation:
     async def test_default_limit_rejects_large_file(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "f.txt").write_text("a" * 32769)
         with pytest.raises(ValueError, match="explicit max_chars"):
-            await read_file(filename="f.txt")
+            await read_file(path="f.txt")
 
     async def test_truncated_at_max_chars(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "f.txt").write_text("a" * 200)
@@ -174,19 +174,19 @@ class TestReadFileBinary:
     async def test_binary_default_limit_rejects_large_file(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "b.dat").write_bytes(b"\xff" * 16385)
         with pytest.raises(ValueError, match="explicit max_chars"):
-            await read_file(filename="b.dat", binary_as_hex=True)
+            await read_file(path="b.dat", binary_as_hex=True)
 
     async def test_binary_raises_without_hex(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "b.dat").write_bytes(b"\x80\x81\xff")
         with pytest.raises(UnicodeDecodeError):
-            await read_file(filename="b.dat", binary_as_hex=False)
+            await read_file(path="b.dat", binary_as_hex=False)
 
 
 class TestReadFileImage:
     async def test_png_returns_image_block(self, tmp_cwd: Path) -> None:
         img_data = b"\x89PNG\r\n\x1a\nfake-png-data"
         (tmp_cwd / "photo.png").write_bytes(img_data)
-        result = await read_file(filename="photo.png")
+        result = await read_file(path="photo.png")
         assert isinstance(result, list)
         assert len(result) == 2
         assert isinstance(result[0], TextBlock)
@@ -198,14 +198,14 @@ class TestReadFileImage:
     async def test_jpeg_returns_image_block(self, tmp_cwd: Path) -> None:
         img_data = b"\xff\xd8\xff\xe0fake-jpeg"
         (tmp_cwd / "photo.jpg").write_bytes(img_data)
-        result = await read_file(filename="photo.jpg")
+        result = await read_file(path="photo.jpg")
         assert isinstance(result, list)
         assert isinstance(result[1], ImageBlock)
         assert result[1].media_type == "image/jpeg"
 
     async def test_webp_returns_image_block(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "img.webp").write_bytes(b"RIFF\x00\x00\x00\x00WEBP")
-        result = await read_file(filename="img.webp")
+        result = await read_file(path="img.webp")
         assert isinstance(result, list)
         assert isinstance(result[1], ImageBlock)
         assert result[1].media_type == "image/webp"
@@ -214,7 +214,7 @@ class TestReadFileImage:
         """Images larger than 20MB should not be inlined."""
         large = b"\x89PNG" + b"\x00" * (20 * 1024 * 1024 + 1)
         (tmp_cwd / "huge.png").write_bytes(large)
-        result = await read_file(filename="huge.png")
+        result = await read_file(path="huge.png")
         assert isinstance(result, list)
         assert len(result) == 1
         assert isinstance(result[0], TextBlock)
@@ -225,7 +225,7 @@ class TestReadFileVideo:
     async def test_mp4_returns_video_block(self, tmp_cwd: Path) -> None:
         video_data = b"\x00\x00\x00\x1cftypisom"
         (tmp_cwd / "clip.mp4").write_bytes(video_data)
-        result = await read_file(filename="clip.mp4")
+        result = await read_file(path="clip.mp4")
         assert isinstance(result, list)
         assert len(result) == 2
         assert isinstance(result[0], TextBlock)
@@ -236,7 +236,7 @@ class TestReadFileVideo:
 
     async def test_webm_returns_video_block(self, tmp_cwd: Path) -> None:
         (tmp_cwd / "clip.webm").write_bytes(b"\x1aE\xdf\xa3webm")
-        result = await read_file(filename="clip.webm")
+        result = await read_file(path="clip.webm")
         assert isinstance(result, list)
         assert isinstance(result[1], VideoBlock)
         assert result[1].media_type == "video/webm"
@@ -244,7 +244,7 @@ class TestReadFileVideo:
     async def test_large_video_returns_text_only(self, tmp_cwd: Path) -> None:
         large = b"\x00" * (20 * 1024 * 1024 + 1)
         (tmp_cwd / "huge.mp4").write_bytes(large)
-        result = await read_file(filename="huge.mp4")
+        result = await read_file(path="huge.mp4")
         assert isinstance(result, list)
         assert len(result) == 1
         assert isinstance(result[0], TextBlock)

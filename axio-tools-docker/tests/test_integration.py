@@ -94,14 +94,14 @@ async def test_write_file_mode(sandbox: DockerSandbox) -> None:
 async def test_read_file_line_range(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/lines.txt", "a\nb\nc\nd\ne\n")
     tool = next(t for t in sandbox.tools if t.name == "read_file")
-    result = await tool(filename="lines.txt", start_line=2, end_line=4)
+    result = await tool(path="lines.txt", start_line=2, end_line=4)
     assert result.strip() == "b\nc\nd"
 
 
 async def test_read_file_line_numbers(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/numbered.txt", "foo\nbar\n")
     tool = next(t for t in sandbox.tools if t.name == "read_file")
-    result = await tool(filename="numbered.txt", line_numbers=True)
+    result = await tool(path="numbered.txt", line_numbers=True)
     assert "1\tfoo" in result
     assert "2\tbar" in result
 
@@ -109,7 +109,7 @@ async def test_read_file_line_numbers(sandbox: DockerSandbox) -> None:
 async def test_read_file_truncation(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/big.txt", "x" * 100)
     tool = next(t for t in sandbox.tools if t.name == "read_file")
-    result = await tool(filename="big.txt", max_chars=10)
+    result = await tool(path="big.txt", max_chars=10)
     assert "truncated" in result
 
 
@@ -120,7 +120,7 @@ async def test_list_files(sandbox: DockerSandbox) -> None:
     await sandbox.exec("mkdir -p /workspace/listing/subdir")
 
     tool = next(t for t in sandbox.tools if t.name == "list_files")
-    result = await tool(directory="/workspace/listing")
+    result = await tool(path="/workspace/listing")
 
     assert "a.py" in result
     assert "b.txt" in result
@@ -131,7 +131,7 @@ async def test_list_files(sandbox: DockerSandbox) -> None:
 async def test_patch_file(sandbox: DockerSandbox) -> None:
     await sandbox.write_file("/workspace/patch_me.txt", "line1\nline2\nline3\n")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
-    await tool(file_path="/workspace/patch_me.txt", from_line=2, to_line=2, content="REPLACED")
+    await tool(path="/workspace/patch_me.txt", from_line=2, to_line=2, content="REPLACED")
     raw = await sandbox.read_file_bytes("/workspace/patch_me.txt")
     assert raw == b"line1\nREPLACED\nline3\n"
 
@@ -140,7 +140,7 @@ async def test_patch_file_insert(sandbox: DockerSandbox) -> None:
     """to_line = from_line - 1 inserts without deleting."""
     await sandbox.write_file("/workspace/insert_me.txt", "line1\nline3\n")
     tool = next(t for t in sandbox.tools if t.name == "patch_file")
-    await tool(file_path="/workspace/insert_me.txt", from_line=2, to_line=1, content="line2")
+    await tool(path="/workspace/insert_me.txt", from_line=2, to_line=1, content="line2")
     raw = await sandbox.read_file_bytes("/workspace/insert_me.txt")
     assert raw == b"line1\nline2\nline3\n"
 

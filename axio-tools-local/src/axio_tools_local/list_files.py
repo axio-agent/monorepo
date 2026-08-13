@@ -7,18 +7,18 @@ from pathlib import Path
 from axio.field import StrictStr
 
 
-async def list_files(directory: StrictStr = ".") -> str:
+async def list_files(path: StrictStr = ".") -> str:
     """List files and directories. Shows permissions, size, modification time,
     and name for each entry. Directories are listed first and marked with
     a trailing slash. Use this to explore the project structure before
     reading or editing files."""
 
     def _blocking() -> str:
-        path = Path(os.getcwd()) / directory
-        if not path.is_dir():
-            raise FileNotFoundError(f"{directory} is not a valid directory")
+        resolved = Path(os.getcwd()) / path
+        if not resolved.is_dir():
+            raise FileNotFoundError(f"{path} is not a valid directory")
         lines: list[str] = []
-        for fpath in sorted(path.glob("*"), key=lambda p: (not p.is_dir(), p.name)):
+        for fpath in sorted(resolved.glob("*"), key=lambda p: (not p.is_dir(), p.name)):
             try:
                 st = fpath.stat()
             except OSError:

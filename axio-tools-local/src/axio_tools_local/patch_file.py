@@ -6,7 +6,7 @@ from axio.field import StrictStr
 
 
 async def patch_file(
-    file_path: StrictStr,
+    path: StrictStr,
     from_line: int,
     to_line: int,
     content: str,
@@ -20,11 +20,11 @@ async def patch_file(
     write_file."""
 
     def _blocking() -> str:
-        path = Path(os.getcwd()) / file_path
-        if not path.is_file():
-            raise FileNotFoundError(f"{file_path} is not a valid file")
+        resolved = Path(os.getcwd()) / path
+        if not resolved.is_file():
+            raise FileNotFoundError(f"{path} is not a valid file")
 
-        with path.open("r") as f:
+        with resolved.open("r") as f:
             lines = f.readlines()
 
         content_lines = content.splitlines(keepends=True)
@@ -32,10 +32,10 @@ async def patch_file(
             content_lines[-1] += "\n"
 
         new_lines = lines[: from_line - 1] + content_lines + lines[to_line:]
-        with path.open("w") as f:
+        with resolved.open("w") as f:
             f.writelines(new_lines)
-            result = f"{f.tell()} bytes written to {file_path}"
-        os.chmod(path, mode)
+            result = f"{f.tell()} bytes written to {path}"
+        os.chmod(resolved, mode)
         return result
 
     return await asyncio.to_thread(_blocking)

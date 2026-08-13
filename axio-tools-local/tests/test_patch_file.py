@@ -25,7 +25,7 @@ def tmp_cwd(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 async def patch(path: Path, from_line: int, to_line: int, content: str) -> str:
-    return await patch_file(file_path=path.name, from_line=from_line, to_line=to_line, content=content)
+    return await patch_file(path=path.name, from_line=from_line, to_line=to_line, content=content)
 
 
 class TestPatchBasic:

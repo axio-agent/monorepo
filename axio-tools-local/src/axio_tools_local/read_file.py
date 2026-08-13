@@ -47,47 +47,47 @@ _MAX_MEDIA_BYTES = 20 * 1024 * 1024
 _DEFAULT_TEXT_MAX_CHARS = 32768
 
 
-def _read_audio(path: str, filename: str, ext: str) -> MediaFileContent:
-    size = os.path.getsize(path)
+def _read_audio(resolved: str, path: str, ext: str) -> MediaFileContent:
+    size = os.path.getsize(resolved)
     if size > _MAX_MEDIA_BYTES:
-        return [TextBlock(text=f"Audio file too large to inline ({size} bytes): {filename}")]
-    with open(path, "rb") as f:
+        return [TextBlock(text=f"Audio file too large to inline ({size} bytes): {path}")]
+    with open(resolved, "rb") as f:
         data = f.read()
     media_type = _AUDIO_EXTENSIONS[ext]
     return [
-        TextBlock(text=f"Audio file: {filename} ({len(data)} bytes)"),
+        TextBlock(text=f"Audio file: {path} ({len(data)} bytes)"),
         AudioBlock(media_type=media_type, data=data),
     ]
 
 
-def _read_image(path: str, filename: str, ext: str) -> MediaFileContent:
-    size = os.path.getsize(path)
+def _read_image(resolved: str, path: str, ext: str) -> MediaFileContent:
+    size = os.path.getsize(resolved)
     if size > _MAX_MEDIA_BYTES:
-        return [TextBlock(text=f"Image file too large to inline ({size} bytes): {filename}")]
-    with open(path, "rb") as f:
+        return [TextBlock(text=f"Image file too large to inline ({size} bytes): {path}")]
+    with open(resolved, "rb") as f:
         data = f.read()
     media_type = _IMAGE_EXTENSIONS[ext]
     return [
-        TextBlock(text=f"Image file: {filename} ({len(data)} bytes)"),
+        TextBlock(text=f"Image file: {path} ({len(data)} bytes)"),
         ImageBlock(media_type=media_type, data=data),
     ]
 
 
-def _read_video(path: str, filename: str, ext: str) -> MediaFileContent:
-    size = os.path.getsize(path)
+def _read_video(resolved: str, path: str, ext: str) -> MediaFileContent:
+    size = os.path.getsize(resolved)
     if size > _MAX_MEDIA_BYTES:
-        return [TextBlock(text=f"Video file too large to inline ({size} bytes): {filename}")]
-    with open(path, "rb") as f:
+        return [TextBlock(text=f"Video file too large to inline ({size} bytes): {path}")]
+    with open(resolved, "rb") as f:
         data = f.read()
     media_type = _VIDEO_EXTENSIONS[ext]
     return [
-        TextBlock(text=f"Video file: {filename} ({len(data)} bytes)"),
+        TextBlock(text=f"Video file: {path} ({len(data)} bytes)"),
         VideoBlock(media_type=media_type, data=data),
     ]
 
 
 def _read_text(
-    path: str,
+    resolved: str,
     max_chars: int | None,
     binary_as_hex: bool,
     start_line: int | None,
@@ -99,7 +99,7 @@ def _read_text(
     if limit < 0:
         raise ValueError("max_chars must be >= 0")
 
-    with open(path, "rb") as f:
+    with open(resolved, "rb") as f:
         raw = f.read()
     try:
         text = raw.decode()
@@ -110,7 +110,7 @@ def _read_text(
                 if not explicit_limit:
                     raise ValueError(
                         f"Binary file is too large to read without an explicit max_chars limit "
-                        f"({hex_chars} hex chars > {limit} default): {path}. "
+                        f"({hex_chars} hex chars > {limit} default): {resolved}. "
                         "Pass max_chars to read a bounded hex prefix."
                     )
                 return "Encoded binary data HEX: " + raw[: limit // 2].hex() + "\n...[truncated]"
@@ -128,7 +128,7 @@ def _read_text(
         if not explicit_limit:
             raise ValueError(
                 f"File is too large to read without an explicit max_chars limit "
-                f"({len(result)} chars > {limit} default): {path}. "
+                f"({len(result)} chars > {limit} default): {resolved}. "
                 "Pass max_chars to read a bounded prefix, or use start_line/end_line to read a smaller range."
             )
         return result[:limit] + "\n...[truncated]"
@@ -136,7 +136,7 @@ def _read_text(
 
 
 async def read_file(
-    filename: StrictStr,
+    path: StrictStr,
     max_chars: int | None = None,
     binary_as_hex: bool = True,
     start_line: int | None = None,
@@ -155,14 +155,14 @@ async def read_file(
     patch_file."""
 
     def _blocking() -> ReadFileResult:
-        path = os.path.join(os.getcwd(), filename)
-        ext = os.path.splitext(path)[1].lower()
+        resolved = os.path.join(os.getcwd(), path)
+        ext = os.path.splitext(resolved)[1].lower()
         if ext in _AUDIO_EXTENSIONS:
-            return _read_audio(path, filename, ext)
+            return _read_audio(resolved, path, ext)
         if ext in _IMAGE_EXTENSIONS:
-            return _read_image(path, filename, ext)
+            return _read_image(resolved, path, ext)
         if ext in _VIDEO_EXTENSIONS:
-            return _read_video(path, filename, ext)
-        return _read_text(path, max_chars, binary_as_hex, start_line, end_line, line_numbers)
+            return _read_video(resolved, path, ext)
+        return _read_text(resolved, max_chars, binary_as_hex, start_line, end_line, line_numbers)
 
     return await asyncio.to_thread(_blocking)

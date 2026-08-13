@@ -99,11 +99,11 @@ with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
     name = f.name
 
 # Replace line 2
-asyncio.run(patch_file(file_path=name, from_line=2, to_line=2, content="replaced\n"))
+asyncio.run(patch_file(path=name, from_line=2, to_line=2, content="replaced\n"))
 os.unlink(name)
 ```
 
-Parameters: `file_path: str`, `from_line: int`, `to_line: int`, `content: str`, `mode: int = 0o644`
+Parameters: `path: str`, `from_line: int`, `to_line: int`, `content: str`, `mode: int = 0o644`
 
 ### list_files
 
@@ -112,7 +112,7 @@ Parameters: `file_path: str`, `from_line: int`, `to_line: int`, `content: str`, 
 import asyncio
 from axio_tools_local.list_files import list_files
 
-asyncio.run(list_files(directory="."))
+asyncio.run(list_files(path="."))
 ```
 
 ### run_python
