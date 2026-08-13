@@ -499,9 +499,11 @@ class DockerSandbox:
         info = await exec_obj.inspect()
         exit_code: int = info["ExitCode"]
 
-        output = b"".join(stdout_parts).decode()
+        # What a command prints is output to show, not a document to validate:
+        # one stray byte from a locale-confused tool must not lose the rest.
+        output = b"".join(stdout_parts).decode(errors="replace")
         if stderr_parts:
-            output += "\n[stderr]\n" + b"".join(stderr_parts).decode()
+            output += "\n[stderr]\n" + b"".join(stderr_parts).decode(errors="replace")
         if exit_code != 0:
             output += f"\n[exit code: {exit_code}]"
         return output.strip() or "(no output)"
