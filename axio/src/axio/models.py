@@ -87,10 +87,16 @@ class ModelRegistry(MutableMapping[str, ModelSpec]):
         return ModelRegistry(v for v in self._models.values() if required <= v.capabilities)
 
     def search(self, *q: str) -> ModelRegistry:
-        """search by parts of id"""
+        """Search by parts of an id, ignoring case.
+
+        Vendors capitalise as they please - MiniMaxAI/MiniMax-M3 beside
+        openai/gpt-4o - and nobody typing a model name should have to reproduce
+        that. Exact lookup above stays literal; this is the forgiving path.
+        """
         if len(q) == 1 and q[0] in self._models:
             return ModelRegistry([self._models[q[0]]])
-        return ModelRegistry(v for k, v in self._models.items() if all(part in k for part in q))
+        parts = [part.casefold() for part in q]
+        return ModelRegistry(v for k, v in self._models.items() if all(part in k.casefold() for part in parts))
 
     def by_cost(self, *, output: bool = False, desc: bool = False) -> ModelRegistry:
         """Return registry ordered by cost (input by default, output if *output=True*)."""

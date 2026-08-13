@@ -59,3 +59,17 @@ def test_last_after_by_cost() -> None:
     priciest = reg.by_cost(desc=True)
     assert priciest.first() == C
     assert priciest.last() == A
+
+
+def test_search_ignores_case() -> None:
+    # Vendors capitalise as they please; nobody typing a name reproduces that.
+    registry = ModelRegistry([ModelSpec(id="MiniMaxAI/MiniMax-M3"), ModelSpec(id="openai/gpt-4o")])
+
+    assert list(registry.search("minimax-m3").ids()) == ["MiniMaxAI/MiniMax-M3"]
+    assert list(registry.search("GPT-4O").ids()) == ["openai/gpt-4o"]
+
+
+def test_exact_lookup_stays_literal() -> None:
+    registry = ModelRegistry([ModelSpec(id="MiniMaxAI/MiniMax-M3")])
+
+    assert list(registry.search("MiniMaxAI/MiniMax-M3").ids()) == ["MiniMaxAI/MiniMax-M3"]

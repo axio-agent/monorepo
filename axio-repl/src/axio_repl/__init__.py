@@ -874,7 +874,7 @@ def _choose_model(transport: Any, arg: str) -> ModelSpec | None:
 
     # Ids are usually vendor-prefixed, so typing the bare name names one model
     # exactly even when it is a substring of several others.
-    exact = [m for k, m in matches.items() if k.rsplit("/", 1)[-1] == arg]
+    exact = [m for k, m in matches.items() if k.rsplit("/", 1)[-1].casefold() == arg.casefold()]
     if len(exact) == 1:
         return cast(ModelSpec, exact[0])
 
@@ -1075,12 +1075,13 @@ async def main() -> None:
         _adopt_catalogue_metadata(transport)
 
         if args.model:
-            try:
-                transport.model = _resolve_model_arg(transport, args.model)
-            except KeyError:
-                available_models = ", ".join(transport.models.keys())
-                print(f"No model matching {args.model!r}. Available: {available_models}", file=sys.stderr)
+            # The same resolution as the /model command: exact id, routing
+            # variant, or a fragment of one. Naming a model on the command line
+            # used to demand the full id, capitals and vendor prefix included.
+            chosen = _choose_model(transport, args.model)
+            if chosen is None:
                 sys.exit(1)
+            transport.model = chosen
 
         # Transport-level commands (available before agent creation).
         commands: dict[str, Command] = {

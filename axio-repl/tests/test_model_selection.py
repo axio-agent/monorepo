@@ -14,6 +14,7 @@ from axio_repl import (
     _adopt_catalogue_metadata,
     _apply_iterations,
     _apply_model,
+    _choose_model,
     _resolve_model_arg,
     _select_transport,
 )
@@ -119,3 +120,24 @@ def test_a_real_iteration_count_is_applied() -> None:
     _apply_iterations(agent, "200")
 
     assert agent.max_iterations == 200
+
+
+def test_a_fragment_of_an_id_names_the_model(capsys: pytest.CaptureFixture[str]) -> None:
+    # --model used to demand the full id, capitals and vendor prefix included.
+    minimax = ModelSpec(id="MiniMaxAI/MiniMax-M3")
+    transport = cast(Any, SimpleNamespace(models=ModelRegistry([minimax, ModelSpec(id="zai-org/GLM-5.2")])))
+
+    assert _choose_model(transport, "minimax-m3") is minimax
+    assert _choose_model(transport, "glm-5.2") is not None
+
+
+def test_an_ambiguous_fragment_names_the_candidates(capsys: pytest.CaptureFixture[str]) -> None:
+    transport = cast(
+        Any,
+        SimpleNamespace(
+            models=ModelRegistry([ModelSpec(id="MiniMaxAI/MiniMax-M3"), ModelSpec(id="MiniMaxAI/MiniMax-M2.5")])
+        ),
+    )
+
+    assert _choose_model(transport, "minimax") is None
+    assert "Ambiguous" in capsys.readouterr().out
