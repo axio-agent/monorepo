@@ -620,6 +620,12 @@ async def _run_agent_turn(
 ) -> None:
     with peer_context(background.peer):
         async for event in background.agent.run_stream(prompt, background.context):
+            if isinstance(event, Error):
+                # A failed turn that did not raise - running out of iterations is
+                # the common one. Unrecorded, it leaves the agent reporting the
+                # same idle as one that answered, and the reason lives only in a
+                # log line in whichever process happened to host it.
+                background.last_error = str(event.exception)
             if _agent_event_handler is not None:
                 await _agent_event_handler(background.peer.id, event)
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from axio.events import SessionEndEvent, TextDelta
+from axio.events import Error, SessionEndEvent, TextDelta
 from axio.types import StopReason, Usage
 
 from axio_repl import ReplRenderer
@@ -78,3 +78,19 @@ async def test_a_silent_background_agent_reports_nothing() -> None:
     )
 
     assert reports == []
+
+
+async def test_a_background_failure_is_reported_with_its_reason(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # "errors=1" says something went wrong and not what, which is the half that
+    # decides whether to retry, fix, or give up.
+    renderer = ReplRenderer()
+
+    await renderer.render("child", Error(exception=RuntimeError("Stopped after 25 iterations")))
+    await renderer.render(
+        "child",
+        SessionEndEvent(stop_reason=StopReason.error, total_usage=Usage(input_tokens=1, output_tokens=0)),
+    )
+
+    assert "Stopped after 25 iterations" in capsys.readouterr().out

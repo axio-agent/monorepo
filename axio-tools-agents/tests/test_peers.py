@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from axio.agent import Agent
 from axio.context import MemoryContextStore
-from axio.events import IterationEnd, StreamEvent, TextDelta
+from axio.events import IterationEnd, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
 from axio.messages import Message
 from axio.tool import Tool
 from axio.types import StopReason, Usage
@@ -15,6 +15,7 @@ from axio.types import StopReason, Usage
 from axio_tools_agents.peers import (
     PeerMessage,
     PeerServer,
+    background_agent_state,
     enqueue_local_agent_prompt,
     format_message_for_dialog,
     interrupt_agent,
@@ -299,3 +300,50 @@ async def test_wait_local_background_agents_idle_waits_for_current_turn(tmp_path
         assert stopped.startswith("Sent stop")
     finally:
         await sender.close()
+
+
+class _LoopingTransport:
+    """A model that keeps calling a tool and never answers."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[Tool[object]],
+        system: str,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls += 1
+        yield ToolUseStart(index=0, tool_use_id=f"c{self.calls}", name="noop")
+        yield ToolInputDelta(index=0, tool_use_id=f"c{self.calls}", partial_json="{}")
+        yield IterationEnd(iteration=self.calls, stop_reason=StopReason.tool_use, usage=Usage(0, 0))
+
+
+async def test_running_out_of_iterations_reaches_the_parent(tmp_path: Path) -> None:
+    # It does not raise, so the exception handler never sees it. Before it was
+    # recorded here, the parent saw the same idle as an agent that answered and
+    # the reason existed only as a log line.
+    async def noop() -> str:
+        return "ok"
+
+    transport = _LoopingTransport()
+
+    async def factory(inherit_context: bool) -> tuple[Agent, MemoryContextStore]:
+        agent = Agent(
+            system="child",
+            tools=[Tool(name="noop", handler=noop)],
+            transport=transport,
+            max_iterations=2,
+        )
+        return agent, MemoryContextStore()
+
+    set_spawn_agent_factory(factory)
+    result = await spawn_agent(task="go")
+    agent_id = result.split("agent_id=", 1)[1].split(" ", 1)[0]
+    await _wait_for(lambda: background_agent_state(agent_id)[1] is not None)
+
+    state, error = background_agent_state(agent_id)
+    assert state == "idle"
+    assert error is not None
+    assert "2 iterations" in error

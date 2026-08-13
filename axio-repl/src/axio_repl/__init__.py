@@ -631,7 +631,9 @@ class ReplRenderer:
             if state.background_reported_chars:
                 parts.append(f"reported {state.background_reported_chars} chars")
             if state.background_errors:
-                parts.append(f"errors={len(state.background_errors)}")
+                # The count alone says something went wrong and not what, which
+                # is the half that decides whether to retry, fix or give up.
+                parts.append(f"error: {state.background_errors[-1]}")
             print(f"{DIM}[background {'; '.join(parts)}]{RESET}")
             state.background_reported_chars = 0
             state.background_tools.clear()
