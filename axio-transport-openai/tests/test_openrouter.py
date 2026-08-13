@@ -415,12 +415,17 @@ async def test_reasoning_capability_from_supported_parameters(
     assert Capability.reasoning not in transport.models["thinks/not"].capabilities
 
 
-async def test_output_limit_equal_to_the_window_is_clamped(
+# ---------------------------------------------------------------------------
+# Request payload
+# ---------------------------------------------------------------------------
+
+
+async def test_an_output_limit_equal_to_the_window_is_not_reserved(
     fake_server: tuple[FakeOpenRouterServer, str],
     transport: OpenRouterTransport,
 ) -> None:
-    # Taken at face value this reserves the entire window for the answer, and
-    # every request with a prompt in it is rejected as too long.
+    # Reserving all 262144 for the answer leaves no room for the prompt, and the
+    # request is rejected before a token is generated.
     server, _ = fake_server
     server.models_response = {
         "data": [
@@ -428,24 +433,16 @@ async def test_output_limit_equal_to_the_window_is_clamped(
                 "id": "google/gemma-4-31b-it",
                 "context_length": 262_144,
                 "top_provider": {"max_completion_tokens": 262_144},
-            },
-            {
-                "id": "sane/model",
-                "context_length": 262_144,
-                "top_provider": {"max_completion_tokens": 32_768},
-            },
+            }
         ]
     }
-
     await transport.fetch_models()
+    transport.model = transport.models["google/gemma-4-31b-it"]
+    server.sse_responses.append(_text_chunks("Hi"))
 
-    assert transport.models["google/gemma-4-31b-it"].max_output_tokens == 65_536
-    assert transport.models["sane/model"].max_output_tokens == 32_768
+    await _collect(transport.stream([], [], "You are terse."))
 
-
-# ---------------------------------------------------------------------------
-# Request payload
-# ---------------------------------------------------------------------------
+    assert server.received_payloads[0]["max_completion_tokens"] < 262_144
 
 
 async def test_provider_suffix_becomes_provider_only(

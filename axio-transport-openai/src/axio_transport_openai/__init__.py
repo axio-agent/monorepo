@@ -428,6 +428,35 @@ class ThinkTagParser:
         return False
 
 
+CHARS_PER_TOKEN = 2
+"""Characters per token, deliberately pessimistic.
+
+Four is the rule of thumb for English prose, but Cyrillic, CJK and dense code
+land near two. Overestimating the prompt only lowers a ceiling the answer rarely
+touches; underestimating it gets the whole request rejected, so err upwards.
+"""
+
+OUTPUT_FLOOR = 1024
+"""Never ask for less than this: below it the answer is useless anyway, and a
+prompt that leaves no room deserves the API's own error rather than a silently
+truncated reply."""
+
+
+def _fit_output_limit(payload: dict[str, Any], model: ModelSpec) -> int:
+    """Ask for the output that still fits beside the prompt, not for the maximum.
+
+    ``max_output_tokens`` is what the model can produce given an empty prompt.
+    Sent verbatim it is a reservation, and providers reject the request when the
+    reservation plus the prompt exceeds the window - which is guaranteed for the
+    many models whose declared output limit is the window itself.
+    """
+    if not model.context_window:
+        return model.max_output_tokens
+    prompt = json.dumps([payload.get("messages"), payload.get("tools")], ensure_ascii=False)
+    remaining = model.context_window - len(prompt) // CHARS_PER_TOKEN
+    return max(min(OUTPUT_FLOOR, model.max_output_tokens), min(model.max_output_tokens, remaining))
+
+
 @dataclass(slots=True)
 class OpenAITransport(CompletionTransport, EmbeddingTransport):
     name: str = "OpenAI"
@@ -461,11 +490,12 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             "messages": _convert_messages(messages, system),
             "stream": True,
             "stream_options": {"include_usage": True},
-            "max_completion_tokens": self.model.max_output_tokens,
         }
 
         if tools:
             payload["tools"] = _convert_tools(tools)
+
+        payload["max_completion_tokens"] = _fit_output_limit(payload, self.model)
 
         if self.extra_params:
             payload.update(self.extra_params)

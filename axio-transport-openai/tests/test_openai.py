@@ -1456,3 +1456,43 @@ def test_extra_params_to_dict_round_trip() -> None:
 def test_extra_params_empty_omitted_from_dict() -> None:
     t = OpenAITransport(api_key="k")
     assert "extra_params" not in t.to_dict()
+
+
+def test_output_limit_leaves_room_for_the_prompt() -> None:
+    from axio_transport_openai import _fit_output_limit
+
+    model = ModelSpec(id="m", context_window=100_000, max_output_tokens=100_000)
+    payload = {"messages": [{"role": "user", "content": "x" * 60_000}]}
+
+    # 60000 characters is at least 20000 tokens, so the answer cannot have all
+    # 100000 as well - which is exactly the request providers reject.
+    assert _fit_output_limit(payload, model) <= 80_000
+
+
+def test_output_limit_is_untouched_when_it_already_fits() -> None:
+    from axio_transport_openai import _fit_output_limit
+
+    model = ModelSpec(id="m", context_window=128_000, max_output_tokens=8_000)
+    payload = {"messages": [{"role": "user", "content": "hi"}]}
+
+    assert _fit_output_limit(payload, model) == 8_000
+
+
+def test_output_limit_never_drops_below_the_floor() -> None:
+    from axio_transport_openai import OUTPUT_FLOOR, _fit_output_limit
+
+    model = ModelSpec(id="m", context_window=4_000, max_output_tokens=4_000)
+    payload = {"messages": [{"role": "user", "content": "x" * 20_000}]}
+
+    # The prompt alone overflows: report the API's error rather than invent one.
+    assert _fit_output_limit(payload, model) == OUTPUT_FLOOR
+
+
+def test_tools_count_against_the_window() -> None:
+    from axio_transport_openai import _fit_output_limit
+
+    model = ModelSpec(id="m", context_window=4_000, max_output_tokens=4_000)
+    bare = {"messages": [{"role": "user", "content": "hi"}]}
+    with_tools = dict(bare, tools=[{"function": {"description": "d" * 3_000}}])
+
+    assert _fit_output_limit(with_tools, model) < _fit_output_limit(bare, model)
