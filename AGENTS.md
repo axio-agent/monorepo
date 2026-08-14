@@ -107,7 +107,7 @@ Submodule-only (not re-exported at top level):
 from axio.testing import StubTransport, make_text_response, make_tool_use_response
 from axio.schema import build_tool_schema
 from axio.agent_loader import AgentSpec, load_agents
-from axio.compaction import AutoCompactStore, CompactionStrategy
+from axio.compaction import AutoCompactStore
 ```
 
 ### Types (`axio/types.py`)
@@ -355,12 +355,13 @@ Helper classes and functions for testing:
 
 ```python
 # Example: StubTransport with multiple responses
-transport = StubTransport([
-    make_tool_use_response("my_tool", tool_input={"x": 1}),
-    make_text_response("Done"),
-])
-agent = Agent(system="...", transport=transport, tools=[my_tool])
-result = await agent.run("go", make_ephemeral_context())
+async def example(my_tool: Tool) -> str:
+    transport = StubTransport([
+        make_tool_use_response("my_tool", tool_input={"x": 1}),
+        make_text_response("Done"),
+    ])
+    agent = Agent(system="...", transport=transport, tools=[my_tool])
+    return await agent.run("go", make_ephemeral_context())
 ```
 
 `StubTransport` pops the next event sequence on each `stream()` call. If there are fewer sequences than calls, it repeats the last one.
@@ -401,12 +402,13 @@ from axio.testing import (
 `StubTransport` pops the next event sequence on each `stream()` call. If there are fewer sequences than calls, it repeats the last one.
 
 ```python
-transport = StubTransport([
-    make_tool_use_response("my_tool", tool_input={"x": 1}),
-    make_text_response("Done"),
-])
-agent = Agent(system="...", transport=transport, tools=[my_tool])
-result = await agent.run("go", make_ephemeral_context())
+async def example_with_tool_use(my_tool: Tool) -> str:
+    transport = StubTransport([
+        make_tool_use_response("my_tool", tool_input={"x": 1}),
+        make_text_response("Done"),
+    ])
+    agent = Agent(system="...", transport=transport, tools=[my_tool])
+    return await agent.run("go", make_ephemeral_context())
 ```
 
 ### Doc tests
