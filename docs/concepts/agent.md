@@ -97,6 +97,9 @@ When the model requests multiple tool calls in a single response, the agent
 runs them all concurrently via `asyncio.gather`. The public method signature is:
 
 ```python
+from axio.blocks import ToolResultBlock, ToolUseBlock
+
+
 async def dispatch_tools(
     self,
     blocks: list[ToolUseBlock],
