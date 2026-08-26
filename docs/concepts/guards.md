@@ -69,7 +69,7 @@ async def write_file(path: str, content: str) -> str:
     """Write content to a file."""
     return "ok"
 
-# Note: PathGuard and LLMGuard are provided by the axio-tui-guards package
+# Application-specific guards can be supplied by external packages
 # For testing, you can use AllowAllGuard as a placeholder:
 PathGuard = AllowAllGuard
 LLMGuard = AllowAllGuard
@@ -123,18 +123,6 @@ pass through the guard simultaneously.
 `DenyAllGuard`
 : Always raises `GuardError("denied")`. Useful for testing or disabling tools.
 
-## Shipped guard plugins
-
-The `axio-tui-guards` package provides two guards registered via the
-`axio.guards` entry point group:
-
-`PathGuard`
-: Validates file paths against an allowed directory tree. Prevents tools
-  from accessing files outside a configured root.
-
-`LLMGuard`
-: Uses a secondary LLM call to assess whether a tool call is safe.
-  Provides a natural-language explanation when denying.
 
 See [Writing Guards](../guides/writing-guards.md) for a step-by-step
 guide to creating your own.

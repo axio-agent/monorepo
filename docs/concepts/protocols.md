@@ -8,6 +8,7 @@ into the framework - no subclassing the agent, no monkey-patching.
 
 ```{mermaid}
 classDiagram
+    direction TB
     class CompletionTransport {
         <<Protocol>>
         +stream(messages, tools, system) AsyncIterator~StreamEvent~
@@ -61,9 +62,11 @@ Available transports (each in its own installable package):
 
 | Transport | Package | Notes |
 |---|---|---|
-| `AnthropicTransport` | `axio-transport-anthropic` | Anthropic Claude models |
-| `OpenAITransport` | `axio-transport-openai` | OpenAI and OpenAI-compatible APIs |
-| `CodexTransport` | `axio-transport-codex` | ChatGPT via OAuth |
+| {class}`~axio_transport_anthropic.AnthropicTransport` | `axio-transport-anthropic` | Anthropic Claude models |
+| {class}`~axio_transport_openai.OpenAITransport` | `axio-transport-openai` | OpenAI and OpenAI-compatible APIs |
+| {class}`~axio_transport_google.GoogleTransport` | `axio-transport-google` | Gemini Developer API |
+| {class}`~axio_transport_google.VertexAITransport` | `axio-transport-google` | Gemini and Anthropic on Vertex AI |
+| {class}`~axio_transport_codex.CodexTransport` | `axio-transport-codex` | ChatGPT via OAuth |
 
 The core `axio` package does not bundle any transport implementation - install
 the appropriate package for your model provider.

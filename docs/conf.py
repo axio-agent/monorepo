@@ -17,6 +17,8 @@ extensions = [
     "sphinx.ext.viewcode",
 ]
 
+autodoc_mock_imports = ["sounddevice"]
+
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", ".venv", "README.md"]
 
 myst_enable_extensions = [

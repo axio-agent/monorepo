@@ -1,8 +1,7 @@
 # Packages
 
-The Axio monorepo contains 13 packages, each with a focused responsibility.
-Each package is a top-level directory in the monorepo root (e.g., `axio/`, `axio-tui/`)
-and all are managed as a uv workspace.
+The Axio packages documented here each have a focused responsibility. They are
+top-level directories in the monorepo and are managed as a uv workspace.
 
 ## Overview
 
@@ -10,16 +9,14 @@ and all are managed as a uv workspace.
 |---------|---------|-------------------|
 | `axio` | Core framework | - |
 | `axio-context-sqlite` | SQLite-backed persistent context store | - |
-| `axio-transport-anthropic` | Anthropic Claude transport | `axio.transport`, `axio.transport.settings` |
-| `axio-transport-openai` | OpenAI-compatible transport (OpenAI, Nebius, OpenRouter, custom) | `axio.transport`, `axio.transport.settings` |
-| `axio-transport-codex` | ChatGPT (Codex) OAuth transport | `axio.transport`, `axio.transport.settings` |
-| `axio-transport-google` | Google Gemini transport + Gemini Live realtime | `axio.transport`, `axio.transport.realtime`, `axio.transport.settings`, `axio.tools` |
+| `axio-transport-anthropic` | Anthropic Claude transport | `axio.transport` |
+| `axio-transport-openai` | OpenAI-compatible transport (OpenAI, Nebius, OpenRouter, custom) | `axio.transport` |
+| `axio-transport-codex` | ChatGPT (Codex) OAuth transport | `axio.transport` |
+| `axio-transport-google` | Google Gemini transport + Gemini Live realtime | `axio.transport`, `axio.transport.realtime`, `axio.tools` |
 | `axio-audio` | Microphone and speaker helpers for realtime agents | - |
 | `axio-tools-local` | Filesystem & shell tools | `axio.tools` |
-| `axio-tools-mcp` | MCP tool loader | `axio.tools.settings` |
+| `axio-tools-mcp` | MCP tool loader | - |
 | `axio-tools-docker` | Docker sandbox tools | - |
-| `axio-tui` | Textual-based TUI app | `axio.tools` |
-| `axio-tui-guards` | Permission guard plugins | `axio.guards` |
 | `axio-repl` | Interactive terminal coding assistant | - |
 
 ## Core
@@ -136,8 +133,8 @@ Dependencies: `axio`
 
 ### axio-tools-mcp
 
-Dynamic tool provider that loads tools from MCP (Model Context Protocol)
-servers. Registered as a `ToolsPlugin` under `axio.tools.settings`.
+Dynamic tool loader that connects to MCP (Model Context Protocol) servers and
+returns regular `Tool` objects for explicit use in an agent.
 
 Dependencies: `axio`, `mcp>=1.6`
 
@@ -154,34 +151,6 @@ async with DockerSandbox(image="python:3.12-slim") as sandbox:
 ```
 
 Dependencies: `axio`, `aiodocker>=0.26`
-
-## TUI & Plugins
-
-### axio-tui
-
-Terminal UI application built with Textual. Provides the `axio` console
-command, plugin discovery, transport management, and session persistence
-via SQLite.
-
-Tools registered under `axio.tools`:
-- `status_line` - Update the TUI status bar
-- `confirm` - Ask user for confirmation
-- `subagent` - Spawn a sub-agent
-- `vision` - Analyze images
-
-Console script: `axio = "axio_tui.__main__:main"`
-
-Dependencies: `axio`, `textual>=2.1.0`, `aiosqlite>=0.20`
-
-### axio-tui-guards
-
-Permission guard plugins for the TUI.
-
-Guards registered under `axio.guards`:
-- `path` - `PathGuard` - Validates file paths against allowed directories
-- `llm` - `LLMGuard` - Uses LLM to assess tool call safety
-
-Dependencies: `axio`, `axio-tui`
 
 ## REPL
 

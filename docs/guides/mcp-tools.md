@@ -132,13 +132,6 @@ tools, sessions = await load_mcp_tools([
 ])
 ```
 
-## TUI integration
-
-`axio-tools-mcp` registers an `MCPPlugin` under the `axio.tools.settings` entry
-point. The TUI discovers it automatically and provides a settings screen to add,
-remove, and configure MCP servers persistently. No code changes required - just
-install the package and configure servers in the TUI settings.
-
 ## Error handling
 
 If a server fails to connect, `load_mcp_tools` raises immediately. To handle

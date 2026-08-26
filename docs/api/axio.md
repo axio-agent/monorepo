@@ -1,8 +1,8 @@
-# API Reference
+# `axio`
 
-Auto-generated documentation from source docstrings.
+Core agent loop, protocols, messages, tools, events, and context interfaces.
 
-## Core
+## Public API
 
 ```{eval-rst}
 .. automodule:: axio
@@ -26,7 +26,7 @@ Auto-generated documentation from source docstrings.
    :show-inheritance:
 ```
 
-## Context & Events
+## Context and events
 
 ```{eval-rst}
 .. automodule:: axio.context
@@ -65,8 +65,14 @@ Auto-generated documentation from source docstrings.
    :show-inheritance:
 ```
 
+```{eval-rst}
+.. automodule:: axio.realtime
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
 
-## Data Types
+## Data types
 
 ```{eval-rst}
 .. automodule:: axio.messages

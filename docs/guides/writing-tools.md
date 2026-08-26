@@ -19,7 +19,6 @@ async def word_count(text: str) -> str:
     count = len(text.split())
     return f"The text contains {count} words."
 ```
-
 Key points:
 
 - The **docstring** becomes the tool description sent to the LLM.
@@ -156,18 +155,6 @@ agent = Agent(
 )
 ```
 
-## 4. Register as a plugin
-
-To make your tool discoverable by the TUI and other Axio applications, add an
-entry point to your `pyproject.toml`:
-
-```toml
-[project.entry-points."axio.tools"]
-word_count = "my_tools.word_count:word_count"
-```
-
-After installing or syncing, `discover_tools()` will find it automatically.
-
 ## Adding guards
 
 Attach guards to control when the tool can run:
@@ -237,51 +224,3 @@ async def read_file(path: str) -> str:
         raise HandlerError(f"File not found: {path}")
     return p.read_text()
 ```
-
-## Dynamic tool providers
-
-If your package needs to provide a variable number of tools based on
-configuration (like MCP servers or Docker containers), implement the
-`ToolsPlugin` protocol instead. `ToolsPlugin` is defined in the
-`axio_tui` package:
-
-```python
-from typing import Any
-from axio_tui.plugin import ToolsPlugin
-from axio import Tool
-
-
-class MyPlugin:
-    """A dynamic tool provider."""
-
-    @property
-    def label(self) -> str:
-        return "My Plugin"
-
-    async def init(self, config: Any = None, global_config: Any = None) -> None:
-        # Load configuration, connect to external services, etc.
-        pass
-
-    @property
-    def all_tools(self) -> list[Tool]:
-        # Build and return tools based on current configuration
-        return [...]
-
-    def settings_screen(self) -> Any:
-        # Return a Textual Screen for configuring this plugin in the TUI
-        return None
-
-    async def close(self) -> None:
-        # Clean up connections and resources
-        pass
-```
-
-Register under `axio.tools.settings`:
-
-```toml
-[project.entry-points."axio.tools.settings"]
-my_plugin = "my_package.plugin:MyPlugin"
-```
-
-See [Plugin System](../concepts/plugins.md) for the full `ToolsPlugin` protocol
-and lifecycle documentation.

@@ -459,9 +459,9 @@ Use agent swarms when:
   agents simultaneously - frontend + backend + security all run at once if the
   LLM issues multiple tool calls in one response.
 
-For simpler cases - a single agent that can call tools to break down its own work -
-the built-in `subagent` tool from `axio-tui` is sufficient. The swarm pattern adds
-structure at the cost of more orchestration prompting and more LLM calls.
+For simpler cases, keep one agent and expose only the decomposition tools the
+application needs. The swarm pattern adds structure at the cost of more
+orchestration prompting and more LLM calls.
 
 ```{seealso}
 - {doc}`gas-town` - the bead-based convoy pattern with explicit work tracking

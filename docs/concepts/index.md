@@ -40,10 +40,10 @@ more than `aiohttp` - no SDK required.
 
 ### Tools
 
-A {doc}`tool <tools>` is a plain `async def` function whose parameters define
-the JSON schema exposed to the LLM and whose body implements the actual logic.
-Wrap it in a `Tool` dataclass to attach a name, description, guards, and an
-optional concurrency limit.
+A plain `async def` function is a tool handler. The {doc}`Tool <tools>`
+dataclass is the glue that declares it as an agent tool: it attaches a stable
+name, generated input schema, description, guards, and an optional concurrency
+limit. A tool call is one concrete model request to invoke that definition.
 
 The `context` field on `Tool` lets you pass arbitrary state - a database
 connection, a sandbox object, a file path - to the handler via `CONTEXT.get()`
@@ -86,6 +86,5 @@ events
 tool-args-streaming
 context
 guards
-plugins
 models
 ```

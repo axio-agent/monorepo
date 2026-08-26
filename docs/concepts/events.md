@@ -1,12 +1,12 @@
 # Stream Events
 
 All agent I/O flows through typed **stream events**. The transport produces
-events, the agent processes them, and consumers (like the TUI) render them.
+events, the agent processes them, and your harness renders or forwards them.
 
 ## Event pipeline
 
 ```{mermaid}
-flowchart LR
+flowchart TD
     T[Transport] -->|StreamEvent| A[Agent]
     A -->|StreamEvent| S[AgentStream]
     S -->|StreamEvent| C[Consumer]

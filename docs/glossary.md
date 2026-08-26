@@ -82,7 +82,13 @@ Terms used throughout Axio documentation.
 ## T
 
 **Tool**
-: A callable that the LLM can invoke. Combines a name, description, handler, and optional guards.
+: The glue object that declares an async Python handler as an agent tool. It
+  combines the handler with a stable name, generated input schema, description,
+  and optional guards.
+
+**Tool call**
+: One concrete request from the model to invoke a named Tool with structured
+  arguments. A Tool is the definition; a tool call is an invocation of it.
 
 **Tool handler**
 : The executable logic for a tool. A plain `async def` function whose parameters define the input schema and whose body implements execution.

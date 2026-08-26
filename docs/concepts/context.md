@@ -7,6 +7,7 @@ blocks that represent text, images, tool calls, and tool results.
 
 ```{mermaid}
 classDiagram
+    direction TB
     class ContentBlock {
         <<base>>
     }
@@ -189,7 +190,7 @@ async def main():
 asyncio.run(main())
 ```
 
-`SQLiteContextStore` is the natural choice for production TUI sessions. Pair it
+`SQLiteContextStore` is a natural choice for persistent application sessions. Pair it
 with `AutoCompactStore` to keep context within model limits
 across long conversations.
 

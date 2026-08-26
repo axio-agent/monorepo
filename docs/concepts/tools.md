@@ -1,7 +1,9 @@
 # Tool System
 
-Tools are plain `async def` functions. Parameters are function arguments;
-the docstring becomes the tool description sent to the LLM.
+The executable logic is a plain `async def` handler. `Tool` is the glue that
+declares that function as an agent tool: it attaches the name and execution
+policy and exposes the function signature and docstring to the model. A tool
+call is different -- it is one request from the model to invoke that Tool.
 
 ## Plain async function
 
@@ -18,9 +20,10 @@ async def write_file(path: str, content: str) -> str:
 tool = Tool(name="write_file", handler=write_file)
 ```
 
-The handler's **docstring** becomes the tool description sent to the LLM.
-Function annotations are converted to a JSON schema object automatically - no
-decorators or schema registration needed.
+Wrapping the handler in `Tool` makes it available to an Agent. The handler's
+**docstring** becomes the description sent to the LLM. Function annotations
+are converted to a JSON schema object automatically - no decorators or schema
+registration needed.
 
 Use `Annotated` + `Field` to add descriptions, defaults, or numeric bounds:
 
@@ -214,5 +217,4 @@ A selector is useful when you have a large tool catalogue and want to avoid
 sending every tool's schema to the model on every turn - for example, by
 using embeddings or keyword matching to pick only the relevant tools.
 
-`ToolSelector` implementations are registered via the `axio.selector` entry
-point group and discovered by `discover_selectors()` from `axio_tui.plugin`.
+Pass a `ToolSelector` implementation directly to `Agent(selector=...)`.

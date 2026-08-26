@@ -180,7 +180,7 @@ When installed, `axio-transport-google` registers two tools under `axio.tools`:
 | `generate_image` | `generate_image` | Generate images via Gemini Nano Banana |
 | `generate_video` | `generate_video` | Generate videos via Veo |
 
-These tools are automatically available in the TUI and in `axio-repl`.
+Pass these handlers to `Tool` explicitly, or use them through `axio-repl`.
 
 ## Realtime (Gemini Live)
 

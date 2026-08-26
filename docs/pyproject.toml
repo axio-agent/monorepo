@@ -6,7 +6,16 @@ requires-python = ">=3.12"
 license = {text = "MIT"}
 dependencies = [
     "axio",
+    "axio-audio",
     "axio-context-sqlite",
+    "axio-repl",
+    "axio-tools-docker",
+    "axio-tools-local",
+    "axio-tools-mcp",
+    "axio-transport-anthropic",
+    "axio-transport-codex",
+    "axio-transport-google",
+    "axio-transport-openai",
 ]
 
 [dependency-groups]
@@ -24,4 +33,13 @@ docs = [
 
 [tool.uv.sources]
 axio = { workspace = true }
+axio-audio = { workspace = true }
 axio-context-sqlite = { workspace = true }
+axio-repl = { workspace = true }
+axio-tools-docker = { workspace = true }
+axio-tools-local = { workspace = true }
+axio-tools-mcp = { workspace = true }
+axio-transport-anthropic = { workspace = true }
+axio-transport-codex = { workspace = true }
+axio-transport-google = { workspace = true }
+axio-transport-openai = { workspace = true }

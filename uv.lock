@@ -415,7 +415,16 @@ version = "0.1.0"
 source = { virtual = "docs" }
 dependencies = [
     { name = "axio" },
+    { name = "axio-audio" },
     { name = "axio-context-sqlite" },
+    { name = "axio-repl" },
+    { name = "axio-tools-docker" },
+    { name = "axio-tools-local" },
+    { name = "axio-tools-mcp" },
+    { name = "axio-transport-anthropic" },
+    { name = "axio-transport-codex" },
+    { name = "axio-transport-google" },
+    { name = "axio-transport-openai" },
 ]
 
 [package.dev-dependencies]
@@ -434,7 +443,16 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "axio", editable = "axio" },
+    { name = "axio-audio", editable = "axio-audio" },
     { name = "axio-context-sqlite", editable = "axio-context-sqlite" },
+    { name = "axio-repl", editable = "axio-repl" },
+    { name = "axio-tools-docker", editable = "axio-tools-docker" },
+    { name = "axio-tools-local", editable = "axio-tools-local" },
+    { name = "axio-tools-mcp", editable = "axio-tools-mcp" },
+    { name = "axio-transport-anthropic", editable = "axio-transport-anthropic" },
+    { name = "axio-transport-codex", editable = "axio-transport-codex" },
+    { name = "axio-transport-google", editable = "axio-transport-google" },
+    { name = "axio-transport-openai", editable = "axio-transport-openai" },
 ]
 
 [package.metadata.requires-dev]

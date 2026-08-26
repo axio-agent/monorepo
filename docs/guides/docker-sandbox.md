@@ -90,9 +90,10 @@ asyncio.run(main())
 
 ## Named containers and reuse
 
-Pass `name=` to give the container a fixed name. When a running container with
+Pass `name=` to give the container a stable identity. When a container with
 that name already exists, the sandbox attaches to it instead of creating a new
-one and skips removal on exit regardless of `remove`:
+one, starts it if necessary, and skips removal on exit regardless of `remove`.
+This is how a new harness process reconnects to a session's existing sandbox:
 
 <!-- name: test_docker_named_reuse; fixtures: docker -->
 ```python
@@ -120,6 +121,14 @@ asyncio.run(second_session())
 ```
 
 If no container with the given name exists, a new one is created normally.
+For a harness, a server-issued UUID or ULID session ID can be used directly as
+`name`; no separate container-ID mapping is required. Re-entering
+`DockerSandbox` creates a new tool list bound to the recovered container. Map
+arbitrary client-provided IDs to validated internal IDs before using them as
+Docker names.
+
+A name recovers an existing container; it cannot recover a deleted one. Mount
+a named volume for the workspace when files must survive container replacement.
 
 ## Named volumes
 

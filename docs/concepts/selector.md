@@ -234,18 +234,10 @@ async def _run():
 asyncio.run(_run())
 ```
 
-## Plugin discovery
+## Application integration
 
-`ToolSelector` implementations can be registered via entry points in `pyproject.toml`:
-
-```toml
-[project.entry-points."axio.selector"]
-keyword = "my_package.selectors:KeywordSelector"
-role_based = "my_package.selectors:RoleBasedSelector"
-```
-
-Then discovered at runtime via `axio_tui.plugin.discover_selectors()`.
-
+Construct the selector in application code and pass it directly to
+`Agent(selector=selector)`.
 ## Related
 
 - {doc}`agent` - The `Agent` class uses the selector to filter tools each iteration

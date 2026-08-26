@@ -98,16 +98,10 @@ class LLMRiskGuard(ConcurrentGuard):
 The semaphore is acquired automatically in `ConcurrentGuard.__call__`
 before `check()` is invoked.
 
-## Registering as a plugin
+## Attach the guard
 
-```toml
-[project.entry-points."axio.guards"]
-max_length = "my_package.guards:MaxLengthGuard"
-```
-
-After installation, the guard appears in `discover_guards()` and can be
-configured in the TUI.
-
+Construct guards in application code and attach them directly to the relevant
+`Tool(guards=(...))` instance.
 ## Composing guards
 
 Guards compose naturally. Combine fast checks first, expensive checks last:

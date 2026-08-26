@@ -16,7 +16,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 irm https://astral.sh/uv/install.ps1 | iex
 ```
 
-Or use pip: `pip install "axio-tui[all]"`
+Or install Axio with pip: `pip install axio`.
 
 ## API Keys
 
@@ -38,7 +38,6 @@ export NEBIUS_API_KEY="..."
 export OPENROUTER_API_KEY="..."
 ```
 
-For the TUI, you can also set keys via the settings screen (open the command palette with `Ctrl+P` and search for the transport settings).
 
 ### `Invalid API key` / `Authentication error`
 
@@ -72,11 +71,7 @@ For the TUI, you can also set keys via the settings screen (open the command pal
 
 ### `Tool not found`
 
-Tools must be registered as entry points or explicitly passed to the Agent.
-
-1. If using the TUI: make sure the package with tools is installed (e.g., `uv tool install "axio-tui[local]"` for filesystem tools)
-
-2. If programmatically: pass tools directly to the Agent:
+Tools must be passed explicitly to the Agent:
 
 ```python
 from my_tool import my_tool
@@ -112,21 +107,6 @@ Guards are blocking all tool calls. Check:
 2. For path guards: ensure you are running from a directory the guard will allow
 3. For LLM guards: ensure you have an API key configured
 
-### `PathGuard: path not allowed`
-
-The path guard prompts for permission on each new directory. It does not take
-a pre-configured allow list - instead it asks at runtime. To attach it:
-
-```python
-from axio_tui_guards import PathGuard
-
-guard = PathGuard()  # uses interactive prompt by default
-agent = Agent(guards=[guard], ...)
-```
-
-When prompted, answer `y` to allow access to the directory (remembered for the
-session), or `deny` to permanently block that path for the session.
-
 ## Context & Storage
 
 ### `Database is locked` (SQLite)
@@ -142,29 +122,6 @@ Multiple processes are accessing the same SQLite database. Solutions:
 - Check the `session_id` is correct
 - For SQLite: verify the database file exists and has data
 - The session may have been deleted or expired
-
-## TUI
-
-### `axio: command not found` after install
-
-- Verify uv tool install worked: `uv tool list`
-- Add uv tools to PATH: `export PATH="$HOME/.local/bin:$PATH"`
-- Or run directly: `python -m axio_tui`
-
-### TUI crashes on startup
-
-- Check Python version - requires 3.12+
-- Run with verbose logging: `axio --log-level debug` to see error output
-- Try resetting config: delete `~/.local/share/axio-tui/axio.db` and restart
-
-### `No transports found`
-
-Install a transport package:
-
-```bash
-uv tool install "axio-tui[openai]"   # OpenAI
-uv tool install "axio-tui[anthropic]" # Anthropic
-```
 
 ## Development
 
