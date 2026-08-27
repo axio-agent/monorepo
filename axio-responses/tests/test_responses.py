@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 import pytest
-from axio.blocks import ImageBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.blocks import AudioBlock, ImageBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from axio.events import (
     BlockEnd,
     Citation,
@@ -428,3 +428,43 @@ def test_a_delta_and_the_event_that_closes_its_block_agree() -> None:
     assert isinstance(reasoning, ReasoningDelta)
     assert reasoning.index == 1
     assert [e.index for e in closed if isinstance(e, (ReasoningSignature, BlockEnd))] == [1, 1]
+
+
+# ---------------------------------------------------------------------------
+# A tool that returns more than a string
+# ---------------------------------------------------------------------------
+
+
+def test_a_structured_tool_result_travels_as_the_parts_this_api_takes() -> None:
+    """json.dumps on the blocks raises: they are slotted dataclasses and not JSON.
+
+    A tool returning anything but a string crashed the request before it was sent.
+    """
+    result = ToolResultBlock(
+        tool_use_id="call_1",
+        content=[TextBlock(text="here is the chart"), ImageBlock(media_type="image/png", data=b"\x89PNG")],
+    )
+    _, items = convert_messages([Message(role="user", content=[result])], "")
+    output = items[0]["output"]
+    assert output[0] == {"type": "input_text", "text": "here is the chart"}
+    assert output[1]["type"] == "input_image"
+    assert output[1]["image_url"].startswith("data:image/png;base64,")
+
+
+def test_a_plain_string_result_is_left_a_string() -> None:
+    result = ToolResultBlock(tool_use_id="call_1", content="22C")
+    _, items = convert_messages([Message(role="user", content=[result])], "")
+    assert items[0]["output"] == "22C"
+
+
+def test_media_this_api_has_no_part_for_is_named_rather_than_dropped() -> None:
+    # The model is told what the tool produced instead of being handed a turn with a gap in it.
+    result = ToolResultBlock(tool_use_id="call_1", content=[AudioBlock(media_type="audio/wav", data=b"RIFF")])
+    _, items = convert_messages([Message(role="user", content=[result])], "")
+    assert items[0]["output"] == [{"type": "input_text", "text": "[audio/wav, which this API takes no part for]"}]
+
+
+def test_a_result_with_no_readable_part_is_not_reported_as_nothing() -> None:
+    result = ToolResultBlock(tool_use_id="call_1", content=[])
+    _, items = convert_messages([Message(role="user", content=[result])], "")
+    assert items[0]["output"] == ""

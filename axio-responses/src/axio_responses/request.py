@@ -5,7 +5,15 @@ import json
 import logging
 from typing import Any
 
-from axio.blocks import ImageBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.blocks import (
+    AudioBlock,
+    ImageBlock,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    VideoBlock,
+)
 from axio.messages import Message
 from axio.tool import Tool
 from axio.types import StopReason
@@ -51,6 +59,33 @@ def convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def tool_output(content: str | list[TextBlock | ImageBlock | AudioBlock | VideoBlock]) -> str | list[dict[str, Any]]:
+    """A tool result as the output this API takes.
+
+    ``json.dumps`` on the blocks raises: they are slotted dataclasses and not JSON, so a tool that
+    returned anything but a string crashed the request before it was sent.
+
+    The API takes a string, or a list of ``input_text``, ``input_image`` and ``input_file`` parts.
+    Text and images travel as themselves. Audio and video have no part of their own here, so they
+    are named in text: the model is told what the tool produced instead of being handed a turn with
+    a gap in it.
+    """
+    if isinstance(content, str):
+        return content
+    parts: list[dict[str, Any]] = []
+    for block in content:
+        if isinstance(block, TextBlock):
+            parts.append({"type": "input_text", "text": block.text})
+        elif isinstance(block, ImageBlock):
+            encoded = base64.b64encode(block.data).decode("ascii")
+            parts.append({"type": "input_image", "image_url": f"data:{block.media_type};base64,{encoded}"})
+        elif isinstance(block, (AudioBlock, VideoBlock)):
+            parts.append({"type": "input_text", "text": f"[{block.media_type}, which this API takes no part for]"})
+    # An empty list would say the tool returned nothing at all, which is not what an unreadable
+    # result means.
+    return parts or ""
+
+
 def convert_messages(messages: list[Message], system: str) -> tuple[str, list[dict[str, Any]]]:
     """Convert axio Message list to Responses API input array.
 
@@ -64,12 +99,11 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
             tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
             if tool_results and len(tool_results) == len(msg.content):
                 for tr in tool_results:
-                    content = tr.content if isinstance(tr.content, str) else json.dumps(tr.content)
                     items.append(
                         {
                             "type": "function_call_output",
                             "call_id": tr.tool_use_id,
-                            "output": content,
+                            "output": tool_output(tr.content),
                         }
                     )
             else:
