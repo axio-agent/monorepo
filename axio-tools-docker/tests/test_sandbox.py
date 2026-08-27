@@ -274,6 +274,16 @@ async def test_exec_stderr() -> None:
     assert "oops" in result
 
 
+async def test_exec_replaces_undecodable_output_bytes() -> None:
+    cls, client, container = mock_docker_factory(exec_messages=[(1, b"out\xa0\n"), (2, b"err\xff\n")])
+    with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
+        async with DockerSandbox() as sb:
+            result = await sb.exec("locale-confused-command")
+
+    assert "out\ufffd" in result
+    assert "err\ufffd" in result
+
+
 async def test_exec_nonzero_exit_code() -> None:
     cls, client, container = mock_docker_factory(exec_messages=[(2, b"fail\n")], exec_exit_code=1)
     with patch("axio_tools_docker.sandbox.aiodocker.Docker", cls):
