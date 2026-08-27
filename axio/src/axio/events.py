@@ -262,7 +262,7 @@ class Refusal:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
-# ── Reasoning provenance ────────────────────────────────────────────────────
+# ── Provenance ──────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +283,22 @@ class ReasoningSignature:
     id: str = ""
     """How the provider names the block this proves, where it names them. Replayed beside the
     proof, because a provider that identifies reasoning by id refuses the pair without it."""
+
+
+@dataclass(frozen=True, slots=True)
+class TextSignature:
+    """Opaque proof that a block of answer text is the provider's own, to be replayed unaltered.
+
+    Google signs the part it issued the proof for, and answer text is one such part. The proof
+    belongs to the text block, not to the reasoning or the call beside it: replayed on another part
+    it proves nothing, and the turn fails with ``MISSING_THOUGHT_SIGNATURE``. Never inspect, decode,
+    re-encode or truncate ``data``.
+
+    Emitted after the text it signs, never before.
+    """
+
+    index: int
+    data: str
 
 
 # ── Iteration lifecycle ─────────────────────────────────────────────────────
@@ -306,6 +322,7 @@ type StreamEvent = (
     ReasoningDelta
     | ReasoningSignature
     | TextDelta
+    | TextSignature
     | Refusal
     | Citation
     | ImageOutput

@@ -117,13 +117,16 @@ signature. It is opaque, and a changed one is as bad as a missing one.
 This is the same failure on Google's side. Google publishes it as a
 `finishReason`. The transport maps it to `StopReason.error`, which ends the run.
 
-Two replay paths, easy to confuse:
+Three replay paths, easy to confuse:
 
 - A thought that had text goes back as a part with `thought: true` and its
   `thoughtSignature`.
 - A signature that arrived on a *function-call* part goes back on that part, not on a
   thought part. Gemini puts the proof on the part it signed. Sent as a text-less thought
   part, the call it belongs to comes back `MISSING_THOUGHT_SIGNATURE`.
+- A signature that arrived on a plain *answer-text* part is stored on that `TextBlock` and
+  goes back on the text part. Held as reasoning it made a text-less thought part, whose
+  proof the next unsigned call then took.
 
 Parallel calls consume unplaced signatures in arrival order, so the store has to preserve
 the order of blocks within the assistant turn.

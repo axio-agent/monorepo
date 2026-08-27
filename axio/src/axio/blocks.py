@@ -45,6 +45,9 @@ class ContentBlock:
 @dataclass(frozen=True, slots=True)
 class TextBlock(ContentBlock):
     text: str
+    #: Opaque proof that this text is the provider's own, where the provider signs the text part.
+    #: Replayed with the text: Google reports ``MISSING_THOUGHT_SIGNATURE`` for a turn that lost it.
+    signature: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +115,12 @@ def to_dict(block: ContentBlock) -> dict[str, Any]:
 
 @to_dict.register(TextBlock)
 def _text_to_dict(block: TextBlock) -> dict[str, Any]:
-    return {"type": "text", "text": block.text}
+    # The key is written only when a provider signed the text. Text is the commonest block, so an
+    # empty key on every one of them grows every stored session for nothing.
+    out: dict[str, Any] = {"type": "text", "text": block.text}
+    if block.signature:
+        out["signature"] = block.signature
+    return out
 
 
 @to_dict.register(ImageBlock)
@@ -170,7 +178,8 @@ def from_dict(data: dict[str, Any]) -> ContentBlock:
     """Deserialize a plain dict to a ContentBlock."""
     match data["type"]:
         case "text":
-            return TextBlock(text=data["text"])
+            # A session stored before text carried a proof has no "signature" key.
+            return TextBlock(text=data["text"], signature=data.get("signature", ""))
         case "image":
             return ImageBlock(media_type=data["media_type"], data=base64.b64decode(data["data"]))
         case "audio":

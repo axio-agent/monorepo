@@ -48,6 +48,17 @@ All events are frozen dataclasses with `slots=True`:
       redacted: bool = False
       id: str = ""
   ```
+
+`TextSignature`
+: The provider's opaque proof that the answer text at `index` is its own. Gemini signs the part it
+  produced, which may be plain text rather than reasoning. Stored on the `TextBlock`, because a
+  proof held as reasoning would be replayed on a part the provider never signed.
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class TextSignature:
+      index: int
+      data: str
+  ```
   The agent attaches it to the `ReasoningBlock` it belongs to so the turn can be
   sent back unaltered. Never inspect, decode, re-encode or truncate `data`.
   Anthropic refuses a returned thinking block whose signature is missing or
@@ -370,6 +381,7 @@ type StreamEvent = (
     ReasoningDelta
     | ReasoningSignature
     | TextDelta
+    | TextSignature
     | Refusal
     | Citation
     | ImageOutput

@@ -1,5 +1,6 @@
 """The format, case by case, and the state machine that reads it."""
 
+import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -182,3 +183,84 @@ def test_a_partial_bom_does_not_outlive_the_line_it_broke() -> None:
     made = decoder.decode(b"data: broken\n\ndata: clean\n\n")
 
     assert [event.data for event in made] == ["clean"]
+
+
+# ---------- what holding a chunk costs ----------
+
+
+def _cost(payload: int, size: int = 8192) -> float:
+    """The best of three runs over one ``data:`` line of ``payload`` characters, cut into chunks."""
+    stream = ("data: " + "x" * payload + "\n\n").encode()
+    parts = [stream[at : at + size] for at in range(0, len(stream), size)]
+    best = float("inf")
+    for _ in range(3):
+        decoder = Decoder()
+        started = time.perf_counter()
+        for part in parts:
+            decoder.decode(part)
+        decoder.decode(b"", final=True)
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
+def test_a_big_event_costs_what_its_size_costs_and_not_what_its_square_costs() -> None:
+    # Held text was scanned once per line and copied once per chunk, so four times the payload cost
+    # sixteen times the time. Sixteen and four are the two answers, and the gate sits between them.
+    _cost(1 << 18)  # warm the paths, so the first measured size is not the one that pays for them
+    small, large = _cost(1 << 20), _cost(1 << 22)
+    assert large / small < 8, f"four times the payload cost {large / small:.1f} times the time"
+
+
+def test_a_read_buffer_holding_hundreds_of_small_events_gives_back_every_one_of_them() -> None:
+    # 64 KB is aiohttp's default read buffer, so hundreds of ordinary deltas arrive in one chunk.
+    want = [Event(data=f'{{"i":{n}}}', event="delta") for n in range(2_000)]
+    stream = "".join(f'event: delta\ndata: {{"i":{n}}}\n\n' for n in range(2_000)).encode()
+    decoder = Decoder()
+    got = [event for at in range(0, len(stream), 65536) for event in decoder.decode(stream[at : at + 65536])]
+    assert got + decoder.decode(b"", final=True) == want
+
+
+def test_a_reset_leaves_no_buffer_and_no_offset_into_it() -> None:
+    # The buffer keeps read lines and reads past them by offset. Left set against an empty buffer,
+    # the scan offset goes negative and str.find then starts near the end of the next stream.
+    decoder = Decoder()
+    decoder.decode(b"data: first\n\ndata: half")
+
+    decoder.reset()
+
+    assert (decoder._held, decoder._start, decoder._scan, decoder._parts) == ("", 0, 0, [])
+    assert decoder.decode(b"data: second\n\n", final=True) == [Event(data="second")]
+
+
+def _ordinary(size: int, events: int = 4_000) -> float:
+    """The best of three runs over many small events, cut into chunks of ``size``."""
+    stream = ("data: {}\n\n" * events).encode()
+    parts = [stream[at : at + size] for at in range(0, len(stream), size)]
+    best = float("inf")
+    for _ in range(3):
+        decoder = Decoder()
+        started = time.perf_counter()
+        for part in parts:
+            decoder.decode(part)
+        decoder.decode(b"", final=True)
+        best = min(best, time.perf_counter() - started)
+    return best
+
+
+def test_many_small_events_cost_the_same_however_they_are_chunked() -> None:
+    # Each line re-scanned the whole remaining buffer, so a bigger read buffer cost more for the
+    # same stream: 64 KB chunks were 26 times 1 KB chunks. 64 KB is aiohttp's default.
+    _ordinary(8192)  # warm the paths, so the first measured size does not pay for them
+    small, large = _ordinary(1024), _ordinary(65536)
+    assert large / small < 4, f"a 64x larger read buffer cost {large / small:.1f} times the time"
+
+
+def test_a_finished_event_is_not_held_a_second_time() -> None:
+    # The buffer dropped read lines only when the next terminator arrived, so between two large
+    # events it held both: the one already handed back, and the one still arriving.
+    body = ("data: " + "x" * (1 << 20) + "\n\n").encode()
+    decoder = Decoder()
+    made = [event for at in range(0, len(body), 65536) for event in decoder.decode(body[at : at + 65536])]
+
+    assert len(made) == 1
+    assert len(decoder._held) < len(made[0].data) // 100

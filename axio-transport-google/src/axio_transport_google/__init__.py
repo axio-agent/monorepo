@@ -36,6 +36,7 @@ from axio.events import (
     Refusal,
     StreamEvent,
     TextDelta,
+    TextSignature,
     ToolInputDelta,
     ToolUseStart,
     VideoOutput,
@@ -394,7 +395,7 @@ def _assistant_parts(msg: Message, thought_signatures: dict[str, str] | None) ->
     unplaced: deque[str] = deque()
     for block in msg.content:
         if isinstance(block, TextBlock):
-            parts.append({"text": block.text})
+            parts.append(_text_part(block))
         elif isinstance(block, ReasoningBlock):
             if block.text:
                 thought: Part = {"text": block.text, "thought": True}
@@ -409,6 +410,17 @@ def _assistant_parts(msg: Message, thought_signatures: dict[str, str] | None) ->
         elif isinstance(block, ToolUseBlock):
             parts.append(_call_part(block, unplaced, thought_signatures))
     return parts
+
+
+def _text_part(block: TextBlock) -> Part:
+    """One answer-text part, carrying the proof Gemini issued for that text.
+
+    Sent without it, a turn whose text Gemini signed fails with ``MISSING_THOUGHT_SIGNATURE``.
+    """
+    part: Part = {"text": block.text}
+    if block.signature:
+        part["thoughtSignature"] = block.signature
+    return part
 
 
 def _call_part(block: ToolUseBlock, unplaced: deque[str], from_transport: dict[str, str] | None) -> Part:
@@ -854,9 +866,13 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             # It signs reasoning, or it is the bare proof of a call that follows. Emitted after
             # the reasoning, never before: the agent signs the block it has just built.
             yield ReasoningSignature(index=at, data=part.thoughtSignature)
+        elif part.text:
+            # The proof signs answer text, so it rides on that text block. Emitted after the text,
+            # never before, for the same reason as reasoning.
+            yield TextSignature(index=at, data=part.thoughtSignature)
         else:
-            # The proof is for content axio stores in a block with no signature field. Held as a
-            # ReasoningSignature it made a textless reasoning block whose proof the next call took.
+            # Media, executableCode and the rest: axio has no block that can hold this proof, so it
+            # travels raw rather than attaching to a block the provider did not sign.
             yield ProviderEvent(provider="google", kind="thoughtSignature", data=dict(part.raw), index=at)
 
     def _call_events(self, part: ContentPart, turn: _Turn) -> Iterator[StreamEvent]:

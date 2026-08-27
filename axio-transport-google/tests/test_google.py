@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import aiohttp
 import pytest
 from aiohttp import web
+from axio import Agent, MemoryContextStore
 from axio.blocks import (
     AudioBlock,
     ImageBlock,
@@ -596,6 +599,11 @@ class TestThoughtSignatureIsReplayed:
         assert parts[0] == {"text": "weighing it", "thought": True, "thoughtSignature": "SIG"}
         assert parts[1] == {"text": "Paris."}
 
+    def test_a_stored_answer_goes_back_with_the_proof_that_signed_it(self) -> None:
+        # Gemini signs the text part it issued the proof for, so the proof rides on that part.
+        messages = [Message(role="assistant", content=[TextBlock(text="42", signature="SIG")])]
+        assert _build_contents_json(messages)[0]["parts"] == [{"text": "42", "thoughtSignature": "SIG"}]
+
     def test_a_thought_with_no_signature_still_travels_as_a_thought(self) -> None:
         # Gemini does not refuse an unsigned thought the way Anthropic refuses an unsigned block.
         messages = [Message(role="assistant", content=[ReasoningBlock(text="unsigned")])]
@@ -638,8 +646,9 @@ class TestEmissionOrder:
         assert [(r.blocked_input, r.category) for r in refusals] == [(True, "SAFETY")]
 
 
-async def _stream_one(monkeypatch: pytest.MonkeyPatch, chunk: dict[str, Any]) -> list[Any]:
-    """Serve one SSE chunk from a local server and collect what the transport made of it."""
+@asynccontextmanager
+async def _serving(monkeypatch: pytest.MonkeyPatch, chunk: dict[str, Any]) -> AsyncIterator[None]:
+    """Serve one SSE chunk from a local server while the block runs."""
     body = f"data: {json.dumps(chunk)}\n\n".encode()
 
     async def handler(request: web.Request) -> web.StreamResponse:
@@ -658,13 +667,19 @@ async def _stream_one(monkeypatch: pytest.MonkeyPatch, chunk: dict[str, Any]) ->
     host, port = site._server.sockets[0].getsockname()[:2]  # type: ignore[union-attr]
     monkeypatch.setattr("axio_transport_google._DEVELOPER_API_BASE", f"http://{host}:{port}/v1beta")
     try:
+        yield
+    finally:
+        await runner.cleanup()
+
+
+async def _stream_one(monkeypatch: pytest.MonkeyPatch, chunk: dict[str, Any]) -> list[Any]:
+    """Serve one SSE chunk from a local server and collect what the transport made of it."""
+    async with _serving(monkeypatch, chunk):
         async with aiohttp.ClientSession() as session:
             transport = GoogleTransport(
                 api_key="test-key", model=GENAI_MODELS["gemini-3-flash-preview"], session=session, max_retries=1
             )
             return [event async for event in transport.stream([], [], "")]
-    finally:
-        await runner.cleanup()
 
 
 class TestFunctionCallSignatureSurvivesARestart:
@@ -912,6 +927,45 @@ async def test_two_unnamed_calls_to_one_tool_get_different_ids(
     assert len(ids) == len(set(ids)) == 2
 
 
+class TestAProofOnAnswerTextSurvivesTheRoundTrip:
+    """Gemini signs the answer part. That proof has to come back on the same part.
+
+    Routed to a ProviderEvent the agent stored nothing, and the replay of the turn came back
+    MISSING_THOUGHT_SIGNATURE.
+    """
+
+    @staticmethod
+    async def _history(monkeypatch: pytest.MonkeyPatch, chunk: dict[str, Any]) -> list[Message]:
+        """Run one real turn through the agent and return what it stored."""
+        async with _serving(monkeypatch, chunk):
+            async with aiohttp.ClientSession() as session:
+                transport = GoogleTransport(
+                    api_key="test-key", model=GENAI_MODELS["gemini-3-flash-preview"], session=session, max_retries=1
+                )
+                context = MemoryContextStore()
+                async for _ in Agent(system="", tools=[], transport=transport).run_stream("what is it", context):
+                    pass
+                return await context.get_history()
+
+    _CHUNK = {
+        "candidates": [{"content": {"parts": [{"text": "42", "thoughtSignature": "SIG"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1, "totalTokenCount": 4},
+    }
+
+    async def test_the_agent_stores_the_answer_with_its_proof(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        history = await self._history(monkeypatch, self._CHUNK)
+
+        assistant = [m for m in history if m.role == "assistant"][0]
+        assert assistant.content == [TextBlock(text="42", signature="SIG")]
+
+    async def test_the_stored_answer_replays_on_the_part_gemini_signed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        history = await self._history(monkeypatch, self._CHUNK)
+
+        # No transport state: the proof comes from the stored block, so it survives a restart.
+        parts = _build_contents_json(history, thought_signatures=None)[-1]["parts"]
+        assert parts[0] == {"text": "42", "thoughtSignature": "SIG"}
+
+
 class TestWhatAPartProduces:
     """One part, one rule per shape it arrives in."""
 
@@ -928,12 +982,20 @@ class TestWhatAPartProduces:
         # It belongs to a call that follows, which is what the request side reads it as.
         assert [type(e).__name__ for e in self._events({"thoughtSignature": "SIG"})] == ["ReasoningSignature"]
 
-    def test_a_proof_on_answer_text_is_not_stored_as_reasoning(self) -> None:
+    def test_a_proof_on_answer_text_signs_that_text(self) -> None:
         # Held as a ReasoningSignature it made a textless ReasoningBlock, and the next unsigned
         # call in the turn replayed with a proof that was never its own.
         events = self._events({"text": "42", "thoughtSignature": "SIG"})
-        assert [type(e).__name__ for e in events] == ["TextDelta", "ProviderEvent"]
-        assert events[1].data["thoughtSignature"] == "SIG"
+        assert [type(e).__name__ for e in events] == ["TextDelta", "TextSignature"]
+        assert events[1].data == "SIG"
+
+    def test_the_proof_arrives_after_the_text_it_signs(self) -> None:
+        # The agent signs the block it has just built, so a proof emitted first signs nothing, and
+        # a proof sent as anything but TextSignature is not stored at all.
+        events = self._events({"text": "42", "thoughtSignature": "SIG"})
+
+        assert [type(e).__name__ for e in events] == ["TextDelta", "TextSignature"]
+        assert events[1].data == "SIG"
 
     def test_a_signed_part_axio_has_no_type_for_still_reaches_the_caller(self) -> None:
         # The signature suppressed the event carrying the content, so the code ran and vanished.

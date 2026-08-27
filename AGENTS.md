@@ -219,7 +219,7 @@ Both handle the full round-trip including nested blocks in `ToolResultBlock`.
 
 ### Events (`axio/events.py`)
 
-All events are `dataclass(frozen=True, slots=True)`. `StreamEvent` is a **type alias union** of 26 members, not a base class. Nothing inherits from it. `isinstance(x, StreamEvent)` raises. A `match` over it needs a `case _`.
+All events are `dataclass(frozen=True, slots=True)`. `StreamEvent` is a **type alias union** of 27 members, not a base class. Nothing inherits from it. `isinstance(x, StreamEvent)` raises. A `match` over it needs a `case _`.
 
 Content:
 
@@ -227,6 +227,7 @@ Content:
 |---|---|
 | `ReasoningDelta` | `index: int`, `delta: str` |
 | `ReasoningSignature` | `index: int`, `data: str`, `redacted: bool = False`, `id: str = ""` |
+| `TextSignature` | `index: int`, `data: str` |
 | `TextDelta` | `index: int`, `delta: str` |
 | `Refusal` | `index: int`, `text: str = ""`, `category: str \| None = None`, `blocked_input: bool = False`, `raw: dict = {}` |
 | `Citation` | `index: int`, `cited_text: str = ""`, `title`, `url`, `source_id`, `start`, `end`, `unit: Literal["char","byte","page","block","unknown"] = "unknown"`, `raw` |
@@ -584,16 +585,9 @@ assert Responses.names() <= PUBLISHED_EVENTS   # subset: unclaimed names are for
 
 ### Doc tests
 
-Documentation in `docs/` is tested with [markdown-pytest](https://github.com/mosquito/markdown-pytest), and so are the package READMEs. Most packages set `testpaths = ["tests", "README.md"]`. Annotate code blocks with HTML comments:
+Documentation in `docs/` is tested with [markdown-pytest](https://github.com/mosquito/markdown-pytest), and so are the package READMEs. Most packages set `testpaths = ["tests", "README.md"]`. Annotate a code block with an HTML comment on the line directly above its fence. Write the marker as `<!-- name: test_my_example -->`.
 
-```markdown
-<!-- name: test_my_example -->
-```python
-import asyncio
-from axio.agent import Agent
-# ... asyncio.run() for async code
-```
-```
+A marker is collected only when its name starts with `test`. markdown-pytest reads a single-line marker anywhere in a file, including inside a fence that only documents the syntax, so this file shows that form as inline code. The `python` blocks in this file are illustrative excerpts and carry no marker, so pointing pytest at `AGENTS.md` collects nothing, as it does for `README.md`.
 
 Hidden setup (stubs that must not appear in rendered docs):
 
@@ -607,7 +601,7 @@ from axio.testing import StubTransport, make_text_response
 -->
 ```
 
-A named block is executed, so it must run with no network and no API keys. Use `axio.testing.StubTransport`. Leave the name off a block you do not want run. This file is not collected by any `testpaths`, so blocks here are illustrative only.
+A named block is executed, so it must run with no network and no API keys. Use `axio.testing.StubTransport`. Wrap async code in `asyncio.run()`. Leave the name off a block you do not want run.
 
 Run doc tests:
 

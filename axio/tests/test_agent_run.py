@@ -17,6 +17,7 @@ from axio.events import (
     SessionEndEvent,
     StreamEvent,
     TextDelta,
+    TextSignature,
     ToolInputDelta,
     ToolResult,
     ToolUseStart,
@@ -391,6 +392,54 @@ class TestReasoningIsKept:
         ]
 
 
+class TestAnswerTextKeepsItsProof:
+    """Gemini signs the answer part too, and that proof has to reach the block it signs."""
+
+    @staticmethod
+    async def _stored(*events: StreamEvent) -> list[Any]:
+        transport = StubTransport([[*events, IterationEnd(1, StopReason.end_turn, Usage(1, 1))]])
+        context = MemoryContextStore()
+        async for _ in Agent(system="", tools=[], transport=transport).run_stream("hi", context):
+            pass
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        return list(assistant.content)
+
+    async def test_a_proof_on_answer_text_reaches_the_stored_text_block(self) -> None:
+        # Dropped here, the turn replays without the proof Gemini issued for that part and the
+        # next request fails with MISSING_THOUGHT_SIGNATURE.
+        stored = await self._stored(TextDelta(0, "42"), TextSignature(0, "SIG"))
+
+        assert stored == [TextBlock(text="42", signature="SIG")]
+
+    async def test_a_delta_after_a_signed_text_block_starts_a_new_block(self) -> None:
+        # The provider signed the text it had. Extending that block would store a proof that
+        # disagrees with the text beside it.
+        stored = await self._stored(
+            TextDelta(0, "first"),
+            TextSignature(0, "SIG-1"),
+            TextDelta(1, "second"),
+            TextSignature(1, "SIG-2"),
+        )
+
+        assert stored == [
+            TextBlock(text="first", signature="SIG-1"),
+            TextBlock(text="second", signature="SIG-2"),
+        ]
+
+    async def test_a_proof_for_text_never_lands_on_the_call_that_follows(self) -> None:
+        # Held as a reasoning proof it made a textless block, and the next unsigned call replayed
+        # with a proof that was never its own.
+        stored = await self._stored(
+            TextDelta(0, "42"),
+            TextSignature(0, "SIG"),
+            ToolUseStart(1, "c1", "echo"),
+            ToolInputDelta(1, "c1", "{}"),
+        )
+
+        assert stored == [TextBlock(text="42", signature="SIG"), ToolUseBlock(id="c1", name="echo", input={})]
+        assert not [b for b in stored if isinstance(b, ReasoningBlock)]
+
+
 class TestRefusalIsKept:
     async def test_a_refusal_reaches_the_stored_turn(self) -> None:
         # A refusal is what the assistant said. Left out, the stored turn is empty and the next
@@ -702,3 +751,45 @@ class TestATruncatedTurnDoesNotAct:
 
     async def test_a_finished_turn_still_runs_its_call(self) -> None:
         assert await self._dispatched(StopReason.tool_use) == ["1000"]
+
+
+class TestTextFromDifferentParts:
+    """A provider that numbers its text by part must not have those parts merged."""
+
+    @staticmethod
+    async def _stored(events: list[StreamEvent]) -> list[tuple[str, str]]:
+        context = MemoryContextStore()
+        agent = Agent(system="", tools=[], transport=StubTransport([events]))
+        await agent.run("hi", context)
+        turn = (await context.get_history())[-1]
+        return [(b.text, b.signature) for b in turn.content if isinstance(b, TextBlock)]
+
+    async def test_a_proof_signs_only_the_part_it_was_issued_for(self) -> None:
+        # Merged, the unsigned part joined the part after it and took that part's proof, so the
+        # request replayed a signature over text the provider never signed.
+        stored = await self._stored(
+            [
+                TextDelta(0, "a"),
+                TextSignature(index=0, data="S1"),
+                TextDelta(1, "b"),
+                TextDelta(2, "c"),
+                TextSignature(index=2, data="S3"),
+                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+            ]
+        )
+
+        assert stored == [("a", "S1"), ("b", ""), ("c", "S3")]
+
+    async def test_a_provider_that_numbers_nothing_still_gets_one_block(self) -> None:
+        # Anthropic and OpenAI send every delta under one index, so splitting on it would break
+        # every answer into one block per delta.
+        stored = await self._stored(
+            [
+                TextDelta(0, "Hello"),
+                TextDelta(0, " "),
+                TextDelta(0, "world"),
+                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+            ]
+        )
+
+        assert stored == [("Hello world", "")]

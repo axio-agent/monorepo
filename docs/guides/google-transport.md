@@ -114,13 +114,14 @@ off the transport, so this Google-specific behaviour stays in a Google-specific 
 
 Gemini signs the reasoning it produces. The signature has to come back unaltered on the next
 request. The transport emits it as `ReasoningSignature`. The agent stores it on the `ReasoningBlock`
-in the turn. The transport puts it back on a thought part where it signed a thought, and on the
-function-call part where it signed a call. A signature that is missing, altered or attached to the
+in the turn. The transport puts it back on the part Gemini signed: a thought part, a function-call part, or a
+plain text part. A proof on answer text travels as `TextSignature` and is stored on the
+`TextBlock`; the other two travel as `ReasoningSignature` and `ToolUseStart.signature`. A signature that is missing, altered or attached to the
 wrong part comes back as the finish reason `MISSING_THOUGHT_SIGNATURE`, which maps to
 `StopReason.error`.
 
-The consequence for a context store: `ReasoningBlock.signature` must survive the round trip through
-`to_dict`/`from_dict`. Drop it and the *next* turn fails, not the one that dropped it. See
+The consequence for a context store: `ReasoningBlock.signature`, `ToolUseBlock.signature` and
+`TextBlock.signature` must all survive the round trip through `to_dict`/`from_dict`. Drop it and the *next* turn fails, not the one that dropped it. See
 {doc}`writing-transports` for the three providers' replay shapes.
 
 ### Grounding and citations

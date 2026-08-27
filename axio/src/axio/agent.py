@@ -35,6 +35,7 @@ from .events import (
     SessionEndEvent,
     StreamEvent,
     TextDelta,
+    TextSignature,
     ToolInputDelta,
     ToolOutputDelta,
     ToolResult,
@@ -221,6 +222,8 @@ class _Turn:
     repeated: bool = False
     #: Which block the last proof was for. A repeated index continues that proof.
     signed_at: int | None = None
+    #: Which block the last text delta was for. A transport that numbers by part keeps them apart.
+    text_at: int | None = None
 
 
 @dataclass(slots=True)
@@ -330,10 +333,20 @@ class Agent:
     def _accumulate_text(
         content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
         delta: str,
+        *,
+        joining: bool,
     ) -> None:
-        """Append text delta — merge into last TextBlock or start a new one."""
-        if content and isinstance(content[-1], TextBlock):
-            content[-1] = TextBlock(text=content[-1].text + delta)
+        """Append a text delta, merging into the block still being built.
+
+        ``joining`` says the delta belongs to the block the last one built. Merged across two of a
+        provider's parts, one part's proof ends up signing the other part's text as well.
+
+        A signed block is finished. The provider computed the signature over the text it had, so a
+        later delta starts a new block rather than leaving a proof that disagrees with its text.
+        """
+        last = content[-1] if content else None
+        if joining and isinstance(last, TextBlock) and not last.signature:
+            content[-1] = replace(last, text=last.text + delta)
         else:
             content.append(TextBlock(text=delta))
 
@@ -378,6 +391,22 @@ class Agent:
             content[-1] = replace(last, signature=data, redacted=redacted, id=id)
         else:
             content.append(ReasoningBlock(signature=data, redacted=redacted, id=id))
+
+    @staticmethod
+    def _sign_text(
+        content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
+        data: str,
+    ) -> None:
+        """Attach the provider's proof to the answer text it belongs to.
+
+        The proof arrives after the text it signs, so it goes on the block just built. Put on a
+        reasoning block or a call instead, it is replayed on a part the provider never signed.
+        """
+        last = content[-1] if content else None
+        if isinstance(last, TextBlock) and not last.signature:
+            content[-1] = replace(last, signature=data)
+        else:
+            content.append(TextBlock(text="", signature=data))
 
     @staticmethod
     def _finalize_pending_tools(
@@ -455,18 +484,21 @@ class Agent:
         async for event in stream:
             yield event
             match event:
-                case TextDelta(delta=delta):
-                    self._accumulate_text(turn.content, delta)
+                case TextDelta(index=at, delta=delta):
+                    self._accumulate_text(turn.content, delta, joining=at == turn.text_at)
+                    turn.text_at = at
                     if detector.feed(delta):
                         note = "\n\n[Output truncated: repetitive content detected]"
-                        self._accumulate_text(turn.content, note)
+                        self._accumulate_text(turn.content, note, joining=True)
                         yield TextDelta(index=0, delta=note)
                         turn.repeated = True
                         return
                 case Refusal(text=text) if text:
                     # Kept as the turn's text: a refusal is what the assistant said. Left out, the
                     # stored turn is empty and the next request carries a blank assistant message.
-                    self._accumulate_text(turn.content, text)
+                    self._accumulate_text(turn.content, text, joining=True)
+                case TextSignature(data=proof):
+                    self._sign_text(turn.content, proof)
                 case ReasoningDelta(delta=delta):
                     self._accumulate_reasoning(turn.content, delta)
                 case ReasoningSignature(index=at, data=proof, redacted=redacted, id=block_id):

@@ -31,6 +31,16 @@ class TestTextBlock:
         assert TextBlock(text="a") == TextBlock(text="a")
         assert TextBlock(text="a") != TextBlock(text="b")
 
+    def test_a_signed_block_is_still_frozen_and_hashable(self) -> None:
+        block = TextBlock(text="42", signature="SIG")
+        with pytest.raises(AttributeError):
+            block.signature = "OTHER"  # type: ignore[misc]
+        assert {block, TextBlock(text="42")} == {block, TextBlock(text="42")}
+
+    def test_two_blocks_with_the_same_text_and_different_proofs_are_not_equal(self) -> None:
+        # The proof is part of what the turn replays, so a block that lost it is a different block.
+        assert TextBlock(text="42", signature="SIG") != TextBlock(text="42")
+
 
 class TestImageBlock:
     @pytest.mark.parametrize("media_type", ["image/jpeg", "image/png", "image/gif", "image/webp"])
@@ -152,6 +162,11 @@ class TestFromDict:
     def test_text(self) -> None:
         assert from_dict({"type": "text", "text": "hi"}) == TextBlock(text="hi")
 
+    def test_a_text_block_keeps_the_proof_the_provider_signed_it_with(self) -> None:
+        block = TextBlock(text="42", signature="SIG")
+        restored = from_dict(to_dict(block))
+        assert restored == block and restored.signature == "SIG"
+
     def test_image(self) -> None:
         block = ImageBlock(media_type="image/png", data=b"\x89PNG")
         assert from_dict(to_dict(block)) == block
@@ -228,3 +243,22 @@ def test_a_reasoning_block_keeps_the_id_a_provider_names_it_by() -> None:
     block = ReasoningBlock(text="", signature="gAAAAAB...", id="rs_1")
     restored = from_dict(to_dict(block))
     assert restored == block and restored.id == "rs_1"
+
+
+class TestSignedText:
+    """A provider that signs its answer text needs that proof back on the next request."""
+
+    def test_an_unsigned_block_writes_no_signature_key(self) -> None:
+        # Text is the commonest block, so an empty key on each one grows every stored session.
+        assert to_dict(TextBlock(text="hi")) == {"type": "text", "text": "hi"}
+
+    def test_a_signed_block_writes_it_and_reads_it_back(self) -> None:
+        block = TextBlock(text="42", signature="SIG")
+
+        stored = to_dict(block)
+
+        assert stored == {"type": "text", "text": "42", "signature": "SIG"}
+        assert from_dict(stored) == block
+
+    def test_the_proof_is_part_of_what_makes_two_blocks_differ(self) -> None:
+        assert TextBlock(text="42", signature="A") != TextBlock(text="42", signature="B")

@@ -20,7 +20,7 @@ from axio.blocks import TextBlock, ImageBlock, AudioBlock, VideoBlock
 ```
 
 The three media blocks are frozen dataclasses with two fields, `media_type` and `data: bytes`.
-`TextBlock` has one, `text`.
+`TextBlock` has `text`, and `signature` for the providers that sign the answer itself.
 
 Three more `ContentBlock` types complete the set and carry no media: `ToolUseBlock`,
 `ToolResultBlock`, and `ReasoningBlock`. `ReasoningBlock` holds the model's own reasoning,

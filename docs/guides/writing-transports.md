@@ -109,6 +109,7 @@ last. Everything between is optional and provider-dependent:
 | `TextDelta` | A chunk of the answer. | all four |
 | `ReasoningDelta` | A chunk of reasoning the caller is not being answered with. | all four |
 | `ReasoningSignature` | Opaque proof for the reasoning just sent. | Anthropic, Google, Responses |
+| `TextSignature` | Opaque proof for the answer text just sent. | Google |
 | `ToolUseStart` / `ToolInputDelta` | A tool call and its JSON, fragment by fragment. | all four |
 | `BlockEnd` | The block at `index` is complete, so its fragments now parse. | Anthropic, Responses |
 | `Refusal` | The model declined, or the provider blocked the turn. | all four |
