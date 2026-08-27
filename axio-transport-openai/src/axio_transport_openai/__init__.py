@@ -329,10 +329,12 @@ def _chat_messages(messages: list[Message], system: str) -> list[dict[str, Any]]
                     )
 
             entry: dict[str, Any] = {"role": "assistant"}
-            if text_parts:
-                entry["content"] = "".join(text_parts)
             if tool_calls:
                 entry["tool_calls"] = tool_calls
+            if text_parts or not tool_calls:
+                # A turn whose only blocks were reasoning carried neither, and the API refuses a
+                # message with nothing in it. Reachable whenever a turn is cut mid-thought.
+                entry["content"] = "".join(text_parts)
             result.append(entry)
 
     return result
@@ -510,6 +512,9 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
     #: reasoning together, and OpenAI recommends it for new work. Left unset it follows
     #: ``base_url``: only OpenAI's own host is assumed to implement it.
     api: Literal["responses", "chat"] | None = field(default=None, kw_only=True)
+    #: How much of its reasoning the model summarises for a reader on /v1/responses. The raw chain
+    #: is never returned; without a summary there is nothing to show.
+    reasoning_summary: Literal["auto", "concise", "detailed"] = field(default="auto", kw_only=True)
     base_url: str = field(default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
     model: ModelSpec = field(default_factory=lambda: OPENAI_MODELS["gpt-4.1-mini"])
@@ -601,6 +606,9 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         if instructions:
             payload["instructions"] = instructions
         if Capability.reasoning in self.model.capabilities:
+            # Two different things are asked for here. ``summary`` is what a human reads, and the
+            # API generates none unless asked, so a reasoning model streamed no thinking at all.
+            payload["reasoning"] = {"summary": self.reasoning_summary}
             # Nothing is stored on the provider's side, so reasoning that does not come back encrypted
             # cannot be sent on the next round.
             payload["include"] = ["reasoning.encrypted_content"]

@@ -11,7 +11,7 @@ from typing import Any
 import aiohttp
 import pytest
 from aiohttp import web
-from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.blocks import ImageBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from axio.events import (
     IterationEnd,
     IterationStart,
@@ -30,7 +30,7 @@ from axio.testing import assert_stream_contract
 from axio.tool import Tool
 from axio.types import StopReason, Usage
 
-from axio_transport_openai import OPENAI_MODELS, OpenAITransport, ThinkTagParser
+from axio_transport_openai import OPENAI_MODELS, OpenAITransport, ThinkTagParser, _chat_messages
 from axio_transport_openai.custom import OpenAICompatibleTransport
 from axio_transport_openai.nebius import NebiusTransport
 
@@ -1994,3 +1994,95 @@ class TestTheTokenSlices:
         usage = [e for e in events if isinstance(e, IterationEnd)][0].usage
         assert usage.uncached_input_tokens == 200
         assert usage.answer_tokens == 180
+
+
+class TestAnAssistantTurnTheApiWillTake:
+    """Chat Completions refuses a message carrying neither content nor tool_calls."""
+
+    def test_a_turn_of_nothing_but_reasoning_still_carries_content(self) -> None:
+        # Reasoning has no place in a chat message, so a turn cut mid-thought was replayed as
+        # {"role": "assistant"} and every later request on that session failed.
+        turn = Message(role="assistant", content=[ReasoningBlock(text="thinking hard", signature="s")])
+
+        sent = _chat_messages([turn], "")
+
+        assert sent == [{"role": "assistant", "content": ""}]
+
+    def test_a_turn_with_only_calls_does_not_gain_an_empty_content(self) -> None:
+        turn = Message(role="assistant", content=[ToolUseBlock(id="c1", name="f", input={})])
+
+        assert "content" not in _chat_messages([turn], "")[0]
+
+
+class TestAskingForTheReasoningSummary:
+    """The API generates a summary only when the request asks for one."""
+
+    def test_a_reasoning_model_asks_for_it(self) -> None:
+        # Only `include: reasoning.encrypted_content` was sent, which is the opaque proof for the
+        # next request. Nothing asked for text a reader can see, so a thinking model streamed no
+        # thinking at all.
+        payload = OpenAITransport(model=OPENAI_MODELS["gpt-5.6-terra"]).build_payload([], [], "")
+
+        assert payload["reasoning"] == {"summary": "auto"}
+        assert payload["include"] == ["reasoning.encrypted_content"]
+
+    def test_a_model_that_does_not_reason_asks_for_nothing(self) -> None:
+        assert "reasoning" not in OpenAITransport(model=OPENAI_MODELS["gpt-4o"]).build_payload([], [], "")
+
+    def test_the_caller_chooses_how_much(self) -> None:
+        transport = OpenAITransport(model=OPENAI_MODELS["gpt-5.6-terra"], reasoning_summary="detailed")
+
+        assert transport.build_payload([], [], "")["reasoning"] == {"summary": "detailed"}
+
+    async def test_the_summary_it_streams_back_reaches_the_caller(
+        self, fake_server: tuple[FakeOpenAIServer, str]
+    ) -> None:
+        server, base_url = fake_server
+        server.responses.append(
+            _responses_sse(
+                {"type": "response.reasoning_summary_text.delta", "delta": "weighing it", "output_index": 0},
+                {"type": "response.output_text.delta", "delta": "42", "output_index": 1},
+                {"type": "response.completed", "response": {"status": "completed", "usage": {}}},
+            )
+        )
+
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(
+                base_url=base_url, api_key="k", api="responses", model=OPENAI_MODELS["gpt-5.6-terra"], session=session
+            )
+            events = await _collect(transport.stream([], [], ""))
+
+        assert [e.delta for e in events if isinstance(e, ReasoningDelta)] == ["weighing it"]
+        assert [e.delta for e in events if isinstance(e, TextDelta)] == ["42"]
+
+    async def test_the_responses_path_reports_every_slice_too(self, fake_server: tuple[FakeOpenAIServer, str]) -> None:
+        # The chat path had no fixture carrying the details objects; neither did this one. Read as
+        # zero, a turn that spent most of its output on reasoning looks like a cheap one.
+        server, base_url = fake_server
+        server.responses.append(
+            _responses_sse(
+                {"type": "response.output_text.delta", "delta": "hi", "output_index": 0},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "status": "completed",
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 300,
+                            "input_tokens_details": {"cached_tokens": 40},
+                            "output_tokens_details": {"reasoning_tokens": 250},
+                        },
+                    },
+                },
+            )
+        )
+
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(
+                base_url=base_url, api_key="k", api="responses", model=OPENAI_MODELS["gpt-5.6-terra"], session=session
+            )
+            events = await _collect(transport.stream([], [], ""))
+
+        usage = [e for e in events if isinstance(e, IterationEnd)][0].usage
+        assert (usage.reasoning_tokens, usage.cache_read_tokens) == (250, 40)
+        assert usage.answer_tokens == 50

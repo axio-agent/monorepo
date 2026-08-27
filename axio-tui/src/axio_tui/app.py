@@ -37,6 +37,7 @@ from axio.tool import Tool
 from axio.tool_args import ToolArgStream
 from axio_context_sqlite import SQLiteContextStore
 from pygments.token import Token  # type: ignore[import-untyped]
+from rich.markup import escape
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
@@ -140,6 +141,73 @@ class _ToolCallInfo:
     input: dict[str, Any] = field(default_factory=dict)
     content: str = ""
     live_args: dict[str, str] = field(default_factory=dict)  # live streaming args
+
+
+class _ThinkingWidget(Static):
+    """The model's reasoning while it lasts, and one line about it afterwards.
+
+    Kept out of the transcript. Left in, a model that reasons at length buries the answer it was
+    reasoning towards, and scrolling back through the conversation stops being useful.
+    """
+
+    #: How much of the reasoning stays on screen while it streams.
+    LINES = 6
+
+    DEFAULT_CSS = """
+    _ThinkingWidget {
+        height: auto;
+        margin: 0;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__("", classes="meta")
+        #: What was last drawn. Kept because Static gives no way to read it back.
+        self.shown = ""
+        self._text = ""
+        self._done = False
+        self._tokens = 0
+
+    def add(self, delta: str) -> None:
+        self._text += delta
+        self._draw()
+
+    def collapse(self, tokens: int = 0) -> None:
+        """Fold to one line, which is what the answer arriving means."""
+        self._done, self._tokens = True, tokens or self._tokens
+        self._draw()
+
+    @property
+    def empty(self) -> bool:
+        """Nothing to show and nothing to report, so the marker would say nothing either."""
+        return not self._text and not self._tokens
+
+    @property
+    def withheld(self) -> bool:
+        """The provider charged for reasoning and sent none of it.
+
+        Its own choice, not a fault here: OpenAI withholds reasoning summaries from an
+        unverified organisation. Worth saying, because the tokens are billed either way.
+        """
+        return bool(self._tokens) and not self._text
+
+    def count(self, tokens: int) -> None:
+        """The provider's own figure, which arrives after the answer has started."""
+        self._tokens = tokens
+        if self._done:
+            self._draw()
+
+    def _draw(self) -> None:
+        if self._done:
+            cost = f" · {self._tokens:,} tokens" if self._tokens else ""
+            note = ", not sent by the provider" if self.withheld else ""
+            self.shown = f"[dim]✻ thinking{cost}{note}[/]"
+        else:
+            tail = self._text.splitlines()[-self.LINES :] or [""]
+            body = "\n".join(f"[dim]{escape(line)}[/]" for line in tail)
+            self.shown = f"[dim italic]✻ thinking…[/]\n{body}"
+        self.update(self.shown)
 
 
 class _ToolStatusWidget(Static):
@@ -390,6 +458,7 @@ class AgentApp(App[None]):
         self._current_md: Markdown | None = None
         self._response_text = ""
         self._declined = False
+        self._thinking: _ThinkingWidget | None = None
         self._text_dirty = False
         self._last_input_tokens = 0
         self._chat_model: ModelSpec | None = None
@@ -774,6 +843,19 @@ class AgentApp(App[None]):
             return
         await self._current_md.update(self._response_text)
         scroll.scroll_end(animate=False)
+
+    async def _ensure_thinking(self) -> _ThinkingWidget:
+        """The widget this turn's reasoning goes to, mounted the first time there is any."""
+        if self._thinking is None:
+            await self._flush_text()
+            self._current_md = None
+            self._response_text = ""
+            self._thinking = _ThinkingWidget()
+            scroll = self.query_one("#log", VerticalScroll)
+            if scroll.is_attached:
+                await scroll.mount(self._thinking)
+                scroll.scroll_end(animate=False)
+        return self._thinking
 
     async def _ensure_md(self) -> Markdown:
         if self._current_md is None:
@@ -1364,12 +1446,12 @@ class AgentApp(App[None]):
                             case ReasoningDelta(delta=delta):
                                 self._tool_status = None
                                 self._agent_emoji = "🤔"
-                                await self._ensure_md()
-                                self._response_text += delta
-                                self._text_dirty = True
+                                (await self._ensure_thinking()).add(delta)
                             case TextDelta(delta=delta):
                                 self._tool_status = None
                                 self._agent_emoji = "💬"
+                                if self._thinking is not None:
+                                    self._thinking.collapse()
                                 await self._ensure_md()
                                 self._response_text += delta
                                 self._text_dirty = True
@@ -1412,6 +1494,15 @@ class AgentApp(App[None]):
                                 w = await self._ensure_tool_status()
                                 w.complete(tid, is_error=is_error, content=content, tool_input=inp)
                             case IterationEnd(usage=usage):
+                                # One arm, or a turn that reasoned skips the status update below.
+                                if usage.reasoning_tokens or self._thinking is not None:
+                                    thinking = await self._ensure_thinking()
+                                    thinking.collapse(usage.reasoning_tokens)
+                                    if thinking.empty:
+                                        # An iteration that neither reasoned nor was billed for it.
+                                        # A bare marker there says nothing and reads as a second turn.
+                                        await thinking.remove()
+                                    self._thinking = None
                                 self._agent_emoji = "✅"
                                 self._last_input_tokens = usage.input_tokens
                                 await self._update_status()
