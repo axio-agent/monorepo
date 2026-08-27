@@ -187,22 +187,11 @@ def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
 
 
 def _google_auth_available() -> bool:
-    """Check whether the Vertex AI credential path is importable, without importing it.
-
-    Both names are required because :func:`_get_vertex_access_token` imports
-    ``google.auth.transport.requests``, and that module raises ``ImportError``
-    when ``requests`` is absent — ``google-auth`` installed without its
-    ``requests`` extra satisfies a ``google.auth`` check and still fails at
-    request time, which is the failure this guard exists to prevent.
-
-    ``find_spec`` can itself raise (e.g. ``ModuleNotFoundError`` for an
-    unimportable parent package, ``ValueError`` for a partially-installed
-    namespace package) — its failure modes aren't fully enumerable, so any
-    exception is treated as "not available".
-    """
+    """Return whether the Vertex AI credential dependencies are importable."""
     try:
         return all(importlib.util.find_spec(name) is not None for name in ("google.auth", "requests"))
     except Exception:
+        # Partially installed namespace packages can make find_spec raise different exception types.
         return False
 
 
@@ -256,8 +245,8 @@ class AnthropicTransport(CompletionTransport):
     retry_base_delay: float = 5.0
 
     def __post_init__(self) -> None:
-        # Whether the caller named a backend, as opposed to inheriting one from
-        # the environment. The two deserve different failure modes below.
+        # Capture whether the caller named a backend before None is replaced by
+        # the environment value; explicit and inherited requests fail differently.
         explicit = self.vertexai is not None
         if isinstance(self.vertexai, str):
             self.vertexai = self.vertexai.lower() in ("true", "1")
