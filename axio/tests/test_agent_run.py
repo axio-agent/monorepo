@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from axio.agent import Agent
-from axio.blocks import ReasoningBlock, TextBlock
+from axio.blocks import ReasoningBlock, TextBlock, ToolUseBlock
 from axio.context import MemoryContextStore
 from axio.events import (
     Error,
@@ -571,3 +571,48 @@ class TestToolsAreNotRunForAFailedTurn:
         agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.end_turn))
         events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
         assert [e.tool_use_id for e in events if isinstance(e, ToolResult)] == ["call_1"]
+
+
+class TestAnUnrunCallIsNotPersisted:
+    async def test_a_failed_turn_leaves_no_orphan_call_in_the_history(self) -> None:
+        """Cleared from the dispatch list only, the call was still stored with no result beside it.
+
+        The next request then carried a call nothing answered, which Anthropic and Google refuse.
+        """
+        transport = StubTransport(
+            [
+                [
+                    ToolUseStart(index=0, tool_use_id="call_1", name="echo"),
+                    ToolInputDelta(index=0, tool_use_id="call_1", partial_json='{"msg":"x"}'),
+                    IterationEnd(1, StopReason.error, Usage(1, 1)),
+                ]
+            ]
+        )
+        context = MemoryContextStore()
+        agent = Agent(system="", tools=[make_echo_tool()], transport=transport)
+
+        async for _ in agent.run_stream("hi", context):
+            pass
+
+        stored = [b for m in await context.get_history() for b in m.content]
+        assert not [b for b in stored if isinstance(b, ToolUseBlock)]
+
+    async def test_a_turn_that_asked_for_a_tool_still_stores_the_call(self) -> None:
+        transport = StubTransport(
+            [
+                [
+                    ToolUseStart(index=0, tool_use_id="call_1", name="echo"),
+                    ToolInputDelta(index=0, tool_use_id="call_1", partial_json='{"msg":"x"}'),
+                    IterationEnd(1, StopReason.tool_use, Usage(1, 1)),
+                ],
+                [TextDelta(0, "done"), IterationEnd(2, StopReason.end_turn, Usage(1, 1))],
+            ]
+        )
+        context = MemoryContextStore()
+        agent = Agent(system="", tools=[make_echo_tool()], transport=transport)
+
+        async for _ in agent.run_stream("hi", context):
+            pass
+
+        stored = [b for m in await context.get_history() for b in m.content]
+        assert [b.id for b in stored if isinstance(b, ToolUseBlock)] == ["call_1"]

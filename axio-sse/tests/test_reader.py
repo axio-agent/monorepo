@@ -242,3 +242,37 @@ class TestUnmatched:
                 yield payload.string("text")
 
         assert Quiet().read(Event(data='{"type":"whatever"}')) == []
+
+
+async def test_a_redecorated_method_drops_the_name_its_parent_gave_it() -> None:
+    # The table is keyed by attribute name so an override without @on still runs. A subclass that
+    # decorates the attribute again has redefined it, and keeping the parent's name dispatched the
+    # parent's event to a method written for another one.
+    class Base(Reader[str]):
+        @on("alpha")
+        def _handler(self, payload: Payload) -> Iterator[str]:
+            yield "base"
+
+    class Child(Base):
+        @on("beta")
+        def _handler(self, payload: Payload) -> Iterator[str]:
+            yield "child"
+
+    assert Base.names() == {"alpha"}
+    assert Child.names() == {"beta"}
+    assert Child().read(Event(data='{"type":"alpha"}')) == []
+    assert Child().read(Event(data='{"type":"beta"}')) == ["child"]
+
+
+async def test_an_override_without_the_decorator_still_keeps_the_name() -> None:
+    class Base(Reader[str]):
+        @on("alpha")
+        def _handler(self, payload: Payload) -> Iterator[str]:
+            yield "base"
+
+    class Quiet(Base):
+        def _handler(self, payload: Payload) -> Iterator[str]:
+            yield "child"
+
+    assert Quiet.names() == {"alpha"}
+    assert Quiet().read(Event(data='{"type":"alpha"}')) == ["child"]

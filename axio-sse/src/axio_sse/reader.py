@@ -67,6 +67,11 @@ def on[R, P, T](*claimed: "str | type[Wire]") -> Callable[[_Handler[R, P, T]], _
     return tag
 
 
+def _redecorated(klass: type, attribute: str) -> bool:
+    """Whether this class gives that attribute names of its own."""
+    return bool(getattr(vars(klass).get(attribute), "_sse_names", ()))
+
+
 class Reader[T]:
     """What one endpoint sends, as one method per event.
 
@@ -75,8 +80,8 @@ class Reader[T]:
             def _delta(self, payload: Payload) -> Iterator[StreamEvent]: ...
 
     One instance reads one stream. The turn's running totals and id maps live on ``self`` instead
-    of travelling through a call, so a reader used for a second response would carry the first
-    one's state into it. Construct one per response. Being that state, a reader must not be frozen.
+    of travelling through a call. A reader used for a second response would carry the first one's
+    state into it. Construct one per response. Being that state, a reader must not be frozen.
     ``read`` latches the caller's ``strict`` on ``self``, and ``@dataclass(frozen=True)`` refuses
     that assignment. With ``slots=True`` as well, the refusal comes from inside the rebuilt class
     and says only that ``super()`` got the wrong type. ``@dataclass(slots=True)`` alone is fine.
@@ -103,6 +108,11 @@ class Reader[T]:
         # names it claims again.
         for klass in reversed(cls.__mro__):
             here: dict[str, tuple[str, type[Wire] | None]] = {}
+            # A method this class decorates again is this class's method, whatever its parent said
+            # it read. Kept, the parent's name still pointed at the attribute. The parent's event
+            # then dispatched to a method written for another one.
+            for stale in [n for n, (attribute, _) in found.items() if _redecorated(klass, attribute)]:
+                del found[stale]
             for attribute, method in vars(klass).items():
                 shape = cast("type[Wire] | None", getattr(method, "_sse_shape", None))
                 for name in cast(tuple[str, ...], getattr(method, "_sse_names", ())):
@@ -123,9 +133,9 @@ class Reader[T]:
     def unknown(self, name: str) -> None:
         """The one policy for a name nothing here reads: DEBUG, or refuse under ``strict``.
 
-        A handler calls it for a second discriminator inside one event — a block that names the
-        kind of its own chunks — so a nested name nobody read fails the same replay that a new event
-        fails, instead of disappearing.
+        A handler calls it for a second discriminator inside one event, such as a block that names
+        the kind of its own chunks. A nested name nobody read then fails the same replay a new
+        event fails, instead of disappearing.
         """
         log.debug("%s does not read %r", type(self).__name__, name)
         if self._strict:
@@ -137,13 +147,13 @@ class Reader[T]:
         """What a payload no method claims becomes. Nothing, unless a reader says otherwise.
 
         Override it to forward instead of drop. That is what a stream whose vocabulary grows on its
-        own needs. An endpoint that runs tools names an event per tool, so that set is a function
+        own needs. An endpoint that runs tools names an event per tool. That set is a function
         of which tools exist and which were asked for, not of the protocol. Naming them one by one
-        makes the reader stale the day a tool is added, and says a new tool is news about the
-        protocol when it is news about the tools.
+        makes the reader stale the day a tool is added. It also reports a new tool as news about
+        the protocol, when it is news about the tools.
 
-        Name here only what this reader interprets. ``strict`` still refuses anything unnamed, so a
-        test can hold the interpreted set against the schema without the reader carrying a list it
+        Name here only what this reader interprets. ``strict`` still refuses anything unnamed. A test can
+        therefore hold the interpreted set against the schema, and the reader carries no list it
         cannot keep true.
         """
         return None

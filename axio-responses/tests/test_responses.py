@@ -583,3 +583,22 @@ def test_a_system_message_in_the_history_is_not_dropped() -> None:
 def test_an_empty_system_message_adds_nothing() -> None:
     _, items = convert_messages([Message(role="system", content=[])], "")
     assert items == []
+
+
+def test_a_turn_carrying_a_result_and_a_question_keeps_both() -> None:
+    """Read only where the turn was nothing but results, the result was dropped.
+
+    The orphan sweep then fabricated "[Tool was not executed]" and told the model its tool had not
+    run when it had.
+    """
+    messages = [
+        Message(role="assistant", content=[ToolUseBlock(id="c1", name="t", input={})]),
+        Message(
+            role="user",
+            content=[ToolResultBlock(tool_use_id="c1", content="22C"), TextBlock(text="and tomorrow?")],
+        ),
+    ]
+    _, items = convert_messages(messages, "")
+    assert [i.get("type") or i["role"] for i in items] == ["function_call", "function_call_output", "user"]
+    assert items[1]["output"] == "22C"
+    assert items[2]["content"] == [{"type": "input_text", "text": "and tomorrow?"}]

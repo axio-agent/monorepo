@@ -436,6 +436,10 @@ class Agent:
                         len(tool_blocks),
                         stop_reason,
                     )
+                    # Removed from the turn as well, not only from this list. Left in, they are
+                    # persisted with no result beside them. The next request then carries a call
+                    # nothing answered, which Anthropic and Google refuse.
+                    content[:] = [b for b in content if not isinstance(b, ToolUseBlock)]
                     tool_blocks = []
 
                 if tool_blocks:

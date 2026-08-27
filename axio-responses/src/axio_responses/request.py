@@ -96,8 +96,11 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
     for msg in messages:
         if msg.role == "user":
             # Check if this is purely tool results
+            # Every tool result in the turn, whatever else the turn carries. Read only where the
+            # turn was nothing but results, a message holding a result and a question dropped the
+            # result. The orphan sweep then told the model its tool had not run.
             tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-            if tool_results and len(tool_results) == len(msg.content):
+            if tool_results:
                 for tr in tool_results:
                     items.append(
                         {
@@ -106,9 +109,10 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                             "output": tool_output(tr.content),
                         }
                     )
-            else:
+            rest = [b for b in msg.content if not isinstance(b, ToolResultBlock)]
+            if rest:
                 content_parts: list[dict[str, Any]] = []
-                for b in msg.content:
+                for b in rest:
                     if isinstance(b, TextBlock):
                         content_parts.append({"type": "input_text", "text": b.text})
                     elif isinstance(b, ImageBlock):
