@@ -368,18 +368,18 @@ def test_splitting_the_done_events_kept_both_names() -> None:
     assert {"response.output_item.done", "response.content_part.done"} <= Responses.names()
 
 
-def test_an_incomplete_reason_nobody_knows_is_raised_and_not_returned() -> None:
-    """The event says the response did not complete, and the reason names why.
+def test_an_incomplete_reason_nobody_knows_reads_as_unknown() -> None:
+    # The event says the response did not complete, and names a reason this vocabulary has not
+    # got. Read as end_turn it stored a truncated answer as a whole one; read as error the caller
+    # is told only `Transport stopped with: error`, with the API's own reason gone.
+    reader = Responses()
+    _reads(
+        reader,
+        type="response.incomplete",
+        response={"status": "incomplete", "incomplete_details": {"reason": "some_new_limit"}, "usage": {}},
+    )
 
-    Returned as `IterationEnd(error)` it reaches the agent's wildcard, and the caller is told only
-    `Transport stopped with: error` with the API's own reason gone.
-    """
-    with pytest.raises(StreamError, match="some_new_limit"):
-        _reads(
-            Responses(),
-            type="response.incomplete",
-            response={"status": "incomplete", "incomplete_details": {"reason": "some_new_limit"}, "usage": {}},
-        )
+    assert reader.finished().stop_reason is StopReason.unknown
 
 
 def test_the_incomplete_reasons_the_schema_publishes_still_map() -> None:

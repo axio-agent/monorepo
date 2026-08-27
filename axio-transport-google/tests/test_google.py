@@ -21,7 +21,7 @@ from axio.blocks import (
     ToolUseBlock,
     VideoBlock,
 )
-from axio.events import Refusal, TextDelta, ToolInputDelta, ToolUseStart
+from axio.events import IterationEnd, Refusal, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry
@@ -1048,11 +1048,13 @@ class TestTheStreamContract:
         with pytest.raises(StreamError, match=reason):
             await _stream_one(monkeypatch, chunk)
 
-    async def test_a_reason_nobody_maps_is_raised_with_its_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_a_reason_nobody_maps_reads_as_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Terminal, vouching for nothing, and claiming nothing the provider did not say.
         chunk = {"candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "INVENTED_LATER"}]}
 
-        with pytest.raises(StreamError, match="INVENTED_LATER"):
-            await _stream_one(monkeypatch, chunk)
+        events = await _stream_one(monkeypatch, chunk)
+
+        assert [e.stop_reason for e in events if isinstance(e, IterationEnd)] == [StopReason.unknown]
 
 
 class TestWhichProofACallReplaysWith:

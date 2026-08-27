@@ -111,7 +111,8 @@ class Decoder:
             if text or final:
                 self._opened = True
                 # Flag 0 means no mark is expected, which the byte decoder cannot know on its own.
-                self._text.setstate((b"", 0))
+                # The pending bytes stay: they are half a character, not a mark.
+                self._text.setstate((self._text.getstate()[0], 0))
         if final:
             text += self._text.decode(b"", True)
         if self._trailing_cr:

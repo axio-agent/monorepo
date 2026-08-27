@@ -112,6 +112,9 @@ class IterationEnd:
     iteration: int
     stop_reason: StopReason
     usage: Usage
+    #: The provider's own word for why it stopped, where it differs from what axio calls it. Kept
+    #: so a caller can act on a reason this vocabulary has no name for.
+    raw: str = ""
 
     def __post_init__(self) -> None:
         """Refuse ``StopReason.error``, which the agent can only report as a bare RuntimeError.

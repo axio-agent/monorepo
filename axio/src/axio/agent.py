@@ -682,6 +682,7 @@ class Agent:
                         | StopReason.cancelled
                         | StopReason.max_tokens
                         | StopReason.context_window_exceeded
+                        | StopReason.unknown
                     ):
                         # Terminal, and none of them the transport breaking. Reported as an error, a
                         # caller retries what can never work.

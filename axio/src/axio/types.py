@@ -7,8 +7,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from .exceptions import StreamError
-
 type ToolName = str
 type ToolCallID = str
 
@@ -37,18 +35,25 @@ class StopReason(StrEnum):
     context_window_exceeded = "context_window_exceeded"
     #: The caller or the provider stopped the turn before it finished.
     cancelled = "cancelled"
+    #: The provider said something this vocabulary does not have. Terminal, and it vouches for
+    #: nothing. Named rather than folded into one of the others, because each of those claims
+    #: something the provider did not say: that the turn finished, that it was truncated, or that
+    #: the transport broke. ``IterationEnd.raw`` carries the word itself.
+    unknown = "unknown"
 
 
 def stop_reason_from(raw: str, table: Mapping[str, StopReason], *, provider: str) -> StopReason:
-    """What a provider's own stop value means here.
+    """What a provider's own stop value means here, or ``unknown`` where the table does not say.
 
-    Raises ``StreamError`` naming the value where the table does not. That is the transport
-    contract: an ``IterationEnd(error)`` instead reaches the agent's wildcard, and the caller is
-    told only ``Transport stopped with: error``.
+    There is no fifth answer to give. Folded into ``end_turn`` it claims the turn finished, into
+    ``max_tokens`` that it was truncated, into ``error`` that the transport broke; raising throws
+    away an answer the caller has already read. ``unknown`` says only what is true, and
+    ``IterationEnd.raw`` carries the provider's own word for the caller to act on.
     """
     if (known := table.get(raw)) is not None:
         return known
-    raise StreamError(f"{provider} stopped with an unknown reason: {raw!r}")
+    logger.warning("Unknown %s stop reason %r", provider, raw)
+    return StopReason.unknown
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,7 +2,7 @@
 
 import pytest
 
-from axio.types import StopReason, Usage
+from axio.types import StopReason, Usage, stop_reason_from
 
 
 class TestUsage:
@@ -42,6 +42,7 @@ class TestStopReason:
             StopReason.pause_turn,
             StopReason.context_window_exceeded,
             StopReason.cancelled,
+            StopReason.unknown,
         }
 
     def test_is_str(self) -> None:
@@ -101,3 +102,23 @@ class TestUsageDetail:
         usage = Usage(input_tokens=10, output_tokens=5)
         assert (usage.cache_read_tokens, usage.cache_write_tokens, usage.reasoning_tokens) == (0, 0, 0)
         assert usage.uncached_input_tokens == 10 and usage.answer_tokens == 5
+
+
+class TestAValueTheVocabularyDoesNotHave:
+    """What a provider's own word reads as when no rule names it."""
+
+    def test_it_becomes_unknown_rather_than_one_of_the_others(self) -> None:
+        # Every other answer claims something the provider did not say: that the turn finished,
+        # that it was truncated, or that the transport broke.
+        table = {"stop": StopReason.end_turn}
+
+        assert stop_reason_from("eos_token", table, provider="Compatible") is StopReason.unknown
+
+    def test_a_word_the_table_names_still_wins(self) -> None:
+        assert stop_reason_from("stop", {"stop": StopReason.end_turn}, provider="x") is StopReason.end_turn
+
+    def test_unknown_vouches_for_nothing(self) -> None:
+        # A turn whose ending nobody understands must not have its calls dispatched.
+        from axio.agent import _DISPATCH
+
+        assert StopReason.unknown not in _DISPATCH

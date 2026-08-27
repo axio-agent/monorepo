@@ -710,7 +710,11 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             else:
                 yield TextDelta(index=0, delta=text)
 
-        stop = stop_reason_from(finish_reason or "", _STOP_REASON_MAP, provider="OpenAI")
+        if not finish_reason:
+            # No closing word at all: the stream was cut. An unrecognised one is a different thing,
+            # and reads as a truncation below rather than as a broken connection.
+            raise StreamError("OpenAI stream ended without a finish_reason")
+        stop = stop_reason_from(finish_reason, _STOP_REASON_MAP, provider="OpenAI")
         logger.info(
             "Stream complete: stop_reason=%s, input_tokens=%d, output_tokens=%d",
             stop,

@@ -35,6 +35,11 @@ def is_retryable(status: int) -> bool:
     return status == HTTPStatus.TOO_MANY_REQUESTS or status >= HTTPStatus.INTERNAL_SERVER_ERROR
 
 
+#: The longest wait any provider gets to ask for. ``Retry-After`` is theirs to set, and a header
+#: reading ``inf`` or naming a date in 2099 otherwise stops the turn for ever.
+_LONGEST_WAIT = 300.0
+
+
 def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> float:
     """Seconds to wait before the attempt after ``attempt``, which counts from 1.
 
@@ -47,7 +52,7 @@ def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> 
     if isinstance(headers, Mapping):
         raw = str(headers.get("Retry-After", "")).strip()
         try:
-            return max(0.0, float(raw))
+            return _bounded(float(raw))
         except ValueError:
             pass
         try:
@@ -57,5 +62,12 @@ def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> 
         if when is not None:
             if when.tzinfo is None:
                 when = when.replace(tzinfo=UTC)
-            return max(0.0, (when - datetime.now(UTC)).total_seconds())
-    return float(base * (2 ** (attempt - 1)))
+            return _bounded((when - datetime.now(UTC)).total_seconds())
+    return _bounded(base * (2 ** (attempt - 1)))
+
+
+def _bounded(seconds: float) -> float:
+    """A wait this process can actually sit through, and never a negative one."""
+    if seconds != seconds:  # NaN, which float() reads from a header saying "nan"
+        return 0.0
+    return min(max(0.0, seconds), _LONGEST_WAIT)

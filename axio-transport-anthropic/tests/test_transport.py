@@ -474,21 +474,22 @@ class TestSSEStreaming:
         ends = [e for e in events if isinstance(e, IterationEnd)]
         assert ends[0].stop_reason == StopReason.tool_use
 
-    async def test_an_unknown_stop_reason_is_raised_and_not_returned(
+    async def test_an_unknown_stop_reason_reads_as_unknown(
         self,
         fake_server: tuple[FakeAnthropicServer, str],
         transport: AnthropicTransport,
     ) -> None:
-        # Returned as IterationEnd(error) it reaches the agent's wildcard, and the caller is told
-        # only `Transport stopped with: error` with the API's own reason gone.
+        # Every other answer claims something the API did not say. Raising also discards content
+        # the caller has already read.
         server, _ = fake_server
         sse = _sse("message_start", {"message": {"usage": {"input_tokens": 1}}})
         sse += _sse("message_delta", {"delta": {"stop_reason": "future_reason"}, "usage": {"output_tokens": 1}})
         sse += _sse("message_stop", {})
         server.responses.append(sse)
 
-        with pytest.raises(StreamError, match="future_reason"):
-            await _collect(transport.stream([], [], ""))
+        events = await _collect(transport.stream([], [], ""))
+
+        assert [e.stop_reason for e in events if isinstance(e, IterationEnd)] == [StopReason.unknown]
 
     async def test_client_error_retries(
         self,

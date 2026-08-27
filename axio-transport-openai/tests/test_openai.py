@@ -531,16 +531,30 @@ async def test_a_blocked_turn_ends_as_a_refusal_and_not_as_a_transport_error(
     assert ends[0].stop_reason == StopReason.refusal
 
 
-async def test_a_genuine_provider_error_still_raises(
+async def test_a_closing_word_nobody_published_reads_as_unknown(
     fake_server: tuple[FakeOpenAIServer, str],
     transport: OpenAITransport,
 ) -> None:
-    from axio.exceptions import StreamError
-
+    # Compatible servers invent closing words: eos_token, abort, length_cap. Every other answer
+    # claims something the server did not say.
     server, _ = fake_server
     server.responses.append(_text_chunks("x", finish_reason="something-nobody-published"))
 
-    with pytest.raises(StreamError):
+    events = await _collect(transport.stream([], [], ""))
+
+    assert "".join(e.delta for e in events if isinstance(e, TextDelta)) == "x"
+    assert [e.stop_reason for e in events if isinstance(e, IterationEnd)] == [StopReason.unknown]
+
+
+async def test_no_closing_word_at_all_still_raises(
+    fake_server: tuple[FakeOpenAIServer, str],
+    transport: OpenAITransport,
+) -> None:
+    # Not an unknown ending but a cut connection, which the caller may want to retry.
+    server, _ = fake_server
+    server.responses.append(_sse_chunk({"choices": [{"index": 0, "delta": {"content": "half"}}]}))
+
+    with pytest.raises(StreamError, match="without a finish_reason"):
         await _collect(transport.stream([], [], ""))
 
 
