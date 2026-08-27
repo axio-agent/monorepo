@@ -104,9 +104,8 @@ def test_a_decoder_forgets_a_half_read_event_when_it_is_reset() -> None:
 
 
 def test_a_leading_byte_order_mark_does_not_eat_the_first_event() -> None:
-    # Left in, the mark makes the first field name `﻿data`, which is unknown, so nothing is
-    # collected and the blank line after it dispatches nothing. The event vanished with no warning:
-    # `strict` cannot see it either, because it is absent rather than unknown.
+    # Left in, the mark makes the first field name `﻿data`, which is unknown, so the event
+    # vanishes with nothing collected. `strict` cannot see it: it is absent, not unknown.
     stream = b'\xef\xbb\xbfdata: {"a":1}\n\ndata: {"b":2}\n\n'
     assert [e.data for e in Decoder().decode(stream, final=True)] == ['{"a":1}', '{"b":2}']
 

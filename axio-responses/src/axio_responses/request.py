@@ -1,5 +1,7 @@
 """Building a Responses request: instructions, input items, and tool declarations."""
 
+from __future__ import annotations
+
 import base64
 import json
 import logging
@@ -81,9 +83,19 @@ def tool_output(content: str | list[TextBlock | ImageBlock | AudioBlock | VideoB
             parts.append({"type": "input_image", "image_url": f"data:{block.media_type};base64,{encoded}"})
         elif isinstance(block, (AudioBlock, VideoBlock)):
             parts.append({"type": "input_text", "text": f"[{block.media_type}, which this API takes no part for]"})
-    # An empty list would say the tool returned nothing at all, which is not what an unreadable
-    # result means.
+    # An empty list would say the tool returned nothing at all.
     return parts or ""
+
+
+def _flush_text(items: list[dict[str, Any]], parts: list[dict[str, Any]]) -> None:
+    """Emit the assistant text collected so far, keeping it in the order the turn stored it.
+
+    Inserted at an index counted back from the tail instead, the text moved behind a call it
+    introduced whenever reasoning was stored after that call.
+    """
+    if parts:
+        items.append({"role": "assistant", "content": list(parts)})
+        parts.clear()
 
 
 def convert_messages(messages: list[Message], system: str) -> tuple[str, list[dict[str, Any]]]:
@@ -95,10 +107,8 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
 
     for msg in messages:
         if msg.role == "user":
-            # Check if this is purely tool results
-            # Every tool result in the turn, whatever else the turn carries. Read only where the
-            # turn was nothing but results, a message holding a result and a question dropped the
-            # result. The orphan sweep then told the model its tool had not run.
+            # Every tool result in the turn, whatever else the turn carries. Read only where the turn
+            # was nothing but results, a message holding a result and a question dropped the result.
             tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
             if tool_results:
                 for tr in tool_results:
@@ -123,21 +133,19 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                     items.append({"role": "user", "content": content_parts})
 
         elif msg.role == "system":
-            # A system message inside the history, which is not the same as the system prompt this
-            # request carries in ``instructions``. Skipped, an instruction the caller put in the
-            # conversation disappeared from every request after it.
+            # A system message inside the history, which is not the system prompt this request carries
+            # in ``instructions``.
             text = "".join(b.text for b in msg.content if isinstance(b, TextBlock))
             if text:
                 items.append({"role": "system", "content": [{"type": "input_text", "text": text}]})
 
         elif msg.role == "assistant":
-            # Collect text and tool uses
             content_parts_a: list[dict[str, Any]] = []
             for b in msg.content:
                 if isinstance(b, ReasoningBlock):
-                    # `id` and `summary` are required beside the proof. Sent without the proof the
-                    # item says nothing, so a block that never got one is left out rather than
-                    # replayed empty.
+                    _flush_text(items, content_parts_a)
+                    # `id` and `summary` are required beside the proof, so a block that never got one is left
+                    # out rather than replayed empty.
                     if b.id and b.signature:
                         items.append(
                             {
@@ -152,6 +160,7 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                 elif isinstance(b, TextBlock):
                     content_parts_a.append({"type": "output_text", "text": b.text})
                 elif isinstance(b, ToolUseBlock):
+                    _flush_text(items, content_parts_a)
                     items.append(
                         {
                             "type": "function_call",
@@ -161,23 +170,15 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                             "status": "completed",
                         }
                     )
-            if content_parts_a:
-                items.insert(
-                    len(items) - sum(1 for b in msg.content if isinstance(b, ToolUseBlock)),
-                    {
-                        "role": "assistant",
-                        "content": content_parts_a,
-                    },
-                )
+            _flush_text(items, content_parts_a)
 
     # Synthesize placeholder outputs for orphan function_calls (no corresponding output)
     output_ids = {i["call_id"] for i in items if i.get("type") == "function_call_output"}
     for item in list(items):
         if item.get("type") == "function_call" and item.get("call_id") not in output_ids:
             call_id = item.get("call_id", "")
-            # Recorded as we go. Computed once before the loop, a call_id appearing twice got a
-            # placeholder each time. A compacted or forked context produces exactly that. The API
-            # refuses two outputs for one call.
+            # Recorded as we go. Computed once before the loop, a call_id appearing twice — which a
+            # compacted or forked context produces — got a placeholder each time.
             output_ids.add(call_id)
             logger.warning("Synthesizing placeholder output for orphan function_call: call_id=%s", call_id)
             items.append(

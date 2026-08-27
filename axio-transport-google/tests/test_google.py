@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import aiohttp
 import pytest
@@ -18,7 +18,7 @@ from axio.blocks import (
     ToolUseBlock,
     VideoBlock,
 )
-from axio.events import Refusal, TextDelta, ToolInputDelta, ToolUseStart
+from axio.events import ProviderEvent, ReasoningSignature, Refusal, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry
@@ -606,8 +606,7 @@ class TestEmissionOrder:
 
     async def test_a_signature_arrives_after_the_reasoning_it_signs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The agent attaches a signature to the block it just built and refuses to extend a signed
-        # one, so emitted first, one part became two blocks: a signature on nothing, and the
-        # reasoning stored unsigned.
+        # one, so emitted first, one part became two blocks.
         chunk = {
             "candidates": [
                 {
@@ -885,3 +884,55 @@ class TestACallCarriesItsOwnProof:
         ]
         parts = _build_contents_json(messages, thought_signatures=None)[0]["parts"]
         assert parts[0]["thoughtSignature"] == "SIG"
+
+
+async def test_two_unnamed_calls_to_one_tool_get_different_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Numbered by id() of a temporary part, two calls collided when CPython reused the address.
+
+    The agent keys pending calls by id, so the second overwrote the first and one call was lost.
+    """
+    chunk = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "a"}}},
+                        {"functionCall": {"name": "search", "args": {"q": "b"}}},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+    events = await _stream_one(monkeypatch, chunk)
+    ids = [e.tool_use_id for e in events if isinstance(e, ToolUseStart)]
+    assert len(ids) == len(set(ids)) == 2
+
+
+class TestASignatureOnAnswerText:
+    """A proof carried by a plain text part must not become a call's proof."""
+
+    CHUNK: ClassVar[dict[str, Any]] = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": "The answer is 42.", "thoughtSignature": "SIG"}]},
+                "finishReason": "STOP",
+            }
+        ],
+    }
+
+    async def test_it_is_not_stored_as_reasoning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Held as a ReasoningSignature the turn stored a textless ReasoningBlock, and its proof
+        # went to the next unsigned call in the turn.
+        events = await _stream_one(monkeypatch, self.CHUNK)
+
+        assert not [e for e in events if isinstance(e, ReasoningSignature)]
+        assert [e.delta for e in events if isinstance(e, TextDelta)] == ["The answer is 42."]
+
+    async def test_it_still_reaches_the_caller(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        events = await _stream_one(monkeypatch, self.CHUNK)
+
+        forwarded = [e for e in events if isinstance(e, ProviderEvent) and e.kind == "thoughtSignature"]
+        assert [e.data["thoughtSignature"] for e in forwarded] == ["SIG"]

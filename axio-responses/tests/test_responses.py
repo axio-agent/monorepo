@@ -602,3 +602,44 @@ def test_a_turn_carrying_a_result_and_a_question_keeps_both() -> None:
     assert [i.get("type") or i["role"] for i in items] == ["function_call", "function_call_output", "user"]
     assert items[1]["output"] == "22C"
     assert items[2]["content"] == [{"type": "input_text", "text": "and tomorrow?"}]
+
+
+class TestAssistantTurnOrder:
+    """The request carries the turn's blocks in the order the turn stored them."""
+
+    def test_text_stays_in_front_of_the_call_it_introduces(self) -> None:
+        # Positioned by counting ToolUseBlocks back from the tail, the text moved behind the call
+        # as soon as reasoning was stored after that call.
+        turn = Message(
+            role="assistant",
+            content=[
+                TextBlock(text="Let me look."),
+                ToolUseBlock(id="c1", name="search", input={"q": "x"}),
+                ReasoningBlock(text="", signature="enc", id="rs_1"),
+            ],
+        )
+        _, items = convert_messages([turn], "")
+
+        kinds = [item.get("type") or item.get("role") for item in items]
+        assert kinds[:3] == ["assistant", "function_call", "reasoning"]
+
+    def test_reasoning_still_precedes_the_call_it_belongs_to(self) -> None:
+        turn = Message(
+            role="assistant",
+            content=[
+                ReasoningBlock(text="", signature="enc", id="rs_1"),
+                ToolUseBlock(id="c1", name="search", input={"q": "x"}),
+                TextBlock(text="Here it is."),
+            ],
+        )
+        _, items = convert_messages([turn], "")
+
+        kinds = [item.get("type") or item.get("role") for item in items]
+        assert kinds[:3] == ["reasoning", "function_call", "assistant"]
+
+    def test_consecutive_text_blocks_stay_one_message(self) -> None:
+        turn = Message(role="assistant", content=[TextBlock(text="a"), TextBlock(text="b")])
+        _, items = convert_messages([turn], "")
+
+        assert [item["role"] for item in items] == ["assistant"]
+        assert [part["text"] for part in items[0]["content"]] == ["a", "b"]

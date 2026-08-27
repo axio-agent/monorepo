@@ -40,8 +40,8 @@ class Wire:
         if also and not name:
             raise ValueError(f"{cls.__name__} gives also= without name=; a shape names itself whole")
         if name:
-            # ``names`` replaces rather than extends. A subclass that renames itself would otherwise
-            # go on claiming its parent's other names too, and steal them from the parent.
+            # ``names`` replaces rather than extends, or a subclass that renames itself goes on
+            # claiming its parent's other names.
             cls.names = (name, *((also,) if isinstance(also, str) else also))
 
     @classmethod
@@ -79,9 +79,11 @@ def _as(kind: Any, raw: Any) -> Any:
     origin = get_origin(kind)
     if origin is UnionType or origin is Union:
         rest = [arg for arg in get_args(kind) if arg is not type(None)]
-        if not rest:
-            return None
-        kind, origin = rest[0], get_origin(rest[0])
+        # Every member is tried, not just the first: a field declared `str | int` must read both.
+        for member in rest:
+            if (read := _as(member, raw)) is not None:
+                return read
+        return None
 
     if isinstance(kind, type) and issubclass(kind, Wire):
         return kind.read(Payload(raw)) if isinstance(raw, dict) else None
@@ -91,15 +93,13 @@ def _as(kind: Any, raw: Any) -> Any:
         args = get_args(kind)
         if not args:
             return list(raw)
-        # Each item goes through the same rules as a field, so a list of a declared type holds that
-        # type or nothing. Copied through unchecked, a list[Payload] handed the handler plain dicts
-        # and the first `.string()` on one ended the stream.
+        # Each item goes through the same rules as a field, so a list of a declared type holds
+        # that type or nothing.
         read = [_as(args[0], one) for one in raw]
         return [one for one in read if one is not None]
     if kind is str:
         return raw if isinstance(raw, str) else None
-    # bool is an int in Python, so each has to refuse the other. A flag must not read as a count,
-    # and a count of 1 must not read as true.
+    # bool is an int in Python, so each has to refuse the other.
     if kind is bool:
         return raw if isinstance(raw, bool) else None
     if kind is int:
@@ -110,8 +110,8 @@ def _as(kind: Any, raw: Any) -> Any:
         try:
             return float(raw)
         except OverflowError:
-            # A JSON integer is unbounded and float() is not. One field the caller cannot represent
-            # must take its default rather than lose every other field beside it.
+            # A JSON integer is unbounded and float() is not, so a value the caller cannot represent
+            # takes its default.
             return None
     if kind is Payload or kind is dict or origin is dict:
         return Payload(raw) if isinstance(raw, dict) else None

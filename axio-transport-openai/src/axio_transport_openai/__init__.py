@@ -47,8 +47,8 @@ _TT = frozenset({Capability.text, Capability.tool_use})
 
 OPENAI_MODELS: ModelRegistry = ModelRegistry(
     {
-        # GPT-5.6 family (latest, 9 July 2026). Sizes and prices are the published ones. The tiers
-        # differ only in price, except gpt-5.6-cyber, which has a smaller window.
+        # GPT-5.6 family (latest, 9 July 2026). The tiers differ only in price, except
+        # gpt-5.6-cyber, which has a smaller window.
         ModelSpec(
             id="gpt-5.6",
             context_window=1_050_000,
@@ -217,8 +217,8 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
     }
 )
 
-#: Every ``finish_reason`` the API publishes, plus the ones compatible servers add. A reason left
-#: out of this map ends the run as an error rather than passing for a finished answer.
+#: Every ``finish_reason`` the API publishes, plus the ones compatible servers add. A reason
+#: left out of this map ends the run as an error.
 _STOP_REASON_MAP: dict[str, StopReason] = {
     "stop": StopReason.end_turn,
     "tool_calls": StopReason.tool_use,
@@ -352,7 +352,12 @@ def _tool_key(tool: Any) -> str:
     if not isinstance(tool, dict):
         return repr(tool)
     named = tool.get("name") or (tool.get("function") or {}).get("name")
-    return f"function:{named}" if named else str(tool.get("type", ""))
+    if named:
+        return f"function:{named}"
+    kind = tool.get("type")
+    # A declaration that names neither a function nor a type identifies nothing, so keying it by
+    # its empty type would match every other such entry.
+    return str(kind) if kind else repr(sorted(tool))
 
 
 def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
@@ -415,8 +420,7 @@ class ChunkDelta(Wire):
     refusal: str | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
     #: Vendor extensions, not in the OpenAI schema. OpenRouter and vLLM answer in ``reasoning``,
-    #: DeepSeek in ``reasoning_content``. This transport asks for reasoning by sending
-    #: ``enable_thinking``, so unread it was requested, billed and thrown away.
+    #: DeepSeek in ``reasoning_content``.
     reasoning: str | None = None
     reasoning_content: str | None = None
     raw: Payload = field(default_factory=Payload)
@@ -506,10 +510,9 @@ class ThinkTagParser:
 class OpenAITransport(CompletionTransport, EmbeddingTransport):
     name: str = "OpenAI"
     #: Which endpoint this server speaks. ``"responses"`` is the one that takes function tools and
-    #: reasoning together. /v1/chat/completions refuses that pair for a model that reasons. OpenAI
-    #: recommends ``"responses"`` for new work. Compatible servers rarely implement it, so the
-    #: subclasses that point at them say ``"chat"``.
-    api: Literal["responses", "chat"] = "responses"
+    #: reasoning together, and OpenAI recommends it for new work. Compatible servers rarely
+    #: implement it, so the subclasses that point at them say ``"chat"``.
+    api: Literal["responses", "chat"] = field(default="responses", kw_only=True)
     base_url: str = field(default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
     model: ModelSpec = field(default_factory=lambda: OPENAI_MODELS["gpt-4.1-mini"])
@@ -546,12 +549,9 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         if tools:
             payload["tools"] = _convert_tools(tools)
             if Capability.reasoning in self.model.capabilities and "reasoning_effort" not in self.extra_params:
-                # This endpoint refuses function tools beside any reasoning effort other than
-                # "none". A reasoning model reasons by default. A request carrying tools therefore
-                # fails with a 400 that names a parameter the caller never sent. The choice is made
-                # plainly here rather than left to the provider, because the cost is real. The
-                # model is paid for as a reasoning model and asked not to reason. /v1/responses
-                # takes both.
+                # This endpoint refuses function tools beside any reasoning effort other than "none", so a
+                # request carrying both fails with a 400 naming a parameter the caller never sent. The model
+                # is paid for as a reasoning model and asked not to reason. /v1/responses takes both.
                 payload["reasoning_effort"] = "none"
                 logger.warning(
                     "%s reasons and this request carries tools, which /v1/chat/completions refuses "
@@ -610,8 +610,8 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         if instructions:
             payload["instructions"] = instructions
         if Capability.reasoning in self.model.capabilities:
-            # Nothing is stored on the provider's side, so unless the reasoning comes back encrypted
-            # there is nothing to send on the next round. The model then starts each round blind.
+            # Nothing is stored on the provider's side, so reasoning that does not come back encrypted
+            # cannot be sent on the next round.
             payload["include"] = ["reasoning.encrypted_content"]
         if tools:
             payload["tools"] = convert_tools(tools)
@@ -643,24 +643,19 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         think_parser = ThinkTagParser()
 
         # payloads() dispatches what a stream that stopped without its last newline had collected.
-        # The second copy of this loop that flushed the trailing buffer is therefore gone, and with
-        # it the ways the two had drifted apart.
         served_by: str | None = None
         async for payload in payloads(resp.content.iter_any(), until="[DONE]"):
             data = CompletionChunk.read(payload)
 
             if served_by is None and data.model:
-                # Which model actually answered, which need not be the one asked for. A compatible
-                # gateway routes, falls back, and prices the substitute differently.
+                # Which model actually answered, which need not be the one asked for.
                 served_by = data.model
                 yield IterationStart(iteration=0, id=data.id or None, model=served_by)
 
             if data.error is not None:
                 error_message = data.error.message or str(dict(data.error.raw))
             elif isinstance(payload.get("error"), str) and payload["error"]:
-                # Some compatible servers send the error as a bare string, which reads into no
-                # object at all. Left unread, the only diagnostic the provider gave was discarded
-                # and the turn failed with nothing to show for it.
+                # Some compatible servers send the error as a bare string, which reads into no object at all.
                 error_message = payload["error"]
 
             if data.usage is not None:
@@ -709,14 +704,13 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             if choice.logprobs:
                 yield ProviderEvent(provider="openai", kind="logprobs", data=dict(choice.logprobs))
 
-            # n>1 asks for several candidates. Only the first is read. The rest travel whole
-            # rather than being discarded without a word.
+            # n>1 asks for several candidates. Only the first is read, and the rest travel whole.
             for other in data.choices[1:]:
                 yield ProviderEvent(provider="openai", kind="choice", data=dict(other.raw), index=other.index)
 
             if choice.finish_reason is not None and finish_reason != "content_filter":
-                # A refusal already decided this turn. Compatible gateways close a declined choice
-                # with "stop", and reading it over the top reported a decline as an answer.
+                # A refusal already decided this turn. Compatible gateways close a declined choice with
+                # "stop", and reading it over the top reports a decline as an answer.
                 finish_reason = choice.finish_reason
 
         for kind, text in think_parser.flush():
@@ -848,9 +842,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             "name": self.name,
             "base_url": self.base_url,
             "api_key": self.api_key,
-            # Which endpoint this server speaks is a property of the server, so it has to survive
-            # being saved. Left out, a transport told to use chat completions came back speaking
-            # /v1/responses, which the server it points at may not implement at all.
+            # Which endpoint the server speaks is a property of the server, so it has to survive saving.
             "api": self.api,
             "models": [
                 {
@@ -885,11 +877,12 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                 for m in data.get("models", [])
             ]
         )
-        chosen: dict[str, Any] = {}
+        chosen: dict[str, Any] = {"api": "chat"}
+        # A saved config with no endpoint was written when this transport only spoke chat
+        # completions, and the new default would repoint it at /v1/responses.
         if data.get("api"):
-            # Passed only when it was saved. Absent from an older config the dataclass default
-            # applies, which is the class's own answer. Reading it off `cls` would not work: with
-            # slots the class attribute is a descriptor, not the default.
+            # Passed only when it was saved, so an older config takes the dataclass default. Reading it
+            # off `cls` would not work: with slots the class attribute is a descriptor.
             chosen["api"] = data["api"]
         return cls(
             name=str(data.get("name", "")),

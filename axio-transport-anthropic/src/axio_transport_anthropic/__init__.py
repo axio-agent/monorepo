@@ -111,25 +111,21 @@ ANTHROPIC_MODELS: ModelRegistry = ModelRegistry(
     }
 )
 
-#: Every ``stop_reason`` the API publishes. One left out ends the run as an error rather than
-#: passing for a finished answer.
+#: Every ``stop_reason`` the API publishes. One left out ends the run as an error.
 _STOP_REASON_MAP: dict[str, StopReason] = {
     "end_turn": StopReason.end_turn,
     "stop_sequence": StopReason.end_turn,
     "tool_use": StopReason.tool_use,
     "max_tokens": StopReason.max_tokens,
     "refusal": StopReason.refusal,
-    # Resumable, and the agent re-sends the turn to resume it. The blocks that make it resumable
-    # are server-tool content. That content reaches the caller as ProviderEvent and is not stored.
-    # A resume would repeat the turn without them. This transport declares no server
-    # tool — _convert_tools writes no "type" — so the reason cannot arrive from a request it
-    # builds. Storing that content has to come before it can.
+    # Resumable only if the server-tool content that makes it resumable is stored, and that
+    # content reaches the caller as ProviderEvent. This transport declares no server tool, so
+    # the reason cannot arrive from a request it builds.
     "pause_turn": StopReason.pause_turn,
     "model_context_window_exceeded": StopReason.context_window_exceeded,
 }
 
-#: What each citation shape counts its span in. The unit is never assumed. Only ``char_location``
-#: counts characters. Offsets from different units must not be compared.
+#: What each citation shape counts its span in. Only ``char_location`` counts characters.
 _CITATION_UNITS: dict[str, Literal["char", "byte", "page", "block", "unknown"]] = {
     "char_location": "char",
     "page_location": "page",
@@ -204,17 +200,14 @@ def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
                 if isinstance(b, TextBlock):
                     content_parts.append({"type": "text", "text": b.text})
                 elif isinstance(b, ReasoningBlock):
-                    # Sent back unaltered, or not at all. With extended thinking on, a turn that
-                    # thought and then called a tool is refused. It is accepted only when its
-                    # thinking comes back with the signature the API issued.
+                    # Sent back unaltered, or not at all. With extended thinking on, the API accepts a turn
+                    # that thought and then called a tool only with the signature it issued.
                     if b.redacted:
                         content_parts.append({"type": "redacted_thinking", "data": b.signature})
                     elif b.signature:
                         content_parts.append({"type": "thinking", "thinking": b.text, "signature": b.signature})
                     else:
-                        # Unsigned, so the API would refuse it. Dropped rather than sent, because
-                        # this is a block the API never signed. Nothing proves the text is the
-                        # model's.
+                        # Unsigned, so the API would refuse it. Nothing proves the text is the model's.
                         logger.debug("Dropping an unsigned reasoning block from the replayed turn")
                 elif isinstance(b, ToolUseBlock):
                     content_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
@@ -433,9 +426,8 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         usage = wire.message.usage
         self.cache_read = usage.cache_read_input_tokens
         self.cache_write = usage.cache_creation_input_tokens
-        # Added back, because input_tokens counts only what follows the last cache breakpoint. This
-        # transport sets cache_control itself, so without them a cached 100k prompt reported as the
-        # handful of tokens after the breakpoint.
+        # Added back, because input_tokens counts only what follows the last cache breakpoint.
+        # This transport sets cache_control itself.
         self.input_tokens = usage.input_tokens + self.cache_read + self.cache_write
         yield IterationStart(iteration=0, id=wire.message.id or None, model=wire.message.model or None)
 
@@ -446,12 +438,12 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             self.tool_use_ids[wire.index] = block.id
             yield ToolUseStart(index=wire.index, tool_use_id=block.id, name=block.name)
         elif block.type == "redacted_thinking":
-            # The reasoning is withheld. Only the proof travels. Dropped, the turn cannot be sent
-            # back, because the API refuses a thinking block whose signature is missing.
+            # The reasoning is withheld and only the proof travels. Dropped, the turn cannot be sent
+            # back: the API refuses a thinking block with no signature.
             yield ReasoningSignature(index=wire.index, data=block.data, redacted=True)
         elif block.type not in ("text", "thinking"):
-            # server_tool_use, web_search_tool_result, code execution, mcp: the API runs these on
-            # its own side, so axio has nothing to dispatch. They are still content of the turn.
+            # server_tool_use, web_search_tool_result, code execution, mcp: the API runs these on its
+            # own side, so axio has nothing to dispatch. They are still content of the turn.
             yield ProviderEvent(provider="anthropic", kind=block.type, data=dict(block.raw), index=wire.index)
 
     @on(BlockDeltaEvent)
@@ -473,9 +465,8 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             case "citations_delta":
                 yield self._citation(index, delta.citation)
             case other:
-                # The block names the delta, so the delta type is a second vocabulary inside one
-                # event. One policy covers both. A delta nobody reads fails the same strict replay
-                # a new event fails, instead of disappearing.
+                # The block names the delta, so the delta type is a second vocabulary inside one event.
+                # One policy covers both.
                 self.unknown(other)
 
     @on(BlockStop)
@@ -490,9 +481,8 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         # An empty reason means "none yet". It must not erase the reason an earlier delta gave.
         self.stop_reason = wire.delta.stop_reason or self.stop_reason
 
-        # This usage is cumulative, in every field and not only the output ones. Reading back the
-        # output alone left the input frozen at what message_start had said. On a turn that ran a
-        # server-side tool that figure is a fraction of what was billed.
+        # Cumulative in every field, not only the output ones. Reading back the output alone left
+        # the input frozen at what message_start had said.
         if wire.usage.input_tokens:
             self.cache_read = wire.usage.cache_read_input_tokens or self.cache_read
             self.cache_write = wire.usage.cache_creation_input_tokens or self.cache_write
@@ -503,8 +493,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         self.reasoning_tokens = wire.usage.output_tokens_details.thinking_tokens or self.reasoning_tokens
 
         if wire.delta.stop_reason == "refusal":
-            # A decline arrives as a successful response with no content at all. With nothing emitted
-            # here the turn reached the caller as an empty answer.
+            # A decline arrives as a successful response with no content at all.
             details = wire.delta.stop_details
             yield Refusal(
                 index=0,
@@ -544,8 +533,8 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             source_id=str(citation.document_index) if citation.document_index is not None else None,
             start=citation.start_char_index,
             end=citation.end_char_index,
-            # Only the char_location shape counts characters. The others count pages or blocks and
-            # say so in their own type, so the unit is read from there rather than assumed.
+            # Only the char_location shape counts characters. The others count pages or blocks and say
+            # so in their own type.
             unit=_CITATION_UNITS.get(citation.type, "unknown"),
             raw=dict(citation.raw),
         )
@@ -554,7 +543,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         """What the turn added up to. The API sends no event that means this."""
         if not self.stop_reason:
             # Every turn ends on a message_delta carrying a stop_reason. Without one the connection
-            # was cut. Reported as an ending, the partial text is stored as the model's answer.
+            # was cut.
             raise StreamError("Anthropic stream ended without a stop_reason")
         stop = _STOP_REASON_MAP.get(self.stop_reason, StopReason.error)
         if self.stop_reason not in _STOP_REASON_MAP:

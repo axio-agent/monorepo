@@ -1828,8 +1828,21 @@ class TestEndpointSurvivesSaving:
         saved = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).to_dict()
         assert OpenAITransport.from_dict(saved).api == "responses"
 
-    def test_a_config_saved_before_the_endpoint_existed_takes_the_class_default(self) -> None:
-        assert OpenAITransport.from_dict({"name": "x", "models": []}).api == "responses"
+    def test_a_config_saved_before_the_endpoint_existed_still_speaks_chat(self) -> None:
+        # It was written when this transport only spoke chat completions. Taking the new default
+        # would repoint it at /v1/responses, which the server it was written for may not implement.
+        assert OpenAITransport.from_dict({"name": "x", "models": []}).api == "chat"
         from axio_transport_openai.custom import OpenAICompatibleTransport
 
         assert OpenAICompatibleTransport.from_dict({"name": "x", "models": []}).api == "chat"
+
+    def test_the_endpoint_cannot_be_passed_by_position(self) -> None:
+        # Inserted as a positional field it swallowed base_url, and a caller using positional
+        # arguments got a request URL built from its API key with no Authorization header.
+        transport = OpenAITransport("MyServer", "http://localhost:8000/v1", "sk-x")
+        assert (transport.name, transport.base_url, transport.api_key) == (
+            "MyServer",
+            "http://localhost:8000/v1",
+            "sk-x",
+        )
+        assert transport.api == "responses"

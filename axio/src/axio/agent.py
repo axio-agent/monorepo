@@ -131,8 +131,8 @@ class _RepetitionDetector:
         return False
 
 
-#: Reasons that say the turn failed rather than finished. A call streamed inside one of them is
-#: output nobody vouched for, so it is not run.
+#: Reasons that say the turn failed rather than finished. A call streamed inside one is
+#: output nobody vouched for.
 _NO_DISPATCH = frozenset({StopReason.error, StopReason.refusal, StopReason.cancelled})
 
 
@@ -383,9 +383,8 @@ class Agent:
                                     repetition_detected = True
                                     break
                             case Refusal(text=text):
-                                # Kept as the turn's text: a refusal is what the assistant said.
-                                # Left out, the stored turn is empty and the next request carries a
-                                # blank assistant message the provider then rejects.
+                                # Kept as the turn's text: a refusal is what the assistant said. Left out, the stored
+                                # turn is empty and the next request carries a blank assistant message.
                                 if text:
                                     self._accumulate_text(content, text)
                             case ReasoningDelta(delta=delta):
@@ -428,17 +427,15 @@ class Agent:
                 tool_blocks = [b for b in content if isinstance(b, ToolUseBlock)]
 
                 if tool_blocks and stop_reason in _NO_DISPATCH:
-                    # The turn did not end in a way that vouches for what it produced. Running its
-                    # calls acts on output the transport has just reported as failed, declined or
-                    # cut short, and the run ends immediately afterwards regardless.
+                    # The turn did not end in a way that vouches for what it produced, and the run ends
+                    # immediately after this regardless.
                     logger.warning(
                         "Not dispatching %d tool(s): the turn ended with stop_reason=%s",
                         len(tool_blocks),
                         stop_reason,
                     )
-                    # Removed from the turn as well, not only from this list. Left in, they are
-                    # persisted with no result beside them. The next request then carries a call
-                    # nothing answered, which Anthropic and Google refuse.
+                    # Removed from the turn as well, not only from this list. Left in, they are persisted
+                    # with no result beside them, which Anthropic and Google refuse on the next request.
                     content[:] = [b for b in content if not isinstance(b, ToolUseBlock)]
                     tool_blocks = []
 
@@ -590,31 +587,32 @@ class Agent:
                         yield SessionEndEvent(stop_reason=StopReason.end_turn, total_usage=total_usage)
                         session_end_emitted = True
                         return
-                    case StopReason.refusal:
-                        # This is terminal, and not an error. The model declined, and the decline
-                        # is stored as the turn's content. Sending the same prompt again cannot
-                        # succeed. Reported as an error the caller cannot tell a decline from a
-                        # broken connection, and retries something that will never work.
-                        logger.info("Model declined: total_usage=%s", total_usage)
-                        yield SessionEndEvent(stop_reason=StopReason.refusal, total_usage=total_usage)
+                    case StopReason.refusal | StopReason.cancelled | StopReason.context_window_exceeded:
+                        # All terminal, and none of them the transport breaking. Reported as an error they are
+                        # indistinguishable from a broken connection, and a caller that retries on Error
+                        # retries what can never work.
+                        logger.info("Ending on %s: total_usage=%s", stop_reason, total_usage)
+                        yield SessionEndEvent(stop_reason=stop_reason, total_usage=total_usage)
                         session_end_emitted = True
                         return
-                    case StopReason.tool_use:
-                        # The turn asked for a tool. Any call it produced has already been run
-                        # above, so going round again is the answer to it. Where the provider asked
-                        # without producing a usable call, re-prompting is the recovery.
+                    case StopReason.tool_use if tool_blocks:
+                        # The calls have been run above, so going round again carries their results.
                         continue
+                    case StopReason.tool_use:
+                        # The turn asked for a tool and produced no call anyone could run. Going round again
+                        # would send byte-identical input, and did so until max_iterations.
+                        yield Error(exception=RuntimeError("Transport asked for a tool but produced no call"))
+                        yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
+                        session_end_emitted = True
+                        return
                     case StopReason.pause_turn:
-                        # The provider stopped its own tool loop and expects the assistant content
-                        # back to finish the turn. The content was just appended, so going round
-                        # again is the resume.
+                        # The provider stopped its own tool loop and expects the assistant content back. It was
+                        # just appended, so going round again is the resume.
                         logger.debug("Paused turn, resuming: total_usage=%s", total_usage)
                         continue
                     case _:
-                        # Wildcard on purpose. Named one by one, a reason added later matches
-                        # nothing, falls out of the match, and the loop simply runs again. The
-                        # model is then re-prompted with unchanged history until max_iterations,
-                        # and every one of those turns is paid for.
+                        # Wildcard on purpose. Named one by one, a reason added later falls out of the match and
+                        # the loop simply runs again, re-prompting with unchanged history until max_iterations.
                         yield Error(exception=RuntimeError(f"Transport stopped with: {stop_reason}"))
                         yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
                         session_end_emitted = True

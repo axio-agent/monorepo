@@ -46,12 +46,10 @@ CODEX_MODELS: ModelRegistry = ModelRegistry(
     }
 )
 
-#: Every ``status`` the Responses API publishes, and every ``incomplete_details.reason``, mapped to
-#: the reason axio ends a run on. A status left out of this map ends the run as an error rather than
-#: passing for a finished answer.
-#: The Responses vocabulary lives in axio-responses. The same request items and the same 58
-#: stream events serve the public /v1/responses endpoint and this ChatGPT backend, so both
-#: transports read one implementation. Re-exported under the names this module has always used.
+#: Every ``status`` the Responses API publishes, and every ``incomplete_details.reason``.
+#: A status left out of this map ends the run as an error.
+#: The Responses vocabulary lives in axio-responses: the public /v1/responses endpoint and
+#: this ChatGPT backend speak it alike. Re-exported under this module's own names.
 _STOP_REASON_MAP = STOP_REASONS
 _strip_title = strip_title
 _convert_tools = convert_tools

@@ -5,6 +5,8 @@ is one the API added after this was written, not one nobody named. A test readin
 ``strict=True`` holds that against the schema.
 """
 
+from __future__ import annotations
+
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -59,8 +61,8 @@ class OutputItem(Wire):
     id: str = ""
     call_id: str = ""
     name: str = ""
-    #: Present on a ``reasoning`` item when the request asked for it. The value is opaque. The next
-    #: request sends it back so the model can see what it had been thinking.
+    #: Present on a ``reasoning`` item when the request asked for it. Opaque, and sent back on
+    #: the next request.
     encrypted_content: str = ""
 
 
@@ -138,9 +140,8 @@ class StreamFailure(Wire, name="error"):
 @dataclass(frozen=True, slots=True)
 class TextDeltaEvent(Wire, name="response.output_text.delta"):
     delta: str = ""
-    #: Which output item this belongs to. Fixed at zero, a response with several items sent every
-    #: delta under one index while the events that close a block kept the real one. Nothing
-    #: downstream could then tell which block a delta was part of.
+    #: Which output item this belongs to. Fixed at zero, every delta of a multi-item response
+    #: shared one index while the events that close a block kept the real one.
     output_index: int = 0
 
 
@@ -162,8 +163,8 @@ class RefusalDeltaEvent(Wire, name="response.refusal.delta"):
 
 @dataclass(frozen=True, slots=True)
 class AnnotationAdded(Wire, name="response.output_text.annotation.added"):
-    #: Which output item the cited text belongs to. The deltas and the event that closes a block
-    #: are indexed by this, so a citation indexed by content_index named a different block.
+    #: Which output item the cited text belongs to. The deltas and the closing event are indexed
+    #: by this, not by content_index.
     output_index: int = 0
     #: Which content part inside that item, which axio has no index of its own for.
     content_index: int = 0
@@ -300,12 +301,11 @@ class Responses(Reader[StreamEvent]):
         status = response.status or "completed"
         if self.stop_reason == StopReason.refusal:
             # A refusal already decided this turn. The status enum has no refusal member, so the
-            # response carrying a refusal still completes. Reading the status over the top
-            # reported a declined turn as a finished answer.
+            # response carrying one still completes.
             pass
         elif status not in STOP_REASONS:
-            # A status nobody here knows is not a finished answer. Read as end_turn, a response
-            # the API failed or cut short is stored and returned as the model's whole answer.
+            # A status nobody here knows is not a finished answer. Read as end_turn, a response the
+            # API failed or cut short is stored as the model's whole answer.
             logger.warning("Unknown response status %r, read as an error", status)
             self.stop_reason = StopReason.error
         else:
@@ -328,8 +328,7 @@ class Responses(Reader[StreamEvent]):
         self._count(wire.response.usage)
         reason = wire.response.incomplete_details.reason
         # The event says the response did not complete, so a reason nobody here knows must not
-        # default to the one that means it did. A truncation the API adds tomorrow would otherwise
-        # be stored and reported as a whole answer.
+        # default to the one that means it did.
         self.stop_reason = STOP_REASONS.get(reason, StopReason.error)
         logger.warning("Response incomplete: reason=%s, stop=%s", reason or "unstated", self.stop_reason)
 

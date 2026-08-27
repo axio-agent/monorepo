@@ -178,18 +178,15 @@ def _get_anthropic_models() -> ModelRegistry:
     )
 
 
-#: Reasons that say the turn failed. A call streamed inside one of them does not turn it into a
-#: request for that tool.
+#: Reasons that say the turn failed. A call streamed inside one is not a request to run it.
 _BLOCKED = frozenset({StopReason.refusal, StopReason.error, StopReason.cancelled})
 
-#: The union of every ``finishReason`` either surface publishes. The developer API publishes 21 and Vertex
-#: publishes 17. One left out is read as an error. That tells the caller the transport broke when the model
-#: was in fact blocked, or asked to be prompted again.
+#: Every ``finishReason`` both surfaces publish: 21 on the developer API, 17 on Vertex.
+#: One left out is read as an error.
 _FINISH_REASON_MAP: dict[str, StopReason] = {
     "STOP": StopReason.end_turn,
     "MAX_TOKENS": StopReason.max_tokens,
-    # The turn was blocked. This is not the transport failing. Sending the same prompt cannot
-    # succeed.
+    # Blocked, not broken. The same prompt sent again cannot succeed.
     "SAFETY": StopReason.refusal,
     "RECITATION": StopReason.refusal,
     "LANGUAGE": StopReason.refusal,
@@ -200,8 +197,7 @@ _FINISH_REASON_MAP: dict[str, StopReason] = {
     "IMAGE_SAFETY": StopReason.refusal,
     "IMAGE_PROHIBITED_CONTENT": StopReason.refusal,
     "IMAGE_RECITATION": StopReason.refusal,
-    # The model produced a call the API could not use. Read as tool_use, the agent prompts again.
-    # That is the recovery, because the next answer may parse.
+    # The API could not use the call. Read as tool_use so the agent prompts again.
     "MALFORMED_FUNCTION_CALL": StopReason.tool_use,
     "UNEXPECTED_TOOL_CALL": StopReason.tool_use,
     # Failures that prompting again does not fix.
@@ -245,8 +241,8 @@ class ContentPart(Wire):
     text: str = ""
     #: True where ``text`` is the model thinking rather than answering.
     thought: bool = False
-    #: Opaque proof that the reasoning is the model's own. Returned altered or missing, the next
-    #: request comes back with ``MISSING_THOUGHT_SIGNATURE``.
+    #: Opaque proof that the reasoning is the model's own. Altered or missing, the next request
+    #: fails with ``MISSING_THOUGHT_SIGNATURE``.
     thoughtSignature: str = ""
     inlineData: InlineData = field(default_factory=InlineData)
     functionCall: FunctionCall = field(default_factory=FunctionCall)
@@ -311,9 +307,8 @@ def _usage(um: UsageMetadata, *, final: bool = False) -> Usage:
         cache_write_tokens=0,
         reasoning_tokens=um.thoughtsTokenCount,
     )
-    # Only where the counts are final. Gemini attaches usageMetadata to every chunk. A mid-stream
-    # one reports a total against parts that have not all arrived. Checking each would warn
-    # hundreds of times for a mismatch that is only meaningful at the end.
+    # Only where the counts are final. Gemini attaches usageMetadata to every chunk, and a
+    # mid-stream one totals parts that have not all arrived.
     if final and um.totalTokenCount is not None and um.totalTokenCount != usage.total_tokens:
         # The provider publishes the sum it expects, so this catches the day it changes the rule.
         logger.warning("usageMetadata total is %d, the parts add to %d", um.totalTokenCount, usage.total_tokens)
@@ -412,28 +407,22 @@ def _build_contents_json(
 
         elif msg.role == "assistant":
             assistant_parts: list[Part] = []
-            # Signatures the model issued for parts that carried no text of their own. They
-            # belong to the calls that follow, in the order they arrived. A turn may hold several
-            # parallel calls. The agent appends every signature before any of the calls. A single
-            # slot therefore gave the first call the last signature and left the rest unsigned.
+            # Signatures for parts that carried no text of their own. They belong to the calls that
+            # follow, in arrival order.
             unplaced_signatures: deque[str] = deque()
             for assistant_block in msg.content:
                 if isinstance(assistant_block, TextBlock):
                     assistant_parts.append({"text": assistant_block.text})
                 elif isinstance(assistant_block, ReasoningBlock):
-                    # The signature is documented as "an opaque signature for the thought so it can
-                    # be reused in subsequent requests". Read from the stored block rather than from
-                    # the map on this instance. That map is per-transport and empty after a restart,
-                    # so a resumed session used to come back MISSING_THOUGHT_SIGNATURE.
+                    # From the stored block, not from the map on this instance: that map is empty after a
+                    # restart.
                     if assistant_block.text:
                         thought: Part = {"text": assistant_block.text, "thought": True}
                         if assistant_block.signature:
                             thought["thoughtSignature"] = assistant_block.signature
                         assistant_parts.append(thought)
                     elif assistant_block.signature:
-                        # Gemini puts the proof on the part it signed. A thought part with no text
-                        # is not that part. Sent as one, the call it belongs to comes back
-                        # MISSING_THOUGHT_SIGNATURE.
+                        # Gemini puts the proof on the part it signed, and a thought part with no text is not it.
                         unplaced_signatures.append(assistant_block.signature)
                 elif isinstance(assistant_block, (ImageBlock, AudioBlock, VideoBlock)):
                     assistant_parts.append(_inline_data_part(assistant_block))
@@ -445,11 +434,8 @@ def _build_contents_json(
                             "id": assistant_block.id,
                         }
                     }
-                    # The stored signature comes first, taken in arrival order. The map is this
-                    # instance's, so it is empty in a session restored into a new transport, which
-                    # is the case that fails.
-                    # The call's own proof first: it survives a restart, which neither the deque
-                    # nor the map on the transport does.
+                    # Stored signatures first, in arrival order.
+                    # The call's own proof first: it survives a restart, which the map does not.
                     stored_signature = assistant_block.signature
                     if not stored_signature and unplaced_signatures:
                         stored_signature = unplaced_signatures.popleft()
@@ -699,16 +685,13 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             for i, c in enumerate(contents):
                 logger.debug("  content[%d] role=%s parts=%d", i, c.get("role"), len(c.get("parts", [])))
 
-        # Counts parts across the whole turn. enumerate() restarts at zero every chunk. Two parts
-        # sharing a number read downstream as one block. Two unrelated thought signatures were
-        # joined into a proof matching neither.
+        # Counts parts across the turn. enumerate() restarts at zero every chunk, so two parts
+        # would share a number.
         at = -1
 
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
-            # Reset per attempt. Carried in from a failed attempt, a retry inherited its stop reason
-            # and its "already reported the model" flag. A truncated second try was then reported
-            # as the finished turn of the first.
+            # Reset per attempt, or a retry inherits the stop reason of the attempt that failed.
             usage = Usage(0, 0)
             stop_reason = StopReason.end_turn
             finished = False
@@ -750,13 +733,8 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                             yield IterationStart(iteration=0, id=chunk.responseId or None, model=served_by)
 
                         if block_reason := chunk.promptFeedback.string("blockReason"):
-                            # Test blockReason and not presence. The developer API attaches
-                            # promptFeedback with safetyRatings to healthy answers too, and a
-                            # Payload is a dict. Gating on truthiness therefore called every one of
-                            # those healthy answers a blocked prompt. Only blockReason means
-                            # nothing was generated.
-                            # A blocked prompt is a finished turn. Nothing was generated, so no
-                            # candidate and no finishReason ever arrive.
+                            # blockReason, not presence: promptFeedback rides along with healthy answers too.
+                            # A blocked prompt is a finished turn, so no candidate and no finishReason follow.
                             finished = True
                             stop_reason = StopReason.refusal
                             yield Refusal(
@@ -776,9 +754,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                             if candidate.finishReason not in _FINISH_REASON_MAP:
                                 logger.warning("Unknown finishReason %r", candidate.finishReason)
 
-                        # What the answer was attributed to. Four providers shape this four
-                        # incompatible ways, so it travels whole rather than as an invented common
-                        # form.
+                        # Grounding travels whole. Four providers shape it four incompatible ways.
                         if candidate.citationMetadata:
                             yield ProviderEvent(
                                 provider="google",
@@ -794,9 +770,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 index=0,
                             )
 
-                        # Every event of a part carries that part's number. Fixed at zero, the
-                        # reasoning of one part and the signature of another shared an index, and
-                        # nothing downstream could group a part's events together.
+                        # The part's own number. Fixed at zero, events of different parts cannot be grouped.
                         for part in candidate.content.parts:
                             at += 1
                             if part.text and part.thought:
@@ -806,10 +780,8 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                             elif part.inlineData.data:
                                 mt = part.inlineData.mimeType
                                 raw = base64.b64decode(part.inlineData.data)
-                                # The prefix is all the wire guarantees. The event types name the
-                                # exact media types they accept. The provider is free to send one
-                                # outside that list. So the check tests the prefix. The cast says
-                                # so rather than pretending the narrower type was proven.
+                                # The prefix is all the wire guarantees, so the cast says the
+                                # narrower type is unproven.
                                 if mt.startswith("image/"):
                                     yield ImageOutput(index=at, data=raw, media_type=cast(ImageMediaType, mt))
                                 elif mt.startswith("audio/"):
@@ -822,17 +794,16 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                     )
                             elif part.functionCall.name:
                                 call = part.functionCall
-                                call_id = call.id or f"genai_{call.name}_{id(part)}"
+                                # By position, never by id(): the part is a temporary whose address CPython reuses.
+                                call_id = call.id or f"genai_{call.name}_{at}"
                                 if part.thoughtSignature:
                                     self._thought_signatures[call_id] = part.thoughtSignature
                                 yield ToolUseStart(
                                     index=at,
                                     tool_use_id=call_id,
                                     name=call.name,
-                                    # On the call, not beside it. Sent as a bare
-                                    # signature it attached to whatever reasoning block was still
-                                    # unsigned. The thought took the call's proof, and the call
-                                    # had none.
+                                    # On the call, not beside it. A bare signature attaches
+                                    # to whatever block is still unsigned.
                                     signature=part.thoughtSignature,
                                 )
                                 args_json = json.dumps(dict(call.args)) if call.args else "{}"
@@ -844,29 +815,31 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 yield ProviderEvent(provider="google", kind="part", data=dict(part.raw), index=at)
 
                             if part.thoughtSignature and not part.functionCall.name:
-                                # Emit after the reasoning it signs, never before. The agent
-                                # attaches a signature to the block it just built, and refuses to
-                                # extend a block already signed. Emitted first, one part became two
-                                # blocks — a signature on nothing, and reasoning left unsigned.
-                                #
-                                # The index is the part's own position, because the index on a
-                                # signature means which block it proves. Fixed at zero, two
-                                # parallel signed calls looked like two halves of one proof.
-                                yield ReasoningSignature(index=at, data=part.thoughtSignature)
+                                if part.text and not part.thought:
+                                    # The proof is for answer text, which axio stores in a block that holds no
+                                    # signature. Emitted as a ReasoningSignature it made a textless reasoning
+                                    # block whose proof the next call in the turn took.
+                                    yield ProviderEvent(
+                                        provider="google",
+                                        kind="thoughtSignature",
+                                        data=dict(part.raw),
+                                        index=at,
+                                    )
+                                else:
+                                    # After the reasoning it signs, never before: the agent signs the block it built.
+                                    # The index is the part's position, because a signature names the block it proves.
+                                    yield ReasoningSignature(index=at, data=part.thoughtSignature)
 
                 if last_counts is not None:
                     # Checked once, on the counts the turn ended with.
                     usage = _usage(last_counts, final=True)
 
                 if not finished:
-                    # Every Gemini stream ends on a finishReason. Without one the connection was
-                    # cut. Reported as end_turn, a truncated answer is stored as a whole one.
+                    # Every Gemini stream ends on a finishReason. Without one the connection was cut.
                     raise StreamError("Gemini stream ended without a finishReason")
 
                 if has_tool_calls and stop_reason not in _BLOCKED:
-                    # Never over a blocked or failed turn. Read as tool_use, a turn the provider
-                    # had just refused was dispatched by the agent, which is what its no-dispatch
-                    # guard exists to prevent.
+                    # Never over a blocked or failed turn.
                     stop_reason = StopReason.tool_use
 
                 logger.info(

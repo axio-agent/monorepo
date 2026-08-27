@@ -245,9 +245,8 @@ class TestUnmatched:
 
 
 async def test_a_redecorated_method_drops_the_name_its_parent_gave_it() -> None:
-    # The table is keyed by attribute name so an override without @on still runs. A subclass that
-    # decorates the attribute again has redefined it, and keeping the parent's name dispatched the
-    # parent's event to a method written for another one.
+    # The table is keyed by attribute name so an override without @on still runs. Keeping the
+    # parent's name dispatched the parent's event to a method written for another one.
     class Base(Reader[str]):
         @on("alpha")
         def _handler(self, payload: Payload) -> Iterator[str]:

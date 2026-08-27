@@ -121,6 +121,21 @@ class _Markdown(Markdown):
     BLOCKS = {**Markdown.BLOCKS, "fence": _MonokaiFence, "code_block": _MonokaiFence}
 
 
+def _link_safe(text: str) -> str:
+    """Provider text with the brackets that would end a Markdown link taken out."""
+    return text.replace("[", "(").replace("]", ")").replace("(", "%28").replace(")", "%29")
+
+
+def _citation_markdown(title: str, cited: str, url: str) -> str:
+    """Render one citation as a Markdown link.
+
+    Both halves are escaped, because a `]` in a provider's title or a `)` in a query string closes
+    the link early and spills the rest into the transcript.
+    """
+    label = _link_safe(title or cited or url or "source")
+    return f" [{label}]({_link_safe(url)})" if url else f" _[{label}]_"
+
+
 @dataclass
 class _ToolCallInfo:
     name: str = ""
@@ -1362,10 +1377,8 @@ class AgentApp(App[None]):
                                 self._response_text += delta
                                 self._text_dirty = True
                             case Refusal(text=text, category=category, blocked_input=blocked):
-                                # Rendered, and not as ordinary text: unrendered, a declined turn
-                                # looked to the user like the model answering with nothing. The
-                                # banner goes once per turn: a refusal arrives in fragments, and one
-                                # banner each read as several separate refusals.
+                                # Rendered, and not as ordinary text: a declined turn otherwise looked like the model
+                                # answering with nothing. The banner goes once, because a refusal arrives in fragments.
                                 self._tool_status = None
                                 self._agent_emoji = "🚫"
                                 await self._ensure_md()
@@ -1378,8 +1391,7 @@ class AgentApp(App[None]):
                                 self._text_dirty = True
                             case Citation(cited_text=cited, title=title, url=url):
                                 await self._ensure_md()
-                                label = title or cited or url or "source"
-                                self._response_text += f" [{label}]({url})" if url else f" _[{label}]_"
+                                self._response_text += _citation_markdown(title, cited, url)
                                 self._text_dirty = True
                             case ToolUseStart(tool_use_id=tid, name=name) if name != "status_line":
                                 self._agent_emoji = "🔧"

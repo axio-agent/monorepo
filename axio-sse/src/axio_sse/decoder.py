@@ -1,5 +1,7 @@
 """The format as a state machine, with no I/O and no loop."""
 
+from __future__ import annotations
+
 import codecs
 from typing import Final
 
@@ -8,9 +10,8 @@ from .event import Event
 #: The only line endings the format allows. ``str.splitlines`` breaks on more than these.
 ENDINGS: Final = ("\r\n", "\n", "\r")
 
-#: How long a ``retry:`` value may be. ``str.isdigit`` is true for 128 characters ``int()`` refuses.
-#: CPython refuses to parse past 4300 digits. An unbounded guard raises out of ``decode``, and takes
-#: the rest of the turn with it.
+#: How long a ``retry:`` value may be. ``str.isdigit`` is true for 128 characters ``int()``
+#: refuses, and CPython refuses to parse past 4300 digits.
 _RETRY_DIGITS: Final = 18
 
 
@@ -31,10 +32,9 @@ class Decoder:
 
     def reset(self) -> None:
         """Forget the half-read event and the half-read character, ready for another stream."""
-        # Incremental: a chunk can end in the middle of a character. ``utf-8-sig`` rather than
-        # ``utf-8`` because the format is read as "UTF-8 decode", which strips a leading byte order
-        # mark. Left in, the mark makes the first field name ``\ufeffdata``, which is unknown, and
-        # the event it opened is lost with nothing logged.
+        # Incremental: a chunk can end in the middle of a character. ``utf-8-sig`` because the
+        # format is read as "UTF-8 decode", which strips a leading byte order mark. Left in, the
+        # mark makes the first field name ``\ufeffdata``.
         self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
         self._held = ""
         self._opened = False
@@ -62,8 +62,7 @@ class Decoder:
             self._trailing_cr = False
         if text.endswith("\r") and not final:
             # A chunk can end mid-terminator. Hold the ``\r`` until the next chunk says whether a
-            # ``\n`` follows. Read whole, it invents a blank line, which dispatches, and the event
-            # arrives cut in two with neither half parseable.
+            # ``\n`` follows, or it invents a blank line and dispatches half an event.
             text, self._trailing_cr = text[:-1], True
         self._held += text
 
@@ -97,8 +96,8 @@ class Decoder:
 
     def _read(self, line: str) -> Event | None:
         if not line:
-            # A blank line dispatches, but only if something was collected: a stream of
-            # keep-alives must not become a stream of empty events.
+            # A blank line dispatches, but only if something was collected: a stream of keep-alives
+            # must not become a stream of empty events.
             if self._collected():
                 return self._dispatch()
             # Nothing fires, and the name is cleared so it cannot leak onto the next event.
@@ -126,9 +125,8 @@ def _split(held: str) -> tuple[str, str] | None:
     At the same position take the longest ending: splitting ``\\r`` out of ``\\r\\n`` leaves a
     ``\\n`` that reads as a blank line, which dispatches.
     """
-    # One scan per ending, not two. The `in` test repeated the scan that find() already does.
-    # The buffer holds a whole event. A five-megabyte inline image arrives over hundreds of
-    # chunks, and each one re-scanned all of it six times over.
+    # One scan per ending, not two. The `in` test repeated the scan that find() already does,
+    # over a buffer that holds a whole event.
     found = [(at, -len(ending), ending) for ending in ENDINGS if (at := held.find(ending)) != -1]
     if not found:
         return None

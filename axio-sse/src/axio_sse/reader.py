@@ -1,5 +1,7 @@
 """What one endpoint sends, as one method per event."""
 
+from __future__ import annotations
+
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Mapping
 from types import MappingProxyType
@@ -11,9 +13,8 @@ from .wire import Wire
 
 log = logging.getLogger("axio.sse")
 
-#: ``by=EVENT_NAME`` dispatches on the format's own ``event:`` field. Any other ``by`` names a key
-#: in the payload. A JSON key that holds a colon is not a name a provider gives a field, so the
-#: two can never mean each other.
+#: ``by=EVENT_NAME`` dispatches on the format's own ``event:`` field. Any other ``by`` names
+#: a key in the payload, and no provider puts a colon in a key.
 EVENT_NAME: Final = "event:"
 
 
@@ -27,7 +28,7 @@ type Handled[T] = Iterable[T] | None
 type _Handler[R, P, T] = Callable[[R, P], Handled[T]]
 
 
-def on[R, P, T](*claimed: "str | type[Wire]") -> Callable[[_Handler[R, P, T]], _Handler[R, P, T]]:
+def on[R, P, T](*claimed: str | type[Wire]) -> Callable[[_Handler[R, P, T]], _Handler[R, P, T]]:
     """Give a ``Reader`` method the payloads it reads.
 
     Give it a ``Wire`` shape and the method is handed that shape, its fields read by declared name
@@ -92,9 +93,8 @@ class Reader[T]:
     """
 
     _by: ClassVar[str] = "type"
-    #: Wire name to the method name that reads it and the shape it reads it as. Never to the
-    #: method itself. Keyed by the function, a subclass that overrides a handler without repeating
-    #: ``@on`` is silently not the one that runs.
+    #: Wire name to the method name that reads it and the shape it reads it as. Keyed by the
+    #: function, a subclass that overrides a handler without repeating ``@on`` never runs.
     _handlers: ClassVar[Mapping[str, tuple[str, type[Wire] | None]]] = MappingProxyType({})
     #: What the running read was asked for, so ``unknown()`` obeys it from inside a handler.
     _strict: bool = False
@@ -108,17 +108,16 @@ class Reader[T]:
         # names it claims again.
         for klass in reversed(cls.__mro__):
             here: dict[str, tuple[str, type[Wire] | None]] = {}
-            # A method this class decorates again is this class's method, whatever its parent said
-            # it read. Kept, the parent's name still pointed at the attribute. The parent's event
-            # then dispatched to a method written for another one.
+            # A method this class decorates again is this class's method, whatever its parent said it
+            # read. Kept, the parent's name would still point at the attribute.
             for stale in [n for n, (attribute, _) in found.items() if _redecorated(klass, attribute)]:
                 del found[stale]
             for attribute, method in vars(klass).items():
                 shape = cast("type[Wire] | None", getattr(method, "_sse_shape", None))
                 for name in cast(tuple[str, ...], getattr(method, "_sse_names", ())):
                     if name in here:
-                        # Refused rather than settled by definition order, which leaves one of the
-                        # two methods never called and says nothing about it.
+                        # Refused rather than settled by definition order, which silently leaves one of
+                        # the two methods never called.
                         taken = here[name][0]
                         raise ValueError(f"{klass.__qualname__} reads {name!r} twice: {taken} and {attribute}")
                     here[name] = (attribute, shape)
@@ -163,15 +162,13 @@ class Reader[T]:
         payload = event.payload()
         if payload is None:
             return []
-        # ``strict`` stays latched for the length of this read. A handler is given only its
-        # payload, and a nested unknown must obey the same policy as a top-level one. Without this
-        # a strict replay passes while a delta type nobody reads is dropped in silence.
+        # ``strict`` stays latched for the length of this read, so a nested unknown obeys the same
+        # policy as a top-level one.
         self._strict = strict
         name = event.event if self._by == EVENT_NAME else payload.string(self._by)
         claimed = self._handlers.get(name)
         if claimed is None:
-            # unknown() first: under strict it raises, so a reader that forwards still fails a
-            # replay meant to catch new vocabulary.
+            # unknown() first: under strict it raises, so a reader that forwards still fails a replay.
             self.unknown(name)
             made = self.unmatched(name, payload)
             return [] if made is None else list(made)

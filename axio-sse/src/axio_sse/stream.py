@@ -1,5 +1,7 @@
 """The async skin over the decoder: chunks in, events or payloads out."""
 
+from __future__ import annotations
+
 from collections.abc import AsyncIterable, AsyncIterator
 
 from .decoder import Decoder

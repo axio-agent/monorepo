@@ -289,7 +289,7 @@ class TestStopReasonGuard:
     async def test_an_unnamed_stop_reason_ends_the_run(self) -> None:
         # Without the wildcard this fell out of the match and the loop ran again, re-prompting the
         # model with unchanged history until max_iterations — every one of those turns paid for.
-        transport = StubTransport([[TextDelta(0, "no"), IterationEnd(1, StopReason.cancelled, Usage(10, 5))]])
+        transport = StubTransport([[TextDelta(0, "no"), IterationEnd(1, StopReason.max_tokens, Usage(10, 5))]])
         agent = Agent(system="", tools=[], transport=transport, max_iterations=5)
 
         events = [event async for event in agent.run_stream("hi", MemoryContextStore())]
@@ -446,8 +446,7 @@ class TestSignaturesAreNotConcatenated:
 
     async def test_two_signatures_for_different_blocks_stay_apart(self) -> None:
         # What Gemini sends for two signed parallel function calls: one proof per part, and the
-        # index says which part. Merged, the first call would replay with both proofs joined and
-        # the second with none.
+        # index says which part.
         transport = StubTransport(
             [
                 [
@@ -616,3 +615,47 @@ class TestAnUnrunCallIsNotPersisted:
 
         stored = [b for m in await context.get_history() for b in m.content]
         assert [b.id for b in stored if isinstance(b, ToolUseBlock)] == ["call_1"]
+
+
+async def test_a_tool_turn_with_no_usable_call_stops_instead_of_asking_again() -> None:
+    """Going round again would send byte-identical input.
+
+    It did so until max_iterations: fifty paid requests for one malformed call. Google maps
+    MALFORMED_FUNCTION_CALL to tool_use, which is exactly how a turn reaches here with no call.
+    """
+    transport = StubTransport([[IterationEnd(1, StopReason.tool_use, Usage(1, 1))]])
+    context = MemoryContextStore()
+    agent = Agent(system="", tools=[], transport=transport, max_iterations=5)
+
+    events = [event async for event in agent.run_stream("hi", context)]
+
+    assert transport._call_count == 1, "the same request was sent again"
+    assert [e for e in events if isinstance(e, Error)]
+    assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [StopReason.error]
+
+
+class TestTerminalReasonsThatAreNotFailures:
+    """A decline, a cancellation and an overflow each end the run for a reason a caller can act on."""
+
+    @staticmethod
+    async def _end(stop: StopReason) -> list[object]:
+        transport = StubTransport([[TextDelta(0, "x"), IterationEnd(1, stop, Usage(1, 1))]])
+        agent = Agent(system="", tools=[], transport=transport, max_iterations=3)
+        return [event async for event in agent.run_stream("hi", MemoryContextStore())]
+
+    async def test_a_cancellation_is_not_reported_as_a_broken_transport(self) -> None:
+        events = await self._end(StopReason.cancelled)
+        assert not [e for e in events if isinstance(e, Error)]
+        assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [StopReason.cancelled]
+
+    async def test_an_overflow_is_not_reported_as_a_broken_transport(self) -> None:
+        # A caller that retries on Error would retry a conversation that cannot fit, for ever.
+        events = await self._end(StopReason.context_window_exceeded)
+        assert not [e for e in events if isinstance(e, Error)]
+        assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [
+            StopReason.context_window_exceeded
+        ]
+
+    async def test_a_genuine_failure_still_reports_one(self) -> None:
+        events = await self._end(StopReason.error)
+        assert [e for e in events if isinstance(e, Error)]

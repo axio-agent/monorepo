@@ -1,5 +1,7 @@
 """One event and the JSON object inside it."""
 
+from __future__ import annotations
+
 import json
 import logging
 from dataclasses import dataclass
@@ -38,12 +40,12 @@ class Payload(dict[str, Any]):
         # bool is an int in Python. A true/false field must not read here as 1 or 0.
         return found if isinstance(found, int) and not isinstance(found, bool) else default
 
-    def obj(self, *keys: str) -> "Payload":
+    def obj(self, *keys: str) -> Payload:
         """The object at this path, empty where there is none, so a path can be walked in steps."""
         found = self._at(keys)
         return Payload(found) if isinstance(found, dict) else Payload()
 
-    def objs(self, *keys: str) -> "list[Payload]":
+    def objs(self, *keys: str) -> list[Payload]:
         """Every object in the list at this path. A missing list reads as no objects."""
         found = self._at(keys)
         if not isinstance(found, list):

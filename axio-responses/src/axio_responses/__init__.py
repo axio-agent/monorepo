@@ -5,6 +5,8 @@ answers with. Both halves are here rather than in a transport because two transp
 API: the public ``/v1/responses`` endpoint and the ChatGPT backend Codex uses.
 """
 
+from __future__ import annotations
+
 from .reader import (
     Annotation,
     AnnotationAdded,

@@ -187,3 +187,25 @@ def test_reading_a_shape_does_not_rederive_its_annotations_every_time() -> None:
     for _ in range(5):
         Once.read(Payload({"text": "x"}))
     assert _hints.cache_info().misses == 1
+
+
+def test_a_field_declared_as_a_real_union_reads_either_member() -> None:
+    # Collapsed to the first member, a field declared `str | int` took its default whenever the
+    # provider sent the other one, with no diagnostic.
+    @dataclass(frozen=True, slots=True)
+    class Either(Wire, name="either"):
+        value: str | int = ""
+
+    assert Either.read(Payload({"value": 7})).value == 7
+    assert Either.read(Payload({"value": "a"})).value == "a"
+    assert Either.read(Payload({"value": None})).value == ""
+    assert Either.read(Payload({"value": {"a": 1}})).value == ""
+
+
+def test_the_optional_case_still_takes_its_default() -> None:
+    @dataclass(frozen=True, slots=True)
+    class Maybe(Wire, name="maybe"):
+        value: str | None = None
+
+    assert Maybe.read(Payload({"value": "x"})).value == "x"
+    assert Maybe.read(Payload({"value": 7})).value is None
