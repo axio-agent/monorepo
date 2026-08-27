@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, ClassVar
+from typing import Any
 
 import aiohttp
 import pytest
@@ -18,7 +18,7 @@ from axio.blocks import (
     ToolUseBlock,
     VideoBlock,
 )
-from axio.events import ProviderEvent, ReasoningSignature, Refusal, TextDelta, ToolInputDelta, ToolUseStart
+from axio.events import Refusal, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry
@@ -37,6 +37,7 @@ from axio_transport_google import (
     _build_tools_json,
     _get_anthropic_models,
     _tool_name_from_id,
+    _Turn,
     _usage,
 )
 
@@ -911,28 +912,52 @@ async def test_two_unnamed_calls_to_one_tool_get_different_ids(
     assert len(ids) == len(set(ids)) == 2
 
 
-class TestASignatureOnAnswerText:
-    """A proof carried by a plain text part must not become a call's proof."""
+class TestWhatAPartProduces:
+    """One part, one rule per shape it arrives in."""
 
-    CHUNK: ClassVar[dict[str, Any]] = {
-        "candidates": [
-            {
-                "content": {"parts": [{"text": "The answer is 42.", "thoughtSignature": "SIG"}]},
-                "finishReason": "STOP",
-            }
-        ],
-    }
+    @staticmethod
+    def _events(raw: dict[str, Any], *, seq: int = 1) -> list[Any]:
+        transport = GoogleTransport(api_key="k", model=GENAI_MODELS["gemini-3-flash-preview"])
+        return list(transport._part_events(ContentPart.read(Payload(raw)), _Turn(at=0, seq=seq)))
 
-    async def test_it_is_not_stored_as_reasoning(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Held as a ReasoningSignature the turn stored a textless ReasoningBlock, and its proof
-        # went to the next unsigned call in the turn.
-        events = await _stream_one(monkeypatch, self.CHUNK)
+    def test_a_thought_is_signed_as_reasoning(self) -> None:
+        events = self._events({"text": "hm", "thought": True, "thoughtSignature": "SIG"})
+        assert [type(e).__name__ for e in events] == ["ReasoningDelta", "ReasoningSignature"]
 
-        assert not [e for e in events if isinstance(e, ReasoningSignature)]
-        assert [e.delta for e in events if isinstance(e, TextDelta)] == ["The answer is 42."]
+    def test_a_bare_proof_is_still_reasoning(self) -> None:
+        # It belongs to a call that follows, which is what the request side reads it as.
+        assert [type(e).__name__ for e in self._events({"thoughtSignature": "SIG"})] == ["ReasoningSignature"]
 
-    async def test_it_still_reaches_the_caller(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        events = await _stream_one(monkeypatch, self.CHUNK)
+    def test_a_proof_on_answer_text_is_not_stored_as_reasoning(self) -> None:
+        # Held as a ReasoningSignature it made a textless ReasoningBlock, and the next unsigned
+        # call in the turn replayed with a proof that was never its own.
+        events = self._events({"text": "42", "thoughtSignature": "SIG"})
+        assert [type(e).__name__ for e in events] == ["TextDelta", "ProviderEvent"]
+        assert events[1].data["thoughtSignature"] == "SIG"
 
-        forwarded = [e for e in events if isinstance(e, ProviderEvent) and e.kind == "thoughtSignature"]
-        assert [e.data["thoughtSignature"] for e in forwarded] == ["SIG"]
+    def test_a_signed_part_axio_has_no_type_for_still_reaches_the_caller(self) -> None:
+        # The signature suppressed the event carrying the content, so the code ran and vanished.
+        events = self._events({"executableCode": {"code": "print(1)"}, "thoughtSignature": "SIG"})
+        assert [e.kind for e in events] == ["part", "thoughtSignature"]
+
+    def test_a_signed_image_is_not_reasoning_either(self) -> None:
+        events = self._events({"inlineData": {"mimeType": "image/png", "data": "aGk="}, "thoughtSignature": "SIG"})
+        assert [type(e).__name__ for e in events] == ["ImageOutput", "ProviderEvent"]
+
+    def test_a_synthesized_call_id_does_not_repeat_across_streams(self) -> None:
+        # _thought_signatures outlives one stream, so a position alone let a later turn's proof
+        # overwrite an earlier turn's under the same id.
+        call = {"functionCall": {"name": "search", "args": {}}}
+        assert self._events(call, seq=1)[0].tool_use_id != self._events(call, seq=2)[0].tool_use_id
+
+
+def test_a_retry_does_not_reuse_the_part_indices_of_the_attempt_that_failed() -> None:
+    # Seeded at -1 on every attempt, a retry repeated the indices already emitted, and the agent
+    # merged parts of two different attempts into one block.
+    turn = _Turn()
+    turn.at = 2
+
+    turn.restart()
+
+    assert turn.at == 2
+    assert (turn.stop_reason, turn.finished, turn.has_tool_calls) == (StopReason.end_turn, False, False)

@@ -7,7 +7,7 @@ import dataclasses
 import json
 import logging
 import time
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Self
@@ -131,9 +131,95 @@ class _RepetitionDetector:
         return False
 
 
-#: Reasons that say the turn failed rather than finished. A call streamed inside one is
-#: output nobody vouched for.
-_NO_DISPATCH = frozenset({StopReason.error, StopReason.refusal, StopReason.cancelled})
+#: Reasons that say the turn failed or was cut off rather than finished. A call streamed inside
+#: one is output nobody vouched for, and its arguments may be half-written.
+_NO_DISPATCH = frozenset(
+    {
+        StopReason.error,
+        StopReason.refusal,
+        StopReason.cancelled,
+        StopReason.max_tokens,
+        StopReason.context_window_exceeded,
+    }
+)
+
+
+#: Sent after a tool returns media. Gemini stops generating after receiving media as sibling
+#: inlineData parts, so without it the turn ends in about twenty tokens having read nothing.
+_MEDIA_NUDGE = "You now have the media file above in your context. Proceed."
+
+
+def _malformed_results(blocks: list[ToolUseBlock], malformed: set[str]) -> list[ToolResultBlock]:
+    """What a call whose arguments would not parse gets back instead of a run."""
+    return [
+        ToolResultBlock(
+            tool_use_id=block.id,
+            content=(
+                f"Malformed JSON arguments for tool {block.name}. Raw input could not be parsed."
+                f" Please retry the tool call with valid JSON arguments."
+            ),
+            is_error=True,
+        )
+        for block in blocks
+        if block.id in malformed
+    ]
+
+
+def _carries_media(results: list[ToolResultBlock]) -> bool:
+    """Whether any result holds a picture, a sound or a video rather than only text."""
+    return any(
+        not isinstance(r.content, str) and any(isinstance(b, (AudioBlock, ImageBlock, VideoBlock)) for b in r.content)
+        for r in results
+    )
+
+
+def _result_events(results: list[ToolResultBlock], by_id: dict[str, ToolUseBlock]) -> Iterator[StreamEvent]:
+    """What the caller sees for each finished call.
+
+    Media travels twice: as its own output event, which is how a caller saves it to disk, and
+    inside the result, which is how the model sees the pixels.
+    """
+    for result in results:
+        block = by_id.get(result.tool_use_id)
+        if isinstance(result.content, str):
+            text = result.content
+        else:
+            text = "\n".join(b.text for b in result.content if isinstance(b, TextBlock))
+            for part in result.content:
+                if isinstance(part, ImageBlock):
+                    yield ImageOutput(index=0, data=part.data, media_type=part.media_type)
+                elif isinstance(part, AudioBlock):
+                    yield AudioOutput(index=0, data=part.data, media_type=part.media_type)
+                elif isinstance(part, VideoBlock):
+                    yield VideoOutput(index=0, data=part.data, media_type=part.media_type)
+        yield ToolResult(
+            tool_use_id=result.tool_use_id,
+            name=block.name if block else "",
+            is_error=result.is_error,
+            content=text,
+            input=block.input if block else {},
+        )
+
+
+#: What one iteration accumulates while the transport streams it.
+type TurnBlock = TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock
+
+
+@dataclass(slots=True)
+class _Turn:
+    """What one iteration accumulates from the transport's stream."""
+
+    content: list[TurnBlock] = field(default_factory=list)
+    #: Calls still arriving, by id. Emptied into ``content`` when the turn ends.
+    pending: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Calls whose arguments would not parse, so nothing may be dispatched from them.
+    malformed: set[str] = field(default_factory=set)
+    usage: Usage = Usage(0, 0)
+    stop_reason: StopReason = StopReason.end_turn
+    #: The model repeated itself and the turn was cut short here rather than by the provider.
+    repeated: bool = False
+    #: Which block the last proof was for. A repeated index continues that proof.
+    signed_at: int | None = None
 
 
 @dataclass(slots=True)
@@ -339,6 +425,68 @@ class Agent:
             return tools
         return await self.selector.select(history, tools)
 
+    def _interrupted_results(
+        self, blocks: list[ToolUseBlock], partial: dict[str, list[tuple[float, str, str]]]
+    ) -> list[ToolResultBlock]:
+        """What each call reports when the user stops the run while it is still working.
+
+        Whatever a streaming tool had already produced is kept, because a cancelled call still did
+        part of its work and the model has to be told which part.
+        """
+        made: list[ToolResultBlock] = []
+        for block in blocks:
+            chunks = partial.get(block.id, [])
+            tool = self._find_tool(block.name)
+            if chunks and tool:
+                text = tool.format_stream_result(chunks) + "\n[interrupted by user]"
+            elif chunks:
+                text = "".join(text for _, _, text in chunks) + "\n[interrupted by user]"
+            else:
+                text = "[interrupted by user]"
+            made.append(ToolResultBlock(tool_use_id=block.id, content=text, is_error=True))
+        return made
+
+    async def _consume(
+        self, stream: AsyncIterator[StreamEvent], turn: _Turn, context: ContextStore
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Pass every event through, building the turn's content as they go."""
+        detector = _RepetitionDetector()
+        async for event in stream:
+            yield event
+            match event:
+                case TextDelta(delta=delta):
+                    self._accumulate_text(turn.content, delta)
+                    if detector.feed(delta):
+                        note = "\n\n[Output truncated: repetitive content detected]"
+                        self._accumulate_text(turn.content, note)
+                        yield TextDelta(index=0, delta=note)
+                        turn.repeated = True
+                        return
+                case Refusal(text=text) if text:
+                    # Kept as the turn's text: a refusal is what the assistant said. Left out, the
+                    # stored turn is empty and the next request carries a blank assistant message.
+                    self._accumulate_text(turn.content, text)
+                case ReasoningDelta(delta=delta):
+                    self._accumulate_reasoning(turn.content, delta)
+                case ReasoningSignature(index=at, data=proof, redacted=redacted, id=block_id):
+                    self._sign_reasoning(turn.content, proof, redacted, block_id, joining=at == turn.signed_at)
+                    turn.signed_at = at
+                case ImageOutput(data=data, media_type=mt):
+                    turn.content.append(ImageBlock(media_type=mt, data=data))
+                case VideoOutput(data=data, media_type=mt):
+                    turn.content.append(VideoBlock(media_type=mt, data=data))
+                case ToolUseStart(tool_use_id=tid, name=name, signature=proof):
+                    turn.pending[tid] = {"name": name, "json_parts": [], "signature": proof}
+                case ToolInputDelta(tool_use_id=tid, partial_json=chunk) if tid in turn.pending:
+                    turn.pending[tid]["json_parts"].append(chunk)
+                case IterationEnd(usage=usage, stop_reason=reason):
+                    blocks, turn.malformed = self._finalize_pending_tools(turn.pending, usage)
+                    turn.content.extend(blocks)
+                    turn.pending.clear()
+                    turn.usage = turn.usage + usage
+                    turn.stop_reason = reason
+                    await context.add_context_tokens(usage.input_tokens, usage.output_tokens)
+
     async def _run_loop(self, user_message: str, context: ContextStore) -> AsyncGenerator[StreamEvent, None]:
         total_usage = Usage(0, 0)
         session_end_emitted = False
@@ -361,53 +509,11 @@ class Agent:
                 else:
                     active_tools = list(await self._select_tools(effective_history, self.tools))
 
-                content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock] = []
-                # Which block the last proof was for. A repeated index continues that proof.
-                signed_at: int | None = None
-                pending: dict[str, dict[str, Any]] = {}
-                stop_reason = StopReason.end_turn
-                malformed: set[str] = set()
-                repetition_detected = False
-                rep_detector = _RepetitionDetector()
-
+                turn = _Turn()
+                stream = self.transport.stream(effective_history, active_tools, self.system)
                 try:
-                    async for event in self.transport.stream(effective_history, active_tools, self.system):
+                    async for event in self._consume(stream, turn, context):
                         yield event
-                        match event:
-                            case TextDelta(delta=delta):
-                                self._accumulate_text(content, delta)
-                                if rep_detector.feed(delta):
-                                    note = "\n\n[Output truncated: repetitive content detected]"
-                                    self._accumulate_text(content, note)
-                                    yield TextDelta(index=0, delta=note)
-                                    repetition_detected = True
-                                    break
-                            case Refusal(text=text):
-                                # Kept as the turn's text: a refusal is what the assistant said. Left out, the stored
-                                # turn is empty and the next request carries a blank assistant message.
-                                if text:
-                                    self._accumulate_text(content, text)
-                            case ReasoningDelta(delta=delta):
-                                self._accumulate_reasoning(content, delta)
-                            case ReasoningSignature(index=at, data=signature, redacted=redacted, id=block_id):
-                                self._sign_reasoning(content, signature, redacted, block_id, joining=at == signed_at)
-                                signed_at = at
-                            case ImageOutput(data=data, media_type=mt):
-                                content.append(ImageBlock(media_type=mt, data=data))
-                            case VideoOutput(data=data, media_type=mt):
-                                content.append(VideoBlock(media_type=mt, data=data))
-                            case ToolUseStart(tool_use_id=tid, name=name, signature=proof):
-                                pending[tid] = {"name": name, "json_parts": [], "signature": proof}
-                            case ToolInputDelta(tool_use_id=tid, partial_json=pj):
-                                if tid in pending:
-                                    pending[tid]["json_parts"].append(pj)
-                            case IterationEnd(usage=usage, stop_reason=sr):
-                                blocks, malformed = self._finalize_pending_tools(pending, usage)
-                                content.extend(blocks)
-                                pending.clear()
-                                total_usage = total_usage + usage
-                                await context.add_context_tokens(usage.input_tokens, usage.output_tokens)
-                                stop_reason = sr
                 except Exception as exc:
                     logger.error("Transport error: %s", exc, exc_info=True)
                     yield Error(exception=exc)
@@ -415,7 +521,12 @@ class Agent:
                     session_end_emitted = True
                     return
 
-                if repetition_detected:
+                content = turn.content
+                stop_reason = turn.stop_reason
+                malformed = turn.malformed
+                total_usage = total_usage + turn.usage
+
+                if turn.repeated:
                     await self._append(context, Message(role="assistant", content=list(content)))
                     partial = getattr(self.transport, "last_usage", None)
                     if partial:
@@ -451,19 +562,7 @@ class Agent:
                     # between here and the two appends below then cannot leave
                     # orphan ToolUseBlocks in the persistent context store.
                     valid = [b for b in tool_blocks if b.id not in malformed]
-                    error_results = [
-                        ToolResultBlock(
-                            tool_use_id=b.id,
-                            content=(
-                                f"Malformed JSON arguments for tool {b.name}."
-                                f" Raw input could not be parsed. Please retry the tool call"
-                                f" with valid JSON arguments."
-                            ),
-                            is_error=True,
-                        )
-                        for b in tool_blocks
-                        if b.id in malformed
-                    ]
+                    error_results = _malformed_results(tool_blocks, malformed)
 
                     partial_output: dict[str, list[tuple[float, str, str]]] = {}
                     t0_map: dict[str, float] = {}
@@ -505,17 +604,7 @@ class Agent:
                                 await dispatch_task
                             except (asyncio.CancelledError, Exception):
                                 pass
-                        interrupted_results: list[ToolResultBlock] = []
-                        for b in tool_blocks:
-                            chunks = partial_output.get(b.id, [])
-                            tool = self._find_tool(b.name)
-                            if chunks and tool:
-                                msg = tool.format_stream_result(chunks) + "\n[interrupted by user]"
-                            elif chunks:
-                                msg = "".join(text for _, _, text in chunks) + "\n[interrupted by user]"
-                            else:
-                                msg = "[interrupted by user]"
-                            interrupted_results.append(ToolResultBlock(tool_use_id=b.id, content=msg, is_error=True))
+                        interrupted_results = self._interrupted_results(tool_blocks, partial_output)
                         await self._append(context, Message(role="assistant", content=list(content)))
                         await self._append(context, Message(role="user", content=list(interrupted_results)))
                         raise
@@ -527,56 +616,11 @@ class Agent:
                     # Gemini stops generating (~20 tokens, end_turn) after receiving
                     # media as sibling inlineData parts alongside functionResponse.
                     # A "Proceed." user message nudges it to actually analyze the content.
-                    if getattr(self.transport, "nudge_on_media_tool_result", False) and any(
-                        not isinstance(r.content, str)
-                        and any(isinstance(b, (AudioBlock, ImageBlock, VideoBlock)) for b in r.content)
-                        for r in results
-                    ):
-                        await self._append(
-                            context,
-                            Message(
-                                role="user",
-                                content=[
-                                    TextBlock(
-                                        text="You now have the media file above in your context. Proceed.",
-                                    )
-                                ],
-                            ),
-                        )
+                    if getattr(self.transport, "nudge_on_media_tool_result", False) and _carries_media(results):
+                        await self._append(context, Message(role="user", content=[TextBlock(text=_MEDIA_NUDGE)]))
 
-                    # Yield ToolResult events + media output events.
-                    # Non-streaming tools return full content (str or list of
-                    # TextBlock/ImageBlock/VideoBlock) — no information is lost.
-                    # Images/videos are yielded as separate ImageOutput/VideoOutput
-                    # events so the REPL can save them to disk. The model sees the
-                    # actual pixel data via ImageBlock/VideoBlock in the tool result.
-                    by_id = {b.id: b for b in tool_blocks}
-                    for r in results:
-                        block = by_id.get(r.tool_use_id)
-                        if isinstance(r.content, str):
-                            result_content = r.content
-                        else:
-                            result_content = "\n".join(b.text for b in r.content if isinstance(b, TextBlock))
-                            for media_block in r.content:
-                                if isinstance(media_block, ImageBlock):
-                                    yield ImageOutput(
-                                        index=0, data=media_block.data, media_type=media_block.media_type
-                                    )
-                                elif isinstance(media_block, AudioBlock):
-                                    yield AudioOutput(
-                                        index=0, data=media_block.data, media_type=media_block.media_type
-                                    )
-                                elif isinstance(media_block, VideoBlock):
-                                    yield VideoOutput(
-                                        index=0, data=media_block.data, media_type=media_block.media_type
-                                    )
-                        yield ToolResult(
-                            tool_use_id=r.tool_use_id,
-                            name=block.name if block else "",
-                            is_error=r.is_error,
-                            content=result_content,
-                            input=block.input if block else {},
-                        )
+                    for event in _result_events(results, {b.id: b for b in tool_blocks}):
+                        yield event
                     continue
 
                 await self._append(context, Message(role="assistant", content=list(content)))
@@ -587,20 +631,26 @@ class Agent:
                         yield SessionEndEvent(stop_reason=StopReason.end_turn, total_usage=total_usage)
                         session_end_emitted = True
                         return
-                    case StopReason.refusal | StopReason.cancelled | StopReason.context_window_exceeded:
-                        # All terminal, and none of them the transport breaking. Reported as an error they are
-                        # indistinguishable from a broken connection, and a caller that retries on Error
-                        # retries what can never work.
+                    case (
+                        StopReason.refusal
+                        | StopReason.cancelled
+                        | StopReason.max_tokens
+                        | StopReason.context_window_exceeded
+                    ):
+                        # Terminal, and none of them the transport breaking. Reported as an error a caller
+                        # cannot tell them from a broken connection, and retries what can never work.
                         logger.info("Ending on %s: total_usage=%s", stop_reason, total_usage)
                         yield SessionEndEvent(stop_reason=stop_reason, total_usage=total_usage)
                         session_end_emitted = True
                         return
-                    case StopReason.tool_use if tool_blocks:
-                        # The calls have been run above, so going round again carries their results.
+                    case StopReason.tool_use if content:
+                        # No call survived, but the turn did add something. The next request differs from
+                        # the last, so asking again is the recovery.
+                        logger.warning("Asked for a tool and produced no call; re-prompting")
                         continue
                     case StopReason.tool_use:
-                        # The turn asked for a tool and produced no call anyone could run. Going round again
-                        # would send byte-identical input, and did so until max_iterations.
+                        # The turn added nothing at all, so the next request is byte-identical to the last.
+                        # It ran to max_iterations: fifty paid requests for one malformed call.
                         yield Error(exception=RuntimeError("Transport asked for a tool but produced no call"))
                         yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
                         session_end_emitted = True
@@ -611,8 +661,8 @@ class Agent:
                         logger.debug("Paused turn, resuming: total_usage=%s", total_usage)
                         continue
                     case _:
-                        # Wildcard on purpose. Named one by one, a reason added later falls out of the match and
-                        # the loop simply runs again, re-prompting with unchanged history until max_iterations.
+                        # Wildcard on purpose. Named one by one, a reason added later falls out of the
+                        # match and the loop simply runs again until max_iterations.
                         yield Error(exception=RuntimeError(f"Transport stopped with: {stop_reason}"))
                         yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
                         session_end_emitted = True

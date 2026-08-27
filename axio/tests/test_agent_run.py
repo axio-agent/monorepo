@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from axio.agent import Agent
 from axio.blocks import ReasoningBlock, TextBlock, ToolUseBlock
@@ -287,9 +287,10 @@ class TestStopReasonGuard:
     """A stop reason the agent does not name must end the run, not start another one."""
 
     async def test_an_unnamed_stop_reason_ends_the_run(self) -> None:
-        # Without the wildcard this fell out of the match and the loop ran again, re-prompting the
-        # model with unchanged history until max_iterations — every one of those turns paid for.
-        transport = StubTransport([[TextDelta(0, "no"), IterationEnd(1, StopReason.max_tokens, Usage(10, 5))]])
+        # A value the enum does not have stands for a reason added to the API later. Without the
+        # wildcard it fell out of the match and the loop ran again until max_iterations.
+        later = cast(StopReason, "invented_later")
+        transport = StubTransport([[TextDelta(0, "no"), IterationEnd(1, later, Usage(10, 5))]])
         agent = Agent(system="", tools=[], transport=transport, max_iterations=5)
 
         events = [event async for event in agent.run_stream("hi", MemoryContextStore())]
@@ -659,3 +660,45 @@ class TestTerminalReasonsThatAreNotFailures:
     async def test_a_genuine_failure_still_reports_one(self) -> None:
         events = await self._end(StopReason.error)
         assert [e for e in events if isinstance(e, Error)]
+
+
+class TestATruncatedTurnDoesNotAct:
+    """A turn cut off mid-generation may hold a half-written call, so nothing is run from it."""
+
+    @staticmethod
+    async def _dispatched(stop: StopReason) -> list[str]:
+        ran: list[str] = []
+
+        async def wire(amount: str = "") -> str:
+            ran.append(amount)
+            return "sent"
+
+        transport = StubTransport(
+            [
+                [
+                    ToolUseStart(0, "c1", "wire"),
+                    ToolInputDelta(0, "c1", '{"amount": "1000"}'),
+                    IterationEnd(1, stop, Usage(1, 1)),
+                ],
+                make_text_response("done", 2),
+            ]
+        )
+        agent = Agent(
+            system="",
+            tools=[Tool(name="wire", description="send money", handler=wire)],
+            transport=transport,
+            max_iterations=3,
+        )
+        async for _ in agent.run_stream("go", MemoryContextStore()):
+            pass
+        return ran
+
+    async def test_an_overflowed_turn_runs_nothing(self) -> None:
+        # It dispatched, then looped without ever reading the stop reason, so the tool ran twice.
+        assert await self._dispatched(StopReason.context_window_exceeded) == []
+
+    async def test_a_turn_that_hit_the_output_cap_runs_nothing(self) -> None:
+        assert await self._dispatched(StopReason.max_tokens) == []
+
+    async def test_a_finished_turn_still_runs_its_call(self) -> None:
+        assert await self._dispatched(StopReason.tool_use) == ["1000"]

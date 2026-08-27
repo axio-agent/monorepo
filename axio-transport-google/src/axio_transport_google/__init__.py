@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
@@ -467,6 +467,49 @@ def _tool_name_from_id(tool_use_id: str, messages: list[Message]) -> str:
     return "unknown"
 
 
+@dataclass
+class _Turn:
+    """What one streaming attempt accumulates as its chunks arrive."""
+
+    #: The part counter, which runs across the whole turn including its retries.
+    at: int = -1
+    #: Which stream this is, so a synthesized call id is unique for the life of the transport.
+    seq: int = 0
+    usage: Usage = Usage(0, 0)
+    #: The counts the turn ended with. Gemini attaches usageMetadata to every chunk, and a
+    #: mid-stream one totals parts that have not all arrived.
+    counts: UsageMetadata | None = None
+    stop_reason: StopReason = StopReason.end_turn
+    finished: bool = False
+    has_tool_calls: bool = False
+    served_by: str | None = None
+
+    def restart(self) -> None:
+        """Forget the attempt that failed, but not the part counter it advanced."""
+        self.usage = Usage(0, 0)
+        self.counts = None
+        self.stop_reason = StopReason.end_turn
+        self.finished = False
+        self.has_tool_calls = False
+        self.served_by = None
+
+
+def _media_event(part: ContentPart, at: int) -> StreamEvent:
+    """One inlineData part as the event its media type calls for.
+
+    The prefix is all the wire guarantees, so each cast says the narrower type is unproven.
+    """
+    mime = part.inlineData.mimeType
+    raw = base64.b64decode(part.inlineData.data)
+    if mime.startswith("image/"):
+        return ImageOutput(index=at, data=raw, media_type=cast(ImageMediaType, mime))
+    if mime.startswith("audio/"):
+        return AudioOutput(index=at, data=raw, media_type=cast(AudioMediaType, mime))
+    if mime.startswith("video/"):
+        return VideoOutput(index=at, data=raw, media_type=cast(VideoMediaType, mime))
+    return ProviderEvent(provider="google", kind="inlineData", data=dict(part.raw), index=at)
+
+
 # ── Transport ───────────────────────────────────────────────────────
 
 
@@ -495,6 +538,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
     media_resolution: str | None = field(default=None, repr=False)
     # thought_signature values stored as base64 strings for direct JSON embedding
     _thought_signatures: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
+    _streams: int = field(default=0, repr=False, compare=False)
     last_usage: Usage | None = field(default=None, repr=False, compare=False)
     # Vertex AI credentials (lazily initialised)
     _credentials: Any = field(default=None, repr=False, compare=False)
@@ -649,55 +693,41 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
         async for event in proxy.stream(messages, tools, system):
             yield event
 
+    def _build_request_body(
+        self, messages: list[Message], tools: list[Tool[Any]], system: str
+    ) -> GenerateContentRequest:
+        """The whole streamGenerateContent request for this turn."""
+        body: GenerateContentRequest = {"contents": _build_contents_json(messages, self._thought_signatures)}
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        if tools and Capability.image_generation not in self.model.capabilities:
+            # An image model takes no tools, and sending them is a 400.
+            body["tools"] = _build_tools_json(tools)
+        body["generationConfig"] = self._build_generation_config_json()
+        if self.safety_settings:
+            body["safetySettings"] = self.safety_settings
+        return body
+
     async def _do_stream(
         self, messages: list[Message], tools: list[Tool[Any]], system: str
     ) -> AsyncIterator[StreamEvent]:
         assert self.session is not None, "aiohttp session required"
 
-        contents = _build_contents_json(messages, self._thought_signatures)
-
-        body: GenerateContentRequest = {"contents": contents}
-        if system:
-            body["systemInstruction"] = {"parts": [{"text": system}]}
-
-        is_image_model = Capability.image_generation in self.model.capabilities
-        if tools and not is_image_model:
-            body["tools"] = _build_tools_json(tools)
-
-        body["generationConfig"] = self._build_generation_config_json()
-
-        if self.safety_settings:
-            body["safetySettings"] = self.safety_settings
-
+        body = self._build_request_body(messages, tools, system)
         model_path = f"publishers/google/models/{self.model.id}" if self.vertexai else f"models/{self.model.id}"
         url = self._build_url(f"{model_path}:streamGenerateContent", "alt=sse")
         headers = await self._get_headers()
 
-        logger.info(
-            "Gemini stream: model=%s, contents=%d, tools=%d",
-            self.model.id,
-            len(contents),
-            len(tools),
-        )
+        logger.info("Gemini stream: model=%s, contents=%d, tools=%d", self.model.id, len(body["contents"]), len(tools))
         if self.debug:
             logger.warning("DEBUG request body:\n%s", json.dumps(_redact_body(body), indent=2, ensure_ascii=False))
-        elif logger.getEffectiveLevel() <= logging.DEBUG:
-            for i, c in enumerate(contents):
-                logger.debug("  content[%d] role=%s parts=%d", i, c.get("role"), len(c.get("parts", [])))
 
-        # Counts parts across the turn. enumerate() restarts at zero every chunk, so two parts
-        # would share a number.
-        at = -1
+        self._streams += 1
+        turn = _Turn(seq=self._streams)
 
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
-            # Reset per attempt, or a retry inherits the stop reason of the attempt that failed.
-            usage = Usage(0, 0)
-            stop_reason = StopReason.end_turn
-            finished = False
-            has_tool_calls = False
-            served_by: str | None = None
-            last_counts: UsageMetadata | None = None
+            turn.restart()
             try:
                 async with self.session.post(url, json=body, headers=headers) as resp:
                     if resp.status != 200:
@@ -720,125 +750,17 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 "DEBUG response chunk:\n%s",
                                 json.dumps(_redact_body(dict(payload)), indent=2, ensure_ascii=False),
                             )
-                        chunk = GenerateContentChunk.read(payload)
+                        for event in self._chunk_events(GenerateContentChunk.read(payload), turn):
+                            yield event
 
-                        if chunk.usageMetadata.promptTokenCount:
-                            last_counts = chunk.usageMetadata
-                            usage = _usage(chunk.usageMetadata)
-                            self.last_usage = usage
+                usage = _usage(turn.counts, final=True) if turn.counts is not None else turn.usage
+                stop_reason = turn.stop_reason
 
-                        if served_by is None and chunk.modelVersion:
-                            # The model that answered, which need not be the one asked for.
-                            served_by = chunk.modelVersion
-                            yield IterationStart(iteration=0, id=chunk.responseId or None, model=served_by)
-
-                        if block_reason := chunk.promptFeedback.string("blockReason"):
-                            # blockReason, not presence: promptFeedback rides along with healthy answers too.
-                            # A blocked prompt is a finished turn, so no candidate and no finishReason follow.
-                            finished = True
-                            stop_reason = StopReason.refusal
-                            yield Refusal(
-                                index=0,
-                                category=block_reason,
-                                blocked_input=True,
-                                raw=dict(chunk.promptFeedback),
-                            )
-
-                        if not chunk.candidates:
-                            continue
-                        candidate = chunk.candidates[0]
-
-                        if candidate.finishReason:
-                            finished = True
-                            stop_reason = _FINISH_REASON_MAP.get(candidate.finishReason, StopReason.error)
-                            if candidate.finishReason not in _FINISH_REASON_MAP:
-                                logger.warning("Unknown finishReason %r", candidate.finishReason)
-
-                        # Grounding travels whole. Four providers shape it four incompatible ways.
-                        if candidate.citationMetadata:
-                            yield ProviderEvent(
-                                provider="google",
-                                kind="citationMetadata",
-                                data=dict(candidate.citationMetadata),
-                                index=0,
-                            )
-                        if candidate.groundingMetadata:
-                            yield ProviderEvent(
-                                provider="google",
-                                kind="groundingMetadata",
-                                data=dict(candidate.groundingMetadata),
-                                index=0,
-                            )
-
-                        # The part's own number. Fixed at zero, events of different parts cannot be grouped.
-                        for part in candidate.content.parts:
-                            at += 1
-                            if part.text and part.thought:
-                                yield ReasoningDelta(index=at, delta=part.text)
-                            elif part.text:
-                                yield TextDelta(index=at, delta=part.text)
-                            elif part.inlineData.data:
-                                mt = part.inlineData.mimeType
-                                raw = base64.b64decode(part.inlineData.data)
-                                # The prefix is all the wire guarantees, so the cast says the
-                                # narrower type is unproven.
-                                if mt.startswith("image/"):
-                                    yield ImageOutput(index=at, data=raw, media_type=cast(ImageMediaType, mt))
-                                elif mt.startswith("audio/"):
-                                    yield AudioOutput(index=at, data=raw, media_type=cast(AudioMediaType, mt))
-                                elif mt.startswith("video/"):
-                                    yield VideoOutput(index=at, data=raw, media_type=cast(VideoMediaType, mt))
-                                else:
-                                    yield ProviderEvent(
-                                        provider="google", kind="inlineData", data=dict(part.raw), index=at
-                                    )
-                            elif part.functionCall.name:
-                                call = part.functionCall
-                                # By position, never by id(): the part is a temporary whose address CPython reuses.
-                                call_id = call.id or f"genai_{call.name}_{at}"
-                                if part.thoughtSignature:
-                                    self._thought_signatures[call_id] = part.thoughtSignature
-                                yield ToolUseStart(
-                                    index=at,
-                                    tool_use_id=call_id,
-                                    name=call.name,
-                                    # On the call, not beside it. A bare signature attaches
-                                    # to whatever block is still unsigned.
-                                    signature=part.thoughtSignature,
-                                )
-                                args_json = json.dumps(dict(call.args)) if call.args else "{}"
-                                yield ToolInputDelta(index=at, tool_use_id=call_id, partial_json=args_json)
-                                has_tool_calls = True
-                            elif not part.thoughtSignature:
-                                # executableCode, codeExecutionResult, fileData and whatever the API
-                                # adds next: content of the turn that axio has no type for.
-                                yield ProviderEvent(provider="google", kind="part", data=dict(part.raw), index=at)
-
-                            if part.thoughtSignature and not part.functionCall.name:
-                                if part.text and not part.thought:
-                                    # The proof is for answer text, which axio stores in a block that holds no
-                                    # signature. Emitted as a ReasoningSignature it made a textless reasoning
-                                    # block whose proof the next call in the turn took.
-                                    yield ProviderEvent(
-                                        provider="google",
-                                        kind="thoughtSignature",
-                                        data=dict(part.raw),
-                                        index=at,
-                                    )
-                                else:
-                                    # After the reasoning it signs, never before: the agent signs the block it built.
-                                    # The index is the part's position, because a signature names the block it proves.
-                                    yield ReasoningSignature(index=at, data=part.thoughtSignature)
-
-                if last_counts is not None:
-                    # Checked once, on the counts the turn ended with.
-                    usage = _usage(last_counts, final=True)
-
-                if not finished:
+                if not turn.finished:
                     # Every Gemini stream ends on a finishReason. Without one the connection was cut.
                     raise StreamError("Gemini stream ended without a finishReason")
 
-                if has_tool_calls and stop_reason not in _BLOCKED:
+                if turn.has_tool_calls and stop_reason not in _BLOCKED:
                     # Never over a blocked or failed turn.
                     stop_reason = StopReason.tool_use
 
@@ -865,6 +787,98 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                 raise StreamError(str(exc)) from exc
 
         raise StreamError(str(last_exc)) from last_exc
+
+    def _chunk_events(self, chunk: GenerateContentChunk, turn: _Turn) -> Iterator[StreamEvent]:
+        """Every event one streamGenerateContent chunk produces, advancing the turn's state."""
+        if chunk.usageMetadata.promptTokenCount:
+            turn.counts = chunk.usageMetadata
+            turn.usage = _usage(chunk.usageMetadata)
+            self.last_usage = turn.usage
+
+        if turn.served_by is None and chunk.modelVersion:
+            # The model that answered, which need not be the one asked for.
+            turn.served_by = chunk.modelVersion
+            yield IterationStart(iteration=0, id=chunk.responseId or None, model=turn.served_by)
+
+        if block_reason := chunk.promptFeedback.string("blockReason"):
+            # blockReason, not presence: promptFeedback rides along with healthy answers too.
+            # A blocked prompt is a finished turn, so no candidate and no finishReason follow.
+            turn.finished = True
+            turn.stop_reason = StopReason.refusal
+            yield Refusal(index=0, category=block_reason, blocked_input=True, raw=dict(chunk.promptFeedback))
+
+        if not chunk.candidates:
+            return
+        candidate = chunk.candidates[0]
+
+        if candidate.finishReason:
+            turn.finished = True
+            turn.stop_reason = _FINISH_REASON_MAP.get(candidate.finishReason, StopReason.error)
+            if candidate.finishReason not in _FINISH_REASON_MAP:
+                logger.warning("Unknown finishReason %r", candidate.finishReason)
+
+        # Grounding travels whole. Four providers shape it four incompatible ways.
+        for kind, metadata in (
+            ("citationMetadata", candidate.citationMetadata),
+            ("groundingMetadata", candidate.groundingMetadata),
+        ):
+            if metadata:
+                yield ProviderEvent(provider="google", kind=kind, data=dict(metadata), index=0)
+
+        for part in candidate.content.parts:
+            turn.at += 1
+            if part.functionCall.name:
+                turn.has_tool_calls = True
+            yield from self._part_events(part, turn)
+
+    def _part_events(self, part: ContentPart, turn: _Turn) -> Iterator[StreamEvent]:
+        """Every event one part of a candidate produces."""
+        at = turn.at
+        if part.functionCall.name:
+            yield from self._call_events(part, turn)
+            return
+
+        carried = True
+        if part.text and part.thought:
+            yield ReasoningDelta(index=at, delta=part.text)
+        elif part.text:
+            yield TextDelta(index=at, delta=part.text)
+        elif part.inlineData.data:
+            yield _media_event(part, at)
+        elif set(part.raw) - {"thought", "thoughtSignature"}:
+            # executableCode, codeExecutionResult, fileData and whatever the API adds next: content
+            # of the turn axio has no type for. Emitted even when signed, because a proof is not a
+            # reason to drop what it proves.
+            yield ProviderEvent(provider="google", kind="part", data=dict(part.raw), index=at)
+        else:
+            carried = False
+
+        if not part.thoughtSignature:
+            return
+        if part.thought or not carried:
+            # It signs reasoning, or it is the bare proof of a call that follows. Emitted after
+            # the reasoning, never before: the agent signs the block it has just built.
+            yield ReasoningSignature(index=at, data=part.thoughtSignature)
+        else:
+            # The proof is for content axio stores in a block with no signature field. Held as a
+            # ReasoningSignature it made a textless reasoning block whose proof the next call took.
+            yield ProviderEvent(provider="google", kind="thoughtSignature", data=dict(part.raw), index=at)
+
+    def _call_events(self, part: ContentPart, turn: _Turn) -> Iterator[StreamEvent]:
+        """The start and the arguments of one function call."""
+        at = turn.at
+        call = part.functionCall
+        # By position and by stream, never by id(): the part is a temporary whose address CPython
+        # reuses, and a position alone repeats every turn while _thought_signatures does not.
+        call_id = call.id or f"genai_{call.name}_{turn.seq}_{at}"
+        if part.thoughtSignature:
+            self._thought_signatures[call_id] = part.thoughtSignature
+        # The signature goes on the call, not beside it. Sent bare it attaches to whatever block
+        # is still unsigned.
+        yield ToolUseStart(index=at, tool_use_id=call_id, name=call.name, signature=part.thoughtSignature)
+        yield ToolInputDelta(
+            index=at, tool_use_id=call_id, partial_json=json.dumps(dict(call.args)) if call.args else "{}"
+        )
 
     # ── Image / Veo generation ──
 

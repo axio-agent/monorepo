@@ -50,7 +50,15 @@ class Decoder:
         Without that last call a stream that stops before its final blank line loses its last
         event. A stream cut mid-character loses the character instead of replacing it.
         """
-        text = self._text.decode(chunk) if isinstance(chunk, bytes) else chunk
+        if isinstance(chunk, bytes):
+            text = self._text.decode(chunk)
+        else:
+            # A caller that switches from bytes to str leaves the byte decoder holding half a character
+            # that can never complete. The state is cleared as well as replaced: a final flush leaves a
+            # partial BOM in place, and it then corrupts the next byte chunk.
+            if pending := self._text.getstate()[0]:
+                self._text.setstate((b"", 0))
+            text = pending.decode("utf-8", "replace") + chunk
         if not self._opened:
             # The byte decoder strips the mark for us. A caller feeding str has to be met here.
             text = text.removeprefix("\ufeff")

@@ -23,7 +23,7 @@ _UNSET = ModelSpec(id="<not initialized: call fetch_models() first>", context_wi
 @dataclass(slots=True)
 class NebiusTransport(ThinkingMixin, OpenAITransport):
     # These point at servers that implement /v1/chat/completions and not /v1/responses.
-    api: Literal["responses", "chat"] = "chat"
+    api: Literal["responses", "chat"] = field(default="chat", kw_only=True)
     name: str = "Nebius AI Studio"
     api_key: str = field(default_factory=lambda: os.environ.get("NEBIUS_API_KEY", ""))
     base_url: str = "https://api.tokenfactory.nebius.com/v1"

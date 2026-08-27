@@ -621,7 +621,9 @@ class TestAssistantTurnOrder:
         _, items = convert_messages([turn], "")
 
         kinds = [item.get("type") or item.get("role") for item in items]
-        assert kinds[:3] == ["assistant", "function_call", "reasoning"]
+        # The trailing reasoning item is gone: the API refuses one with no item after it.
+        assert kinds[:2] == ["assistant", "function_call"]
+        assert "reasoning" not in kinds
 
     def test_reasoning_still_precedes_the_call_it_belongs_to(self) -> None:
         turn = Message(
@@ -643,3 +645,13 @@ class TestAssistantTurnOrder:
 
         assert [item["role"] for item in items] == ["assistant"]
         assert [part["text"] for part in items[0]["content"]] == ["a", "b"]
+
+
+def test_a_turn_that_ends_on_reasoning_does_not_replay_it() -> None:
+    # /v1/responses answers "Item 'rs_...' of type 'reasoning' was provided without its required
+    # following item", so one trailing item would 400 every request after it.
+    turn = Message(role="assistant", content=[TextBlock(text="done"), ReasoningBlock(text="", signature="e", id="r")])
+
+    _, items = convert_messages([turn], "")
+
+    assert [item.get("type") or item.get("role") for item in items] == ["assistant"]

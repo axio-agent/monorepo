@@ -121,19 +121,16 @@ class _Markdown(Markdown):
     BLOCKS = {**Markdown.BLOCKS, "fence": _MonokaiFence, "code_block": _MonokaiFence}
 
 
-def _link_safe(text: str) -> str:
-    """Provider text with the brackets that would end a Markdown link taken out."""
-    return text.replace("[", "(").replace("]", ")").replace("(", "%28").replace(")", "%29")
-
-
-def _citation_markdown(title: str, cited: str, url: str) -> str:
+def _citation_markdown(title: str | None, cited: str, url: str | None) -> str:
     """Render one citation as a Markdown link.
 
-    Both halves are escaped, because a `]` in a provider's title or a `)` in a query string closes
-    the link early and spills the rest into the transcript.
+    A `]` in a provider's title or a `)` in its query string closes the link early and spills the
+    rest into the transcript, so the label is escaped and the target is encoded.
     """
-    label = _link_safe(title or cited or url or "source")
-    return f" [{label}]({_link_safe(url)})" if url else f" _[{label}]_"
+    # The backslash goes first, or a title ending in one escapes the bracket that closes the label.
+    label = (title or cited or url or "source").replace("\\", r"\\").replace("[", r"\[").replace("]", r"\]")
+    target = (url or "").replace("(", "%28").replace(")", "%29").replace(" ", "%20")
+    return f" [{label}]({target})" if url else f" _[{label}]_"
 
 
 @dataclass

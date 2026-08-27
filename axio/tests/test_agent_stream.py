@@ -36,7 +36,7 @@ class TestSessionEndGuarantee:
             [
                 [
                     TextDelta(0, "partial"),
-                    IterationEnd(1, StopReason.max_tokens, Usage(10, 5)),
+                    IterationEnd(1, StopReason.error, Usage(10, 5)),
                 ]
             ]
         )

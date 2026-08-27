@@ -141,12 +141,13 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
 
         elif msg.role == "assistant":
             content_parts_a: list[dict[str, Any]] = []
+            turn_start = len(items)
             for b in msg.content:
                 if isinstance(b, ReasoningBlock):
-                    _flush_text(items, content_parts_a)
-                    # `id` and `summary` are required beside the proof, so a block that never got one is left
-                    # out rather than replayed empty.
+                    # `id` and `summary` are required beside the proof, so a block without one is left out. The
+                    # flush comes after that test, or a dropped block splits one run of text in two.
                     if b.id and b.signature:
+                        _flush_text(items, content_parts_a)
                         items.append(
                             {
                                 "type": "reasoning",
@@ -171,6 +172,11 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                         }
                     )
             _flush_text(items, content_parts_a)
+            if len(items) > turn_start and items[-1].get("type") == "reasoning":
+                # The API refuses a reasoning item with nothing after it: "provided without its required
+                # following item". Dropped rather than made to 400 every later request.
+                logger.debug("Dropping a trailing reasoning item, which has no following item")
+                items.pop()
 
     # Synthesize placeholder outputs for orphan function_calls (no corresponding output)
     output_ids = {i["call_id"] for i in items if i.get("type") == "function_call_output"}

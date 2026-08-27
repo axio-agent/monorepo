@@ -149,3 +149,36 @@ def test_a_name_that_fired_nothing_does_not_leak_onto_the_next_event() -> None:
 
 def test_a_retry_on_its_own_still_arrives_because_it_carries_no_data_by_definition() -> None:
     assert Decoder().decode(b"retry: 500\n\n", final=True) == [Event(retry=500)]
+
+
+def test_a_switch_from_bytes_to_text_does_not_swallow_a_half_read_character() -> None:
+    # The byte decoder was holding the first byte of a two-byte character. A str chunk can never
+    # complete it, and dropped it took the character with it and said nothing.
+    decoder = Decoder()
+    decoder.decode(b"data: ")
+    decoder.decode(b"\xc3")  # the first byte of a two-byte character
+
+    made = decoder.decode("x\n\n")
+
+    assert [event.data for event in made] == ["\ufffdx"]
+
+
+def test_text_after_a_clean_byte_boundary_adds_nothing() -> None:
+    decoder = Decoder()
+    decoder.decode(b"data: hel")
+
+    made = decoder.decode("lo\n\n")
+
+    assert [event.data for event in made] == ["hello"]
+
+
+def test_a_partial_bom_does_not_outlive_the_line_it_broke() -> None:
+    # A final flush returns nothing for a partial BOM and leaves the byte in the decoder. Held, it
+    # prefixed the next byte chunk long after the corruption, breaking a line that was clean.
+    decoder = Decoder()
+    decoder.decode(b"\xef")
+    decoder.decode("")
+
+    made = decoder.decode(b"data: broken\n\ndata: clean\n\n")
+
+    assert [event.data for event in made] == ["clean"]

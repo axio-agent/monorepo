@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class OpenRouterTransport(ThinkingMixin, OpenAITransport):
     # These point at servers that implement /v1/chat/completions and not /v1/responses.
-    api: Literal["responses", "chat"] = "chat"
+    api: Literal["responses", "chat"] = field(default="chat", kw_only=True)
     name: str = "OpenRouter"
     api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
     base_url: str = "https://openrouter.ai/api/v1"

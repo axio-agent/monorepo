@@ -49,7 +49,7 @@ class OpenAICompatibleTransport(OpenAITransport):
     """
 
     # These point at servers that implement /v1/chat/completions and not /v1/responses.
-    api: Literal["responses", "chat"] = "chat"
+    api: Literal["responses", "chat"] = field(default="chat", kw_only=True)
 
     base_url: str = ""  # override OpenAITransport default
     models: ModelRegistry = field(default_factory=ModelRegistry)  # empty default

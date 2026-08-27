@@ -355,9 +355,11 @@ def _tool_key(tool: Any) -> str:
     if named:
         return f"function:{named}"
     kind = tool.get("type")
-    # A declaration that names neither a function nor a type identifies nothing, so keying it by
-    # its empty type would match every other such entry.
-    return str(kind) if kind else repr(sorted(tool))
+    if kind:
+        return str(kind)
+    # Named by nothing, so the whole declaration is the key. Sorted by repr rather than by the
+    # keys, because extra_params is whatever the caller passed and `1 < "b"` raises.
+    return repr(sorted((repr(key), repr(value)) for key, value in tool.items()))
 
 
 def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
@@ -877,13 +879,10 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                 for m in data.get("models", [])
             ]
         )
-        chosen: dict[str, Any] = {"api": "chat"}
-        # A saved config with no endpoint was written when this transport only spoke chat
-        # completions, and the new default would repoint it at /v1/responses.
-        if data.get("api"):
-            # Passed only when it was saved, so an older config takes the dataclass default. Reading it
-            # off `cls` would not work: with slots the class attribute is a descriptor.
-            chosen["api"] = data["api"]
+        # Passed only when the config saved one, so an omitted key takes the default of the class
+        # being built: /v1/responses for OpenAI, chat completions for the compatible servers whose
+        # subclasses say so. Reading it off `cls` would not work: with slots it is a descriptor.
+        chosen: dict[str, Any] = {"api": data["api"]} if data.get("api") else {}
         return cls(
             name=str(data.get("name", "")),
             base_url=str(data.get("base_url", "")) or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),

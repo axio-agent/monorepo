@@ -30,6 +30,8 @@ from axio.tool import Tool
 from axio.types import StopReason, Usage
 
 from axio_transport_openai import OPENAI_MODELS, OpenAITransport, ThinkTagParser
+from axio_transport_openai.custom import OpenAICompatibleTransport
+from axio_transport_openai.nebius import NebiusTransport
 
 # ---------------------------------------------------------------------------
 # Test tool handler
@@ -1828,21 +1830,24 @@ class TestEndpointSurvivesSaving:
         saved = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).to_dict()
         assert OpenAITransport.from_dict(saved).api == "responses"
 
-    def test_a_config_saved_before_the_endpoint_existed_still_speaks_chat(self) -> None:
-        # It was written when this transport only spoke chat completions. Taking the new default
-        # would repoint it at /v1/responses, which the server it was written for may not implement.
-        assert OpenAITransport.from_dict({"name": "x", "models": []}).api == "chat"
+    def test_a_config_with_no_endpoint_takes_the_default_of_its_own_class(self) -> None:
+        # An omitted field means "use the default". Hard-coded to chat completions here, a real
+        # OpenAI transport was repointed at the endpoint that refuses tools beside reasoning.
         from axio_transport_openai.custom import OpenAICompatibleTransport
 
+        assert OpenAITransport.from_dict({"name": "x", "models": []}).api == "responses"
+        # A compatible server rarely implements /v1/responses, so its subclass says chat itself.
         assert OpenAICompatibleTransport.from_dict({"name": "x", "models": []}).api == "chat"
 
-    def test_the_endpoint_cannot_be_passed_by_position(self) -> None:
+    @pytest.mark.parametrize("cls", [OpenAITransport, OpenAICompatibleTransport, NebiusTransport])
+    def test_the_endpoint_cannot_be_passed_by_position(self, cls: type[OpenAITransport]) -> None:
         # Inserted as a positional field it swallowed base_url, and a caller using positional
-        # arguments got a request URL built from its API key with no Authorization header.
-        transport = OpenAITransport("MyServer", "http://localhost:8000/v1", "sk-x")
+        # arguments got a request URL built from its API key with no Authorization header. The
+        # subclasses redeclare the field, so each one has to be checked.
+        transport = cls("MyServer", "http://localhost:8000/v1", "sk-x")
         assert (transport.name, transport.base_url, transport.api_key) == (
             "MyServer",
             "http://localhost:8000/v1",
             "sk-x",
         )
-        assert transport.api == "responses"
+        assert transport.api == cls.__dataclass_fields__["api"].default
