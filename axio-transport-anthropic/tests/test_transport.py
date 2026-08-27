@@ -819,3 +819,25 @@ class TestReasoningIsReplayed:
     def test_an_unsigned_block_is_dropped_because_the_api_would_refuse_it(self) -> None:
         messages = [Message(role="assistant", content=[ReasoningBlock(text="unsigned"), TextBlock(text="answer")])]
         assert _convert_messages(messages)[0]["content"] == [{"type": "text", "text": "answer"}]
+
+
+def test_a_stream_that_ends_without_a_stop_reason_raises() -> None:
+    """Every turn ends on a message_delta carrying a stop_reason.
+
+    Without one the connection was cut. Reported as an ending, the partial text is stored as the
+    model's answer, which is what the other three transports now refuse to do.
+    """
+    reader = Messages()
+    reader.read(
+        Event(
+            data=json.dumps({"index": 0, "delta": {"type": "text_delta", "text": "half"}}), event="content_block_delta"
+        )
+    )
+    with pytest.raises(StreamError, match="without a stop_reason"):
+        reader.finished()
+
+
+def test_a_turn_that_ended_properly_still_finishes() -> None:
+    reader = Messages()
+    reader.read(Event(data=json.dumps({"delta": {"stop_reason": "end_turn"}}), event="message_delta"))
+    assert reader.finished().stop_reason == StopReason.end_turn

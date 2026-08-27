@@ -118,6 +118,14 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                 if content_parts:
                     items.append({"role": "user", "content": content_parts})
 
+        elif msg.role == "system":
+            # A system message inside the history, which is not the same as the system prompt this
+            # request carries in ``instructions``. Skipped, an instruction the caller put in the
+            # conversation disappeared from every request after it.
+            text = "".join(b.text for b in msg.content if isinstance(b, TextBlock))
+            if text:
+                items.append({"role": "system", "content": [{"type": "input_text", "text": text}]})
+
         elif msg.role == "assistant":
             # Collect text and tool uses
             content_parts_a: list[dict[str, Any]] = []

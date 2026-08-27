@@ -131,6 +131,11 @@ class _RepetitionDetector:
         return False
 
 
+#: Reasons that say the turn failed rather than finished. A call streamed inside one of them is
+#: output nobody vouched for, so it is not run.
+_NO_DISPATCH = frozenset({StopReason.error, StopReason.refusal, StopReason.cancelled})
+
+
 @dataclass(slots=True)
 class Agent:
     system: str
@@ -420,6 +425,17 @@ class Agent:
                     return
 
                 tool_blocks = [b for b in content if isinstance(b, ToolUseBlock)]
+
+                if tool_blocks and stop_reason in _NO_DISPATCH:
+                    # The turn did not end in a way that vouches for what it produced. Running its
+                    # calls acts on output the transport has just reported as failed, declined or
+                    # cut short, and the run ends immediately afterwards regardless.
+                    logger.warning(
+                        "Not dispatching %d tool(s): the turn ended with stop_reason=%s",
+                        len(tool_blocks),
+                        stop_reason,
+                    )
+                    tool_blocks = []
 
                 if tool_blocks:
                     if stop_reason != StopReason.tool_use:

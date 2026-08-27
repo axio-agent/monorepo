@@ -1814,3 +1814,22 @@ def test_the_package_declares_what_it_imports() -> None:
 
     siblings = {name.replace("_", "-") for name in imported if name.startswith("axio")}
     assert siblings - declared == set(), f"imported and not declared: {sorted(siblings - declared)}"
+
+
+class TestEndpointSurvivesSaving:
+    def test_a_saved_endpoint_comes_back(self) -> None:
+        # Left out of to_dict, a transport told to use chat completions came back speaking
+        # /v1/responses, which the server it points at may not implement at all.
+        saved = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat").to_dict()
+        assert saved["api"] == "chat"
+        assert OpenAITransport.from_dict(saved).api == "chat"
+
+    def test_the_default_endpoint_round_trips_too(self) -> None:
+        saved = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).to_dict()
+        assert OpenAITransport.from_dict(saved).api == "responses"
+
+    def test_a_config_saved_before_the_endpoint_existed_takes_the_class_default(self) -> None:
+        assert OpenAITransport.from_dict({"name": "x", "models": []}).api == "responses"
+        from axio_transport_openai.custom import OpenAICompatibleTransport
+
+        assert OpenAICompatibleTransport.from_dict({"name": "x", "models": []}).api == "chat"

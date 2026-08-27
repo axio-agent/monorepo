@@ -547,8 +547,12 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
 
     def finished(self) -> IterationEnd:
         """What the turn added up to. The API sends no event that means this."""
+        if not self.stop_reason:
+            # Every turn ends on a message_delta carrying a stop_reason. Without one the connection
+            # was cut. Reported as an ending, the partial text is stored as the model's answer.
+            raise StreamError("Anthropic stream ended without a stop_reason")
         stop = _STOP_REASON_MAP.get(self.stop_reason, StopReason.error)
-        if self.stop_reason and self.stop_reason not in _STOP_REASON_MAP:
+        if self.stop_reason not in _STOP_REASON_MAP:
             logger.warning("Unknown stop_reason %r, mapped to %s", self.stop_reason, stop)
         usage = Usage(
             input_tokens=self.input_tokens,

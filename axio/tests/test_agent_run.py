@@ -17,7 +17,9 @@ from axio.events import (
     SessionEndEvent,
     StreamEvent,
     TextDelta,
+    ToolInputDelta,
     ToolResult,
+    ToolUseStart,
 )
 from axio.messages import Message
 from axio.testing import StubTransport, make_echo_tool, make_text_response, make_tool_use_response
@@ -526,3 +528,46 @@ class TestFragmentedSignatures:
             ReasoningBlock(signature="gAAAAAB-one", id="rs_1"),
             ReasoningBlock(signature="gAAAAAB-two", id="rs_2"),
         ]
+
+
+class TestToolsAreNotRunForAFailedTurn:
+    """A call streamed inside a failed turn is output nobody vouched for."""
+
+    @staticmethod
+    def _turn(stop: StopReason) -> StubTransport:
+        # A second response ends the run, so the tool is offered once rather than every iteration
+        # until max_iterations.
+        return StubTransport(
+            [
+                [
+                    ToolUseStart(index=0, tool_use_id="call_1", name="echo"),
+                    ToolInputDelta(index=0, tool_use_id="call_1", partial_json='{"msg":"x"}'),
+                    IterationEnd(1, stop, Usage(1, 1)),
+                ],
+                [TextDelta(0, "done"), IterationEnd(2, StopReason.end_turn, Usage(1, 1))],
+            ]
+        )
+
+    async def test_a_failed_turn_does_not_run_its_calls(self) -> None:
+        # The run ends immediately afterwards regardless, so running them buys nothing and acts on
+        # output the transport has just reported as failed.
+        agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.error))
+        events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
+        assert not [e for e in events if isinstance(e, ToolResult)]
+
+    async def test_a_declined_turn_does_not_run_its_calls(self) -> None:
+        agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.refusal))
+        events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
+        assert not [e for e in events if isinstance(e, ToolResult)]
+
+    async def test_a_turn_that_asked_for_them_still_runs_them(self) -> None:
+        agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.tool_use))
+        events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
+        assert [e.tool_use_id for e in events if isinstance(e, ToolResult)] == ["call_1"]
+
+    async def test_a_finished_turn_still_runs_a_call_it_left_behind(self) -> None:
+        # Deliberate and long-standing: a provider that reports end_turn while streaming a call is
+        # a mismatch the agent works around rather than a failure it must not act on.
+        agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.end_turn))
+        events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
+        assert [e.tool_use_id for e in events if isinstance(e, ToolResult)] == ["call_1"]

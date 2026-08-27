@@ -841,6 +841,10 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             "name": self.name,
             "base_url": self.base_url,
             "api_key": self.api_key,
+            # Which endpoint this server speaks is a property of the server, so it has to survive
+            # being saved. Left out, a transport told to use chat completions came back speaking
+            # /v1/responses, which the server it points at may not implement at all.
+            "api": self.api,
             "models": [
                 {
                     "id": m.id,
@@ -874,6 +878,12 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                 for m in data.get("models", [])
             ]
         )
+        chosen: dict[str, Any] = {}
+        if data.get("api"):
+            # Passed only when it was saved. Absent from an older config the dataclass default
+            # applies, which is the class's own answer; reading it off `cls` would not work,
+            # because with slots the class attribute is a descriptor and not the default.
+            chosen["api"] = data["api"]
         return cls(
             name=str(data.get("name", "")),
             base_url=str(data.get("base_url", "")) or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
@@ -881,6 +891,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             models=models,
             extra_params=dict(data.get("extra_params") or {}),
             session=session,
+            **chosen,
         )
 
 

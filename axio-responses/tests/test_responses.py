@@ -562,3 +562,24 @@ def test_a_citation_names_the_same_block_the_text_did() -> None:
     text, citation = delta[0], cited[0]
     assert isinstance(text, TextDelta) and isinstance(citation, Citation)
     assert text.index == citation.index == 2
+
+
+def test_a_system_message_in_the_history_is_not_dropped() -> None:
+    """A system message inside the history is not the system prompt of this request.
+
+    Skipped, an instruction the caller put in the conversation disappeared from every request
+    after it. The chat-completions converter has always kept it.
+    """
+    messages = [
+        Message(role="system", content=[TextBlock(text="wrap up now")]),
+        Message(role="user", content=[TextBlock(text="hi")]),
+    ]
+    instructions, items = convert_messages(messages, "be brief")
+    assert instructions == "be brief"
+    assert items[0] == {"role": "system", "content": [{"type": "input_text", "text": "wrap up now"}]}
+    assert items[1]["role"] == "user"
+
+
+def test_an_empty_system_message_adds_nothing() -> None:
+    _, items = convert_messages([Message(role="system", content=[])], "")
+    assert items == []
