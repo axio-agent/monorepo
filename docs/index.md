@@ -84,16 +84,18 @@ Provider isolation
   reasons stay behind CompletionTransport.
 
 Typed streaming
-: Text, tool requests, tool results, usage, and failures are observable while
-  the turn runs.
+: Text, reasoning, refusals, citations, tool requests, tool results, usage, and
+  failures are observable while the turn runs. A payload axio has no type for is
+  forwarded rather than dropped, so nothing a provider sends disappears on the way
+  through.
 
 Application-owned state
 : Context is supplied by the caller. The same agent definition can serve many
   isolated sessions.
 
 Plain async tools
-: Tool handlers are async functions. Annotations become the input schema;
-  guards, runtime context, and concurrency limits are explicit.
+: Tool handlers are async functions. Annotations become the input schema.
+  Guards, runtime context, and concurrency limits are explicit.
 
 ```{toctree}
 :maxdepth: 2

@@ -1,9 +1,9 @@
 # Tool System
 
 The executable logic is a plain `async def` handler. `Tool` is the glue that
-declares that function as an agent tool: it attaches the name and execution
-policy and exposes the function signature and docstring to the model. A tool
-call is different -- it is one request from the model to invoke that Tool.
+declares that function as an agent tool. It attaches the name and execution
+policy, and exposes the function signature and docstring to the model. A tool
+call is different. It is one request from the model to invoke that Tool.
 
 ## Plain async function
 
@@ -22,8 +22,8 @@ tool = Tool(name="write_file", handler=write_file)
 
 Wrapping the handler in `Tool` makes it available to an Agent. The handler's
 **docstring** becomes the description sent to the LLM. Function annotations
-are converted to a JSON schema object automatically - no decorators or schema
-registration needed.
+are converted to a JSON schema object automatically. No decorators or schema
+registration are needed.
 
 Use `Annotated` + `Field` to add descriptions, defaults, or numeric bounds:
 
@@ -109,7 +109,8 @@ class Tool[T]:
     description: str = ""       # defaults to handler.__doc__
     guards: tuple[PermissionGuard, ...] = ()
     concurrency: int | None = None
-    context: T = ...   # default: empty mapping
+    context: T = ...            # default: empty mapping
+    schema: MappingProxyType[str, Any] = ...   # default: built from the handler
 ```
 
 `handler`
@@ -132,15 +133,62 @@ class Tool[T]:
   Use this to inject a database connection, a sandbox object, or any other
   state the handler needs without touching global state.
 
+`schema`
+: The JSON Schema sent to the model. Built from the handler's annotations when
+  you do not pass one. An explicit schema also replaces the fields used for
+  validation and default injection. It becomes the filter that strips keys the
+  model invented.
+
 ### Input schema
 
+<!-- not executed -->
 ```python
 @property
-def input_schema(self) -> dict[str, Any]:
-    return dict(self.schema)
+def input_schema(self) -> JSONSchema:
+    return copy.deepcopy(dict(self.schema))
 ```
 
 Transports send this schema to the LLM so it knows how to call the tool.
+
+### Returning content blocks
+
+`handler` is typed `Callable[..., Awaitable[Any]]`, not `Awaitable[str]`. The
+widening is load-bearing. A handler may return a list of content blocks:
+`TextBlock`, `ImageBlock`, `AudioBlock`, `VideoBlock`. The agent puts them
+straight into the `ToolResultBlock`, so a tool that reads a screenshot hands the
+model pixels rather than a description of them. Anything else is stringified.
+The agent additionally re-emits media from a tool result as `ImageOutput` /
+`AudioOutput` / `VideoOutput` events so a harness can save it. See
+{doc}`events`.
+
+### Streaming tools
+
+A tool whose output arrives over time - a shell command, a long build - can
+stream it. Attach an async generator yielding `(key, text)` pairs to the handler
+as `.stream`, and optionally a `format_stream_result(chunks)` for the finished
+result:
+
+<!-- not executed -->
+```python
+async def _shell_stream(command: str, timeout: int = 5):
+    yield ("stdout", "compiling...\n")
+    yield ("stderr", "[exit code: 0]")
+
+
+shell.stream = _shell_stream
+shell.format_stream_result = staticmethod(_format_records)
+```
+
+`Tool.supports_streaming` is then true. The agent dispatches through
+`Tool.call_streaming()`, emitting a `ToolOutputDelta` per chunk while the tool
+is still running. The model still sees one finished result, built by
+`Tool.format_stream_result()` from the chunks and their timings. The default is
+plain concatenation. `key` is the tool's own channel name. `axio-tools-local`
+uses `stdout` and `stderr`.
+
+Guards and validation run first either way. `call_streaming()` acquires the same
+semaphore, validates the same kwargs, and calls the same guards before the first
+chunk is produced.
 
 ## Execution flow
 
@@ -165,7 +213,7 @@ sequenceDiagram
 
 1. The agent calls `tool(**kwargs)` with the input the model provided.
 2. If the tool has a concurrency limit, it acquires the semaphore.
-3. Missing fields with defaults are injected; provided fields are validated (type, Literal, bounds).
+3. Missing fields with defaults are injected. Provided fields are validated (type, Literal, bounds).
 4. Each guard in the `guards` tuple is called sequentially with the fully materialised kwargs.
 5. Guards return a (possibly modified) kwargs dict to allow, or raise `GuardError` to deny.
 6. The handler is called with the materialised kwargs (stray keys stripped unless handler accepts `**kwargs`).
@@ -214,7 +262,7 @@ class ToolSelector(Protocol):
 ```
 
 A selector is useful when you have a large tool catalogue and want to avoid
-sending every tool's schema to the model on every turn - for example, by
-using embeddings or keyword matching to pick only the relevant tools.
+sending every tool's schema to the model on every turn. Embeddings or keyword
+matching can pick only the relevant tools.
 
 Pass a `ToolSelector` implementation directly to `Agent(selector=...)`.

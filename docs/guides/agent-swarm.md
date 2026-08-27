@@ -34,16 +34,17 @@ flowchart TD
 ```
 
 The **orchestrator** receives a task, decides which specialists to involve, and calls
-each one in sequence (or in parallel when independent). Specialists communicate through
-a shared **workspace directory**: the architect writes `design.md`, the backend dev reads
-it before implementing, the QA engineer reads the implementation before writing tests.
+each one in sequence (or in parallel when independent). Specialists communicate
+through a shared **workspace directory**. The architect writes `design.md`, the
+backend dev reads it before implementing, and the QA engineer reads the implementation
+before writing tests.
 
 ## Project structure
 
-The example package contains four Python modules - the CLI entry point (`__main__.py`),
-the core swarm logic (`swarm.py`), the `ask_user` tool, and the `todo` tool - plus a
-`roles/` subdirectory. `roles/__init__.py` declares `ROLE_NAMES` and `make_orchestrator()`;
-every specialist role is a TOML file in that directory.
+The example package contains four Python modules - the CLI entry point
+(`__main__.py`), the core swarm logic (`swarm.py`), the `ask_user` tool, and the
+`todo` tool - plus a `roles/` subdirectory. `roles/__init__.py` declares `ROLE_NAMES`
+and `make_orchestrator()`. Every specialist role is a TOML file in that directory.
 
 ## 1. Defining roles
 
@@ -72,9 +73,9 @@ If you wrote or updated a note, say so explicitly in your response.
 ```
 
 The `tools` list contains names that are resolved against the shared toolbox at
-runtime - the TOML file does not know about `Tool` objects, only names.
-`analyze` and `notes` are added to the toolbox by `run_swarm()` after the sandbox
-tools are injected.
+runtime. The TOML file does not know about `Tool` objects, only names. `analyze` and
+`notes` are added to the toolbox by `run_swarm()` after the sandbox tools are
+injected.
 
 `roles/__init__.py` derives the role list from TOML filenames and builds the
 orchestrator with a dynamic roster:
@@ -112,8 +113,8 @@ changes to Python files needed - `ROLE_NAMES` is derived from filenames automati
 resolves tool names against a toolbox dict, and returns
 `dict[str, tuple[str, Agent]]`.
 
-The toolbox is built from a **`DockerSandbox`** - every file and shell operation
-runs inside an isolated container mounted on the workspace directory:
+The toolbox is built from a **`DockerSandbox`**. Every file and shell operation runs
+inside an isolated container mounted on the workspace directory:
 
 ```python
 from axio_tools_docker.sandbox import DockerSandbox
@@ -143,8 +144,8 @@ roles = load_agents(ROLES_DIR, toolbox=toolbox)
 # roles == {"architect": ("Designs system...", Agent(...)), "backend_dev": (...), ...}
 ```
 
-Sandbox tools bind to the running container - all file paths are resolved relative
-to `/workspace` inside the container, which is mounted from the host workspace directory.
+Sandbox tools bind to the running container. All file paths are resolved relative to
+`/workspace` inside the container, which is mounted from the host workspace directory.
 
 ## 3. Activating a role with `copy()`
 
@@ -259,11 +260,10 @@ async def analyze(
     return "".join(parts)
 ```
 
-`workspace: Path` is replaced by `toolbox` - analyst read tools come directly from
-the sandbox toolbox and are already bound to the running container. Both the
-orchestrator and specialists get an `analyze` tool. Multiple analyst instances can
-run concurrently - Axio dispatches all tool calls in one response via
-`asyncio.gather()`.
+`workspace: Path` is replaced by `toolbox`. Analyst read tools come directly from the
+sandbox toolbox, and are already bound to the running container. Both the orchestrator
+and specialists get an `analyze` tool. Multiple analyst instances can run concurrently
+- Axio dispatches all tool calls in one response via `asyncio.gather()`.
 
 ## 6. Streaming sub-agent output
 
@@ -339,7 +339,7 @@ The `ask_user` tool pauses the Rich `Live` display during input.
 
 ## 9. Rich output
 
-`SwarmRenderer` accumulates `TextDelta` events in a per-role buffer and renders the
+`SwarmRenderer` accumulates `TextDelta` events in a per-role buffer. It renders the
 complete text as Markdown when the role finishes speaking (on `ToolUseStart` or
 `SessionEndEvent`). `_handle()` uses `match/case` on `StreamEvent` subtypes:
 
@@ -363,7 +363,7 @@ match event:
 ```
 
 A `StatusBar` renderable passed once to `Live()` at construction reads renderer state
-at Rich's refresh rate (4 fps) - shows active agents with spinners and a running
+at Rich's refresh rate (4 fps). It shows active agents with spinners and a running
 event/token counter.
 
 ## 10. Running it
@@ -425,7 +425,7 @@ After the run the workspace directory (host-side) contains all produced artifact
 (backend/frontend developers), tests (qa), and review reports (security_engineer,
 challenger). The `.axio-swarm/` subdirectory holds internal orchestration data - the
 todo SQLite database, per-role analysis reports, notes, and the sandbox container
-name - and should not be treated as project output.
+name. It should not be treated as project output.
 
 ## 11. Extending the team
 
@@ -456,7 +456,7 @@ Use agent swarms when:
 - You want **isolation**: each agent starts with a clean context and cannot
   accidentally carry state from a previous subtask.
 - You need **parallel work**: the orchestrator can delegate to all independent
-  agents simultaneously - frontend + backend + security all run at once if the
+  agents simultaneously. Frontend + backend + security all run at once if the
   LLM issues multiple tool calls in one response.
 
 For simpler cases, keep one agent and expose only the decomposition tools the

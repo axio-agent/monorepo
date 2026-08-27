@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from axio.exceptions import StreamError
 from axio.models import Capability, ModelSpec
@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class OpenRouterTransport(ThinkingMixin, OpenAITransport):
+    # These point at servers that implement /v1/chat/completions and not /v1/responses.
+    api: Literal["responses", "chat"] = "chat"
     name: str = "OpenRouter"
     api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
     base_url: str = "https://openrouter.ai/api/v1"

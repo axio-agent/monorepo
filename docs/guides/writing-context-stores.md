@@ -56,8 +56,9 @@ correct for simple cases, but may need overriding for production backends:
 ## Minimal implementation
 
 The simplest possible custom store wraps an in-memory list. This is
-functionally identical to `MemoryContextStore`, but it is a useful starting
-point to demonstrate the required interface before moving to a remote backend.
+functionally identical to `MemoryContextStore`. It is nevertheless a useful
+starting point to demonstrate the required interface before moving to a
+remote backend.
 
 <!-- name: test_minimal_context_store -->
 ```python
@@ -101,8 +102,8 @@ Key rules:
 - Return a **copy** of the internal list from `get_history()`, not a
   reference. Callers (including the agent loop) may iterate and modify the
   list independently.
-- The `session_id` property is provided by the base class - you do not need
-  to set it if you do not call `super().__init__()`. It is lazily initialised
+- The `session_id` property is provided by the base class. You do not need to
+  set it if you do not call `super().__init__()`. It is lazily initialised
   the first time it is accessed.
 
 ## Overriding lifecycle methods
@@ -218,17 +219,18 @@ async def close(self) -> None:
     await self._conn.close()
 ```
 
-The `Agent` does **not** call `close()` automatically - the caller that
+The `Agent` does **not** call `close()` automatically. The caller that
 creates the store is responsible for closing it, typically with
 `try / finally` or an `asynccontextmanager`.
 
 ## Token tracking
 
-The agent calls `add_context_tokens(input_tokens, output_tokens)` after every
-LLM iteration to accumulate usage data. The base class's default
-implementation delegates to `get_context_tokens()` and `set_context_tokens()`,
-both of which are no-ops - so tokens are silently discarded unless you
-override at least `set_context_tokens` and `get_context_tokens`.
+The agent calls `add_context_tokens(input_tokens, output_tokens)` after
+every LLM iteration to accumulate usage data. The base class's default
+implementation delegates to `get_context_tokens()` and
+`set_context_tokens()`, both of which are no-ops. Tokens are therefore
+silently discarded unless you override at least `set_context_tokens` and
+`get_context_tokens`.
 
 Override both methods together:
 
@@ -289,7 +291,7 @@ Method summary:
 
 ## Registering a context store
 
-Context stores are not discovered through entry points - they are ordinary
+Context stores are not discovered through entry points. They are ordinary
 Python classes that you instantiate yourself and pass to the `Agent`.
 
 ### Passing to Agent

@@ -8,17 +8,29 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Self
 
-from .blocks import AudioBlock, ContentBlock, ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock, VideoBlock
+from .blocks import (
+    AudioBlock,
+    ContentBlock,
+    ImageBlock,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    VideoBlock,
+)
 from .context import ContextStore
 from .events import (
     AudioOutput,
     Error,
     ImageOutput,
     IterationEnd,
+    ReasoningDelta,
+    ReasoningSignature,
+    Refusal,
     SessionEndEvent,
     StreamEvent,
     TextDelta,
@@ -224,7 +236,7 @@ class Agent:
 
     @staticmethod
     def _accumulate_text(
-        content: list[TextBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
+        content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
         delta: str,
     ) -> None:
         """Append text delta — merge into last TextBlock or start a new one."""
@@ -232,6 +244,47 @@ class Agent:
             content[-1] = TextBlock(text=content[-1].text + delta)
         else:
             content.append(TextBlock(text=delta))
+
+    @staticmethod
+    def _accumulate_reasoning(
+        content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
+        delta: str,
+    ) -> None:
+        """Append a reasoning delta, merging into the block still being built.
+
+        A signed block is finished. The provider computed the signature over the text it had, so a
+        later delta starts a new block rather than making the stored signature disagree with it.
+        """
+        last = content[-1] if content else None
+        if isinstance(last, ReasoningBlock) and not last.signature:
+            content[-1] = replace(last, text=last.text + delta)
+        else:
+            content.append(ReasoningBlock(text=delta))
+
+    @staticmethod
+    def _sign_reasoning(
+        content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
+        data: str,
+        redacted: bool,
+        id: str = "",
+        joining: bool = False,
+    ) -> None:
+        """Attach the provider's proof to the reasoning it belongs to.
+
+        The proof is kept because the turn has to be replayable. A provider refuses a thinking block
+        whose signature is missing, and a redacted block carries a signature and no text at all.
+
+        ``joining`` says this proof continues the one before it. The transports index a signature
+        by the block it proves, so a repeated index is the rest of one proof rather than another.
+        Stored apart, the block replays with half a signature and the turn after it is refused.
+        """
+        last = content[-1] if content else None
+        if joining and isinstance(last, ReasoningBlock) and last.signature:
+            content[-1] = replace(last, signature=last.signature + data)
+        elif isinstance(last, ReasoningBlock) and not last.signature:
+            content[-1] = replace(last, signature=data, redacted=redacted, id=id)
+        else:
+            content.append(ReasoningBlock(signature=data, redacted=redacted, id=id))
 
     @staticmethod
     def _finalize_pending_tools(
@@ -302,7 +355,9 @@ class Agent:
                 else:
                     active_tools = list(await self._select_tools(effective_history, self.tools))
 
-                content: list[TextBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock] = []
+                content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock] = []
+                # Which block the last proof was for. A repeated index continues that proof.
+                signed_at: int | None = None
                 pending: dict[str, dict[str, Any]] = {}
                 stop_reason = StopReason.end_turn
                 malformed: set[str] = set()
@@ -321,6 +376,17 @@ class Agent:
                                     yield TextDelta(index=0, delta=note)
                                     repetition_detected = True
                                     break
+                            case Refusal(text=text):
+                                # Kept as the turn's text: a refusal is what the assistant said.
+                                # Left out, the stored turn is empty and the next request carries a
+                                # blank assistant message the provider then rejects.
+                                if text:
+                                    self._accumulate_text(content, text)
+                            case ReasoningDelta(delta=delta):
+                                self._accumulate_reasoning(content, delta)
+                            case ReasoningSignature(index=at, data=signature, redacted=redacted, id=block_id):
+                                self._sign_reasoning(content, signature, redacted, block_id, joining=at == signed_at)
+                                signed_at = at
                             case ImageOutput(data=data, media_type=mt):
                                 content.append(ImageBlock(media_type=mt, data=data))
                             case VideoOutput(data=data, media_type=mt):
@@ -363,9 +429,9 @@ class Agent:
                             stop_reason,
                         )
 
-                    # Dispatch tools BEFORE appending to context - cancellation
-                    # between here and the two appends below cannot leave orphan
-                    # ToolUseBlocks in the persistent context store.
+                    # Dispatch tools BEFORE appending to context. Cancellation
+                    # between here and the two appends below then cannot leave
+                    # orphan ToolUseBlocks in the persistent context store.
                     valid = [b for b in tool_blocks if b.id not in malformed]
                     error_results = [
                         ToolResultBlock(
@@ -464,7 +530,7 @@ class Agent:
                     # Non-streaming tools return full content (str or list of
                     # TextBlock/ImageBlock/VideoBlock) — no information is lost.
                     # Images/videos are yielded as separate ImageOutput/VideoOutput
-                    # events so the REPL can save them to disk; the model sees the
+                    # events so the REPL can save them to disk. The model sees the
                     # actual pixel data via ImageBlock/VideoBlock in the tool result.
                     by_id = {b.id: b for b in tool_blocks}
                     for r in results:
@@ -503,7 +569,26 @@ class Agent:
                         yield SessionEndEvent(stop_reason=StopReason.end_turn, total_usage=total_usage)
                         session_end_emitted = True
                         return
-                    case StopReason.max_tokens | StopReason.error:
+                    case StopReason.refusal:
+                        # This is terminal, and not an error. The model declined, and the decline
+                        # is stored as the turn's content. Sending the same prompt again cannot
+                        # succeed. Reported as an error the caller cannot tell a decline from a
+                        # broken connection, and retries something that will never work.
+                        logger.info("Model declined: total_usage=%s", total_usage)
+                        yield SessionEndEvent(stop_reason=StopReason.refusal, total_usage=total_usage)
+                        session_end_emitted = True
+                        return
+                    case StopReason.pause_turn:
+                        # The provider stopped its own tool loop and expects the assistant content
+                        # back to finish the turn. The content was just appended, so going round
+                        # again is the resume.
+                        logger.debug("Paused turn, resuming: total_usage=%s", total_usage)
+                        continue
+                    case _:
+                        # Wildcard on purpose. Named one by one, a reason added later matches
+                        # nothing, falls out of the match, and the loop simply runs again. The
+                        # model is then re-prompted with unchanged history until max_iterations,
+                        # and every one of those turns is paid for.
                         yield Error(exception=RuntimeError(f"Transport stopped with: {stop_reason}"))
                         yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
                         session_end_emitted = True

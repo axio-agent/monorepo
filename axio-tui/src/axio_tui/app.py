@@ -15,9 +15,11 @@ from axio.agent import Agent
 from axio.compaction import compact_context
 from axio.context import ContextStore, MemoryContextStore, SessionInfo
 from axio.events import (
+    Citation,
     Error,
     IterationEnd,
     ReasoningDelta,
+    Refusal,
     SessionEndEvent,
     TextDelta,
     ToolFieldDelta,
@@ -375,6 +377,7 @@ class AgentApp(App[None]):
         self._guard_lock = asyncio.Lock()
         self._current_md: Markdown | None = None
         self._response_text = ""
+        self._declined = False
         self._text_dirty = False
         self._last_input_tokens = 0
         self._chat_model: ModelSpec | None = None
@@ -775,6 +778,7 @@ class AgentApp(App[None]):
         await self._flush_text()
         self._current_md = None
         self._response_text = ""
+        self._declined = False
         scroll = self.query_one("#log", VerticalScroll)
         if not scroll.is_attached:
             return
@@ -786,6 +790,7 @@ class AgentApp(App[None]):
         await self._flush_text()
         self._current_md = None
         self._response_text = ""
+        self._declined = False
         scroll = self.query_one("#log", VerticalScroll)
         if not scroll.is_attached:
             return
@@ -797,6 +802,7 @@ class AgentApp(App[None]):
             await self._flush_text()
             self._current_md = None
             self._response_text = ""
+            self._declined = False
             self._tool_status = _ToolStatusWidget()
             scroll = self.query_one("#log", VerticalScroll)
             if scroll.is_attached:
@@ -1355,6 +1361,26 @@ class AgentApp(App[None]):
                                 await self._ensure_md()
                                 self._response_text += delta
                                 self._text_dirty = True
+                            case Refusal(text=text, category=category, blocked_input=blocked):
+                                # Rendered, and not as ordinary text: unrendered, a declined turn
+                                # looked to the user like the model answering with nothing. The
+                                # banner goes once per turn: a refusal arrives in fragments, and one
+                                # banner each read as several separate refusals.
+                                self._tool_status = None
+                                self._agent_emoji = "🚫"
+                                await self._ensure_md()
+                                if not self._declined:
+                                    self._declined = True
+                                    what = "Prompt blocked" if blocked else "Declined"
+                                    tail = f" ({category})" if category else ""
+                                    self._response_text += f"\n\n**{what}{tail}.** "
+                                self._response_text += text
+                                self._text_dirty = True
+                            case Citation(cited_text=cited, title=title, url=url):
+                                await self._ensure_md()
+                                label = title or cited or url or "source"
+                                self._response_text += f" [{label}]({url})" if url else f" _[{label}]_"
+                                self._text_dirty = True
                             case ToolUseStart(tool_use_id=tid, name=name) if name != "status_line":
                                 self._agent_emoji = "🔧"
                                 await self._update_status()
@@ -1384,6 +1410,7 @@ class AgentApp(App[None]):
                                 await self._flush_text()
                                 self._current_md = None
                                 self._response_text = ""
+                                self._declined = False
                                 self._tool_status = None
                             case Error(exception=exc):
                                 await self._write_meta(f"[red]Error: {exc}[/]")
@@ -1412,6 +1439,7 @@ class AgentApp(App[None]):
                 await self._flush_text()
                 self._current_md = None
                 self._response_text = ""
+                self._declined = False
                 await self._write_meta("[yellow]--- Cancelled ---[/]")
             self.query_one("#input", Input).focus()
 
@@ -1489,6 +1517,7 @@ class AgentApp(App[None]):
         await self.query_one("#log", VerticalScroll).remove_children()
         self._current_md = None
         self._response_text = ""
+        self._declined = False
         self._tool_status = None
         self._nav_index = None
 

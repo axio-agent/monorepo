@@ -3,7 +3,7 @@
 `axio-tools-mcp` lets you plug any
 [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server into an
 Axio agent. Tools are loaded at runtime from the server and wrapped as regular
-`Tool` objects - the agent has no idea they came from MCP.
+`Tool` objects. The agent has no idea they came from MCP.
 
 ## Install
 

@@ -6,7 +6,8 @@ Guidelines for building reliable, maintainable Axio applications.
 
 ### Keep handlers focused
 
-Each tool should do one thing well. If you find yourself writing "and also...", split into multiple tools.
+Each tool should do one thing well. If you find yourself writing "and also...", split into multiple
+tools.
 
 <!-- name: test_focused_tools -->
 ```python
@@ -360,23 +361,119 @@ async def my_tool(query: str, limit: int = 10) -> list[dict[str, str]]:
 
 ### Use SQLite for production
 
-MemoryContextStore loses data on shutdown. Use SQLiteContextStore for persistence:
+MemoryContextStore loses data on shutdown. Use SQLiteContextStore for persistence. The caller owns
+the connection, so open it once and close it on shutdown:
 
+<!-- name: test_sqlite_for_production -->
 ```python
-from axio_context_sqlite import connect, SQLiteContextStore
+import asyncio
+from axio_context_sqlite import SQLiteContextStore, connect
 
-conn = await connect("production.db")
-context = SQLiteContextStore(conn, session_id=user_session_id)
+
+async def main() -> None:
+    conn = await connect(":memory:")  # a file path in production
+    try:
+        context = SQLiteContextStore(conn, session_id="user-42")
+        assert context.session_id == "user-42"
+    finally:
+        await conn.close()
+
+asyncio.run(main())
 ```
 
 ### Monitor token usage
 
-Track usage from `IterationEnd` events:
+`IterationEnd.usage` is one request. `SessionEndEvent.total_usage` is the whole run, every slice
+summed. `input_tokens` and `output_tokens` are inclusive grand totals. `cache_read_tokens`,
+`cache_write_tokens` and `reasoning_tokens` are disjoint slices of one of them. That holds
+whichever provider answered, because each transport converts into that rule.
 
+`Usage` is counts, never money. A cached token and a written one bill at different multipliers, so
+price the slices separately against your own per-model rates:
+
+<!-- name: test_monitor_usage -->
 ```python
-from axio import IterationEnd
+import asyncio
+from axio import Agent, MemoryContextStore, StopReason, TextDelta, Usage
+from axio.events import IterationEnd, SessionEndEvent
+from axio.testing import StubTransport
 
-async for event in agent.run_stream(msg, context):
-    if isinstance(event, IterationEnd):
-        print(f"Tokens: {event.usage}")
+# Dollars per million tokens, from the provider's price list.
+RATES = {"cached_input": 0.30, "input": 3.00, "output": 15.00}
+
+
+def cost(usage: Usage) -> float:
+    return (
+        usage.uncached_input_tokens * RATES["input"]
+        + usage.cache_read_tokens * RATES["cached_input"]
+        + usage.output_tokens * RATES["output"]
+    ) / 1_000_000
+
+
+async def main() -> None:
+    transport = StubTransport([[
+        TextDelta(index=0, delta="done"),
+        IterationEnd(
+            iteration=0,
+            stop_reason=StopReason.end_turn,
+            usage=Usage(1000, 200, cache_read_tokens=800, reasoning_tokens=150),
+        ),
+    ]])
+    agent = Agent(system="", transport=transport)
+
+    total = Usage(0, 0)
+    async for event in agent.run_stream("hi", MemoryContextStore()):
+        if isinstance(event, SessionEndEvent):
+            total = event.total_usage
+
+    # 800 of the 1000 input tokens were served from cache, and 150 of the 200 output tokens
+    # were reasoning the caller never saw.
+    assert total.uncached_input_tokens == 200
+    assert total.answer_tokens == 50
+    assert round(cost(total), 6) == round((200 * 3.0 + 800 * 0.30 + 200 * 15.0) / 1_000_000, 6)
+
+asyncio.run(main())
 ```
+
+A zero slice means the provider billed none of it, or reported no breakdown at all. Axio cannot
+tell those apart, and neither can a cost line built on them.
+
+### Read the stop reason, not just the text
+
+`StopReason` has eight members and four of them are neither success nor a broken transport. Match
+on `SessionEndEvent.stop_reason` before treating a short answer as a failure:
+
+<!-- name: test_stop_reason_policy -->
+```python
+import asyncio
+from axio import Agent, MemoryContextStore, Refusal, StopReason, Usage
+from axio.events import IterationEnd, SessionEndEvent
+from axio.testing import StubTransport
+
+
+async def main() -> None:
+    transport = StubTransport([[
+        Refusal(index=0, text="I can't help with that.", category="policy"),
+        IterationEnd(iteration=0, stop_reason=StopReason.refusal, usage=Usage(12, 5)),
+    ]])
+    agent = Agent(system="", transport=transport)
+
+    stream = agent.run_stream("...", MemoryContextStore())
+    said, end = "", None
+    async for event in stream:
+        if isinstance(event, Refusal):
+            said = event.text
+        if isinstance(event, SessionEndEvent):
+            end = event
+
+    assert end is not None and end.stop_reason is StopReason.refusal
+    # A decline is a finished turn, not an error: retrying the same prompt cannot succeed.
+    assert said == "I can't help with that."
+
+asyncio.run(main())
+```
+
+`agent.run()` returns the refusal text too, so a declined turn no longer looks like an empty answer.
+`refusal`, `context_window_exceeded` and `cancelled` all end the run. `pause_turn` does not — the
+agent resumes on it. Anything the transport could not map arrives as `StopReason.error` with an
+`Error` event beside it.

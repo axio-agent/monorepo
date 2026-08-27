@@ -7,17 +7,33 @@ import base64
 import json
 import logging
 import os
+from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 import aiohttp
-from axio.blocks import AudioBlock, ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock, VideoBlock
+from axio.blocks import (
+    AudioBlock,
+    AudioMediaType,
+    ImageBlock,
+    ImageMediaType,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    VideoBlock,
+    VideoMediaType,
+)
 from axio.events import (
     AudioOutput,
     ImageOutput,
     IterationEnd,
+    IterationStart,
+    ProviderEvent,
     ReasoningDelta,
+    ReasoningSignature,
+    Refusal,
     StreamEvent,
     TextDelta,
     ToolInputDelta,
@@ -30,6 +46,7 @@ from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.tool import Tool
 from axio.transport import CompletionTransport, ImageGenTransport, VideoGenTransport
 from axio.types import StopReason, Usage
+from axio_sse import Payload, Wire, payloads
 
 from axio_transport_google._generated_types import (
     Content,
@@ -161,23 +178,37 @@ def _get_anthropic_models() -> ModelRegistry:
     )
 
 
+#: The union of every ``finishReason`` either surface publishes. The developer API publishes 21 and Vertex
+#: publishes 17. One left out is read as an error. That tells the caller the transport broke when the model
+#: was in fact blocked, or asked to be prompted again.
 _FINISH_REASON_MAP: dict[str, StopReason] = {
     "STOP": StopReason.end_turn,
     "MAX_TOKENS": StopReason.max_tokens,
-    "SAFETY": StopReason.error,
-    "RECITATION": StopReason.error,
+    # The turn was blocked. This is not the transport failing. Sending the same prompt cannot
+    # succeed.
+    "SAFETY": StopReason.refusal,
+    "RECITATION": StopReason.refusal,
+    "LANGUAGE": StopReason.refusal,
+    "BLOCKLIST": StopReason.refusal,
+    "PROHIBITED_CONTENT": StopReason.refusal,
+    "SPII": StopReason.refusal,
+    "MODEL_ARMOR": StopReason.refusal,
+    "IMAGE_SAFETY": StopReason.refusal,
+    "IMAGE_PROHIBITED_CONTENT": StopReason.refusal,
+    "IMAGE_RECITATION": StopReason.refusal,
+    # The model produced a call the API could not use. Read as tool_use, the agent prompts again.
+    # That is the recovery, because the next answer may parse.
     "MALFORMED_FUNCTION_CALL": StopReason.tool_use,
     "UNEXPECTED_TOOL_CALL": StopReason.tool_use,
-    "OTHER": StopReason.error,
-    "BLOCKLIST": StopReason.error,
-    "PROHIBITED_CONTENT": StopReason.error,
-    "SPII": StopReason.error,
-    "MODEL_ARMOR": StopReason.error,
-    "IMAGE_SAFETY": StopReason.error,
-    "IMAGE_PROHIBITED_CONTENT": StopReason.error,
-    "IMAGE_RECITATION": StopReason.error,
+    # Failures that prompting again does not fix.
+    "TOO_MANY_TOOL_CALLS": StopReason.error,
+    "MISSING_THOUGHT_SIGNATURE": StopReason.error,
+    "MALFORMED_RESPONSE": StopReason.error,
     "IMAGE_OTHER": StopReason.error,
     "NO_IMAGE": StopReason.error,
+    "OTHER": StopReason.error,
+    "ESCALATION": StopReason.error,
+    "FINISH_REASON_UNSPECIFIED": StopReason.error,
 }
 
 _DEVELOPER_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -187,32 +218,99 @@ _DEVELOPER_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 #   https://aiplatform.googleapis.com/$discovery/rest?version=v1beta1
 
 
-async def _iter_sse(resp: aiohttp.ClientResponse) -> AsyncIterator[dict[str, Any]]:
-    """Parse SSE stream, yielding JSON objects.
+# ── The payload shapes streamGenerateContent sends ───────────────────────────────────────────
 
-    Uses manual buffering instead of aiohttp readline() which has a 128KB
-    line limit — too small for inline image/audio data.
+
+@dataclass(frozen=True, slots=True)
+class InlineData(Wire):
+    mimeType: str = ""
+    data: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionCall(Wire):
+    id: str = ""
+    name: str = ""
+    args: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class ContentPart(Wire):
+    """One piece of a candidate's content. Which field is filled says what it is."""
+
+    text: str = ""
+    #: True where ``text`` is the model thinking rather than answering.
+    thought: bool = False
+    #: Opaque proof that the reasoning is the model's own. Returned altered or missing, the next
+    #: request comes back with ``MISSING_THOUGHT_SIGNATURE``.
+    thoughtSignature: str = ""
+    inlineData: InlineData = field(default_factory=InlineData)
+    functionCall: FunctionCall = field(default_factory=FunctionCall)
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateContent(Wire):
+    role: str = ""
+    parts: list[ContentPart] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate(Wire):
+    content: CandidateContent = field(default_factory=CandidateContent)
+    finishReason: str = ""
+    citationMetadata: Payload = field(default_factory=Payload)
+    groundingMetadata: Payload = field(default_factory=Payload)
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class UsageMetadata(Wire):
+    """Two of these stand outside the headline number. One is already inside it.
+
+    ``cachedContentTokenCount`` is part of ``promptTokenCount``. ``toolUsePromptTokenCount`` and
+    ``thoughtsTokenCount`` are not part of anything and have to be added.
     """
-    buf = b""
-    async for raw_chunk in resp.content.iter_any():
-        buf += raw_chunk
-        while b"\n" in buf:
-            raw_line, buf = buf.split(b"\n", 1)
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line or not line.startswith("data: "):
-                continue
-            try:
-                yield json.loads(line[6:])
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse SSE chunk: %.200s", line)
-    # Process any remaining data after stream ends
-    if buf:
-        line = buf.decode("utf-8", errors="replace").strip()
-        if line.startswith("data: "):
-            try:
-                yield json.loads(line[6:])
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse final SSE chunk: %.200s", line)
+
+    promptTokenCount: int = 0
+    candidatesTokenCount: int = 0
+    toolUsePromptTokenCount: int = 0
+    thoughtsTokenCount: int = 0
+    cachedContentTokenCount: int = 0
+    totalTokenCount: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GenerateContentChunk(Wire):
+    """One SSE payload. The stream names no event, so every payload is this one shape."""
+
+    candidates: list[Candidate] = field(default_factory=list)
+    usageMetadata: UsageMetadata = field(default_factory=UsageMetadata)
+    promptFeedback: Payload = field(default_factory=Payload)
+    modelVersion: str = ""
+    responseId: str = ""
+
+
+def _usage(um: UsageMetadata) -> Usage:
+    """Gemini's token counts, converted to inclusive totals.
+
+    Two of these stand outside the headline number and have to be added. Tool-use prompt tokens are
+    not in ``promptTokenCount``. Thinking is not in ``candidatesTokenCount``. Cached content is the
+    other way round and is already inside the prompt count. Read as reported, a thinking model
+    billed its reasoning to nobody.
+    """
+    usage = Usage(
+        input_tokens=um.promptTokenCount + um.toolUsePromptTokenCount,
+        output_tokens=um.candidatesTokenCount + um.thoughtsTokenCount,
+        cache_read_tokens=um.cachedContentTokenCount,
+        # Gemini publishes no counter for what a cache write cost.
+        cache_write_tokens=0,
+        reasoning_tokens=um.thoughtsTokenCount,
+    )
+    if um.totalTokenCount is not None and um.totalTokenCount != usage.total_tokens:
+        # The provider publishes the sum it expects, so this catches the day it changes the rule.
+        logger.warning("usageMetadata total is %d, the parts add to %d", um.totalTokenCount, usage.total_tokens)
+    return usage
 
 
 # ── JSON payload builders (no SDK dependency) ───────────────────────
@@ -307,9 +405,29 @@ def _build_contents_json(
 
         elif msg.role == "assistant":
             assistant_parts: list[Part] = []
+            # Signatures the model issued for parts that carried no text of their own. They
+            # belong to the calls that follow, in the order they arrived. A turn may hold several
+            # parallel calls. The agent appends every signature before any of the calls. A single
+            # slot therefore gave the first call the last signature and left the rest unsigned.
+            unplaced_signatures: deque[str] = deque()
             for assistant_block in msg.content:
                 if isinstance(assistant_block, TextBlock):
                     assistant_parts.append({"text": assistant_block.text})
+                elif isinstance(assistant_block, ReasoningBlock):
+                    # The signature is documented as "an opaque signature for the thought so it can
+                    # be reused in subsequent requests". Read from the stored block rather than from
+                    # the map on this instance. That map is per-transport and empty after a restart,
+                    # so a resumed session used to come back MISSING_THOUGHT_SIGNATURE.
+                    if assistant_block.text:
+                        thought: Part = {"text": assistant_block.text, "thought": True}
+                        if assistant_block.signature:
+                            thought["thoughtSignature"] = assistant_block.signature
+                        assistant_parts.append(thought)
+                    elif assistant_block.signature:
+                        # Gemini puts the proof on the part it signed. A thought part with no text
+                        # is not that part. Sent as one, the call it belongs to comes back
+                        # MISSING_THOUGHT_SIGNATURE.
+                        unplaced_signatures.append(assistant_block.signature)
                 elif isinstance(assistant_block, (ImageBlock, AudioBlock, VideoBlock)):
                     assistant_parts.append(_inline_data_part(assistant_block))
                 elif isinstance(assistant_block, ToolUseBlock):
@@ -320,8 +438,13 @@ def _build_contents_json(
                             "id": assistant_block.id,
                         }
                     }
-                    if thought_signatures and assistant_block.id in thought_signatures:
-                        part["thoughtSignature"] = thought_signatures[assistant_block.id]
+                    # The stored signature comes first, taken in arrival order. The map is this
+                    # instance's, so it is empty in a session restored into a new transport, which
+                    # is the case that fails.
+                    stored_signature = unplaced_signatures.popleft() if unplaced_signatures else ""
+                    signature = stored_signature or (thought_signatures or {}).get(assistant_block.id, "")
+                    if signature:
+                        part["thoughtSignature"] = signature
                     assistant_parts.append(part)
             if assistant_parts:
                 contents.append({"role": "model", "parts": assistant_parts})
@@ -568,6 +691,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
         usage = Usage(0, 0)
         stop_reason = StopReason.end_turn
         has_tool_calls = False
+        served_by: str | None = None
 
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
@@ -587,59 +711,110 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                             continue
                         raise StreamError(f"{resp.status} {resp.reason}: {error_text[:1000]}")
 
-                    async for chunk in _iter_sse(resp):
+                    async for payload in payloads(resp.content.iter_any()):
                         if self.debug:
                             logger.warning(
                                 "DEBUG response chunk:\n%s",
-                                json.dumps(_redact_body(chunk), indent=2, ensure_ascii=False),
+                                json.dumps(_redact_body(dict(payload)), indent=2, ensure_ascii=False),
                             )
-                        um = chunk.get("usageMetadata")
-                        if um and "promptTokenCount" in um:
-                            usage = Usage(
-                                input_tokens=um["promptTokenCount"],
-                                output_tokens=um.get("candidatesTokenCount", 0),
-                            )
+                        chunk = GenerateContentChunk.read(payload)
+
+                        if chunk.usageMetadata.promptTokenCount:
+                            usage = _usage(chunk.usageMetadata)
                             self.last_usage = usage
 
-                        candidates = chunk.get("candidates")
-                        if not candidates:
-                            continue
-                        candidate = candidates[0]
+                        if served_by is None and chunk.modelVersion:
+                            # The model that answered, which need not be the one asked for.
+                            served_by = chunk.modelVersion
+                            yield IterationStart(iteration=0, id=chunk.responseId or None, model=served_by)
 
-                        fr = candidate.get("finishReason")
-                        if fr:
-                            stop_reason = _FINISH_REASON_MAP.get(fr, StopReason.error)
-                            if fr not in _FINISH_REASON_MAP:
-                                logger.warning("Unknown finishReason %r", fr)
+                        if block_reason := chunk.promptFeedback.string("blockReason"):
+                            # Test blockReason and not presence. The developer API attaches
+                            # promptFeedback with safetyRatings to healthy answers too, and a
+                            # Payload is a dict. Gating on truthiness therefore called every one of
+                            # those healthy answers a blocked prompt. Only blockReason means
+                            # nothing was generated.
+                            stop_reason = StopReason.refusal
+                            yield Refusal(
+                                index=0,
+                                category=block_reason,
+                                blocked_input=True,
+                                raw=dict(chunk.promptFeedback),
+                            )
 
-                        content = candidate.get("content")
-                        if not content:
+                        if not chunk.candidates:
                             continue
-                        for part in content.get("parts", []):
-                            if part.get("thought") and part.get("text"):
-                                yield ReasoningDelta(index=0, delta=part["text"])
-                            elif "text" in part and not part.get("thought"):
-                                yield TextDelta(index=0, delta=part["text"])
-                            elif "inlineData" in part:
-                                idata = part["inlineData"]
-                                mt = idata.get("mimeType", "")
-                                raw = base64.b64decode(idata.get("data", ""))
+                        candidate = chunk.candidates[0]
+
+                        if candidate.finishReason:
+                            stop_reason = _FINISH_REASON_MAP.get(candidate.finishReason, StopReason.error)
+                            if candidate.finishReason not in _FINISH_REASON_MAP:
+                                logger.warning("Unknown finishReason %r", candidate.finishReason)
+
+                        # What the answer was attributed to. Four providers shape this four
+                        # incompatible ways, so it travels whole rather than as an invented common
+                        # form.
+                        if candidate.citationMetadata:
+                            yield ProviderEvent(
+                                provider="google",
+                                kind="citationMetadata",
+                                data=dict(candidate.citationMetadata),
+                                index=0,
+                            )
+                        if candidate.groundingMetadata:
+                            yield ProviderEvent(
+                                provider="google",
+                                kind="groundingMetadata",
+                                data=dict(candidate.groundingMetadata),
+                                index=0,
+                            )
+
+                        for at, part in enumerate(candidate.content.parts):
+                            if part.text and part.thought:
+                                yield ReasoningDelta(index=0, delta=part.text)
+                            elif part.text:
+                                yield TextDelta(index=0, delta=part.text)
+                            elif part.inlineData.data:
+                                mt = part.inlineData.mimeType
+                                raw = base64.b64decode(part.inlineData.data)
+                                # The prefix is all the wire guarantees. The event types name the
+                                # exact media types they accept. The provider is free to send one
+                                # outside that list. So the check tests the prefix. The cast says
+                                # so rather than pretending the narrower type was proven.
                                 if mt.startswith("image/"):
-                                    yield ImageOutput(index=0, data=raw, media_type=mt)
+                                    yield ImageOutput(index=0, data=raw, media_type=cast(ImageMediaType, mt))
                                 elif mt.startswith("audio/"):
-                                    yield AudioOutput(index=0, data=raw, media_type=mt)
+                                    yield AudioOutput(index=0, data=raw, media_type=cast(AudioMediaType, mt))
                                 elif mt.startswith("video/"):
-                                    yield VideoOutput(index=0, data=raw, media_type=mt)
-                            elif "functionCall" in part:
-                                fc = part["functionCall"]
-                                call_id = fc.get("id") or f"genai_{fc.get('name')}_{id(fc)}"
-                                ts = part.get("thoughtSignature")
-                                if ts:
-                                    self._thought_signatures[call_id] = ts
-                                yield ToolUseStart(index=0, tool_use_id=call_id, name=fc.get("name", ""))
-                                args_json = json.dumps(fc.get("args")) if fc.get("args") else "{}"
+                                    yield VideoOutput(index=0, data=raw, media_type=cast(VideoMediaType, mt))
+                                else:
+                                    yield ProviderEvent(
+                                        provider="google", kind="inlineData", data=dict(part.raw), index=0
+                                    )
+                            elif part.functionCall.name:
+                                call = part.functionCall
+                                call_id = call.id or f"genai_{call.name}_{id(part)}"
+                                if part.thoughtSignature:
+                                    self._thought_signatures[call_id] = part.thoughtSignature
+                                yield ToolUseStart(index=0, tool_use_id=call_id, name=call.name)
+                                args_json = json.dumps(dict(call.args)) if call.args else "{}"
                                 yield ToolInputDelta(index=0, tool_use_id=call_id, partial_json=args_json)
                                 has_tool_calls = True
+                            elif not part.thoughtSignature:
+                                # executableCode, codeExecutionResult, fileData and whatever the API
+                                # adds next: content of the turn that axio has no type for.
+                                yield ProviderEvent(provider="google", kind="part", data=dict(part.raw), index=0)
+
+                            if part.thoughtSignature:
+                                # Emit after the reasoning it signs, never before. The agent
+                                # attaches a signature to the block it just built, and refuses to
+                                # extend a block already signed. Emitted first, one part became two
+                                # blocks — a signature on nothing, and reasoning left unsigned.
+                                #
+                                # The index is the part's own position, because the index on a
+                                # signature means which block it proves. Fixed at zero, two
+                                # parallel signed calls looked like two halves of one proof.
+                                yield ReasoningSignature(index=at, data=part.thoughtSignature)
 
                 if has_tool_calls:
                     stop_reason = StopReason.tool_use

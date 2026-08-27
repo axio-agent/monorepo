@@ -66,6 +66,27 @@ class VideoBlock(ContentBlock):
 
 
 @dataclass(frozen=True, slots=True)
+class ReasoningBlock(ContentBlock):
+    """The model's own reasoning, kept so the turn can be sent back unaltered.
+
+    ``signature`` is the provider's proof that the block is its own. Anthropic refuses a returned
+    thinking block whose signature is missing or changed, and Google reports
+    ``MISSING_THOUGHT_SIGNATURE`` for the same failure. A stored turn that dropped the signature
+    cannot be replayed. Never inspect, decode or truncate it.
+
+    ``redacted`` marks a block whose reasoning the provider withheld. The signature still has to
+    travel, and ``text`` is empty.
+    """
+
+    text: str = ""
+    signature: str = ""
+    redacted: bool = False
+    #: How the provider names this block, where it names them. Opaque, like the signature, and
+    #: required beside it by a provider that identifies reasoning by id rather than by position.
+    id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ToolUseBlock(ContentBlock):
     id: ToolCallID
     name: ToolName
@@ -106,6 +127,17 @@ def _video_to_dict(block: VideoBlock) -> dict[str, Any]:
     return {"type": "video", "media_type": block.media_type, "data": base64.b64encode(block.data).decode()}
 
 
+@to_dict.register(ReasoningBlock)
+def _reasoning_to_dict(block: ReasoningBlock) -> dict[str, Any]:
+    return {
+        "type": "reasoning",
+        "text": block.text,
+        "signature": block.signature,
+        "redacted": block.redacted,
+        "id": block.id,
+    }
+
+
 @to_dict.register(ToolUseBlock)
 def _tool_use_to_dict(block: ToolUseBlock) -> dict[str, Any]:
     return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
@@ -136,6 +168,13 @@ def from_dict(data: dict[str, Any]) -> ContentBlock:
             return AudioBlock(media_type=data["media_type"], data=base64.b64decode(data["data"]))
         case "video":
             return VideoBlock(media_type=data["media_type"], data=base64.b64decode(data["data"]))
+        case "reasoning":
+            return ReasoningBlock(
+                text=data.get("text", ""),
+                signature=data.get("signature", ""),
+                redacted=data.get("redacted", False),
+                id=data.get("id", ""),
+            )
         case "tool_use":
             return ToolUseBlock(id=data["id"], name=data["name"], input=data["input"])
         case "tool_result":

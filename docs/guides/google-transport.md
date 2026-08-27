@@ -30,7 +30,8 @@ from axio_transport_google import GoogleTransport
 transport = GoogleTransport()
 ```
 
-The transport auto-selects `gemini-3.1-pro-preview` as the default model.
+The transport starts on `gemini-3.1-flash-lite-preview`, the cheapest of the three chat
+models. Switch it before the first call if you want another one.
 
 ## Models
 
@@ -38,7 +39,7 @@ The transport auto-selects `gemini-3.1-pro-preview` as the default model.
 |---|---|---|---|
 | `gemini-3.1-pro-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Flagship |
 | `gemini-3-flash-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Fast/cheap |
-| `gemini-3.1-flash-lite-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Lightest |
+| `gemini-3.1-flash-lite-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Lightest; the default |
 | `gemini-3.1-flash-image-preview` | text, vision, image generation | 1M tokens | Nano Banana |
 | `gemini-3-pro-image-preview` | text, vision, image generation | 1M tokens | Image gen |
 
@@ -67,17 +68,68 @@ transport.model = (
 | Parameter | Default | Description |
 |---|---|---|
 | `api_key` | `GEMINI_API_KEY` env var | API key for the Developer API |
-| `model` | `gemini-3.1-pro-preview` | Active `ModelSpec` |
+| `model` | `gemini-3.1-flash-lite-preview` | Active `ModelSpec` |
 | `temperature` | `None` | Sampling temperature (uses model default if unset) |
 | `top_p` | `None` | Nucleus sampling probability |
 | `top_k` | `None` | Top-k sampling |
 | `seed` | `None` | Random seed for deterministic outputs |
 | `thinking_budget` | `None` | Token budget for chain-of-thought reasoning |
-| `thinking_level` | `None` | Thinking level: `"LOW"`, `"MEDIUM"`, `"HIGH"`, or `"NONE"` |
+| `thinking_level` | `None` | Gemini 3+ thinking level (see below) |
 | `max_output_tokens` | `None` | Override the model's default max output |
-| `max_retries` | `5` | Retries on 429/503 with exponential backoff |
+| `max_retries` | `5` | Retries on 429/500/503 with exponential backoff |
 | `safety_settings` | `None` | List of `SafetySettingDict` (see below) |
 | `debug` | `False` | Log raw request/response bodies |
+| `service_tier` | `None` | Forwarded as `generationConfig.serviceTier` |
+| `media_resolution` | `None` | Forwarded as `generationConfig.mediaResolution`, upper-cased |
+| `nudge_on_media_tool_result` | `True` | Append a short user message after a tool returns media (see below) |
+| `vertexai` | `GOOGLE_GENAI_USE_VERTEXAI` env var | Route through Vertex AI instead of the Developer API |
+| `project` | `GOOGLE_CLOUD_PROJECT` env var | Vertex AI project |
+| `location` | `GOOGLE_CLOUD_LOCATION` env var | Vertex AI location |
+
+### Thinking level
+
+`thinking_level` applies to Gemini 3+ models, which take a level rather than a budget.
+What is valid depends on the model family:
+
+| Model | Valid levels |
+|---|---|
+| `-pro` | `LOW`, `MEDIUM`, `HIGH` |
+| `-pro-image` | `HIGH` |
+| `-flash-image` | `MINIMAL`, `HIGH` |
+| Flash, Flash-Lite | `MINIMAL`, `LOW`, `MEDIUM`, `HIGH` |
+
+There is no `NONE`. A value the family does not support is silently replaced by its highest
+level, so a misspelling buys the most expensive setting rather than failing. A reasoning model
+left unset also gets `HIGH`. `thinking_budget` is the Gemini 2.5 form. It is not sent for a
+Gemini 3+ model.
+
+### Media tool results
+
+Gemini stops generating after about twenty tokens when media arrives as sibling `inlineData`
+parts beside a `functionResponse`. With `nudge_on_media_tool_result` left on, the agent appends
+a short "Proceed." message so the model actually looks at the content. `Agent` reads the flag
+off the transport, so this Google-specific behaviour stays in a Google-specific field.
+
+### Reasoning signatures
+
+Gemini signs the reasoning it produces. The signature has to come back unaltered on the next
+request. The transport emits it as `ReasoningSignature`. The agent stores it on the `ReasoningBlock`
+in the turn. The transport puts it back on a thought part where it signed a thought, and on the
+function-call part where it signed a call. A signature that is missing, altered or attached to the
+wrong part comes back as the finish reason `MISSING_THOUGHT_SIGNATURE`, which maps to
+`StopReason.error`.
+
+The consequence for a context store: `ReasoningBlock.signature` must survive the round trip through
+`to_dict`/`from_dict`. Drop it and the *next* turn fails, not the one that dropped it. See
+{doc}`writing-transports` for the three providers' replay shapes.
+
+### Grounding and citations
+
+Gemini's `citationMetadata` and `groundingMetadata` do not map onto axio's `Citation`, because the
+shapes do not line up. The transport therefore forwards them whole as
+`ProviderEvent(provider="google")`, with `kind` set to the metadata's own name. Anything else the
+API sends that axio has no type for (`executableCode`, `codeExecutionResult`, `fileData`) arrives
+the same way under `kind="part"`.
 
 ## Vertex AI
 

@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 keywords = ["llm", "agent", "ai", "openai", "chatgpt", "transport"]
-dependencies = ["axio", "aiohttp>=3.11"]
+dependencies = ["axio", "axio-responses", "aiohttp>=3.11"]
 
 [project.optional-dependencies]
 tui = ["textual>=2.1.0"]

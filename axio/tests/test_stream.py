@@ -6,9 +6,12 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from axio.events import Error, SessionEndEvent, StreamEvent, TextDelta
+from axio.agent import Agent
+from axio.context import MemoryContextStore
+from axio.events import Error, IterationEnd, Refusal, SessionEndEvent, StreamEvent, TextDelta
 from axio.exceptions import StreamError
 from axio.stream import AgentStream
+from axio.testing import StubTransport
 from axio.types import StopReason, Usage
 
 
@@ -85,3 +88,32 @@ class TestMultipleLoops:
         _ = [e async for e in stream]
         second = [e async for e in stream]
         assert second == []
+
+
+class TestRefusalReachesTheResult:
+    async def test_run_returns_the_refusal_text(self) -> None:
+        # A refusal arrives instead of the answer, never beside it. Collected nowhere, the public
+        # run() API returned an empty string for a turn that had text the caller needed to see.
+        transport = StubTransport(
+            [
+                [
+                    Refusal(index=0, text="I cannot help with that"),
+                    IterationEnd(1, StopReason.refusal, Usage(10, 5)),
+                ]
+            ]
+        )
+        agent = Agent(system="", tools=[], transport=transport)
+        assert await agent.run("hi", MemoryContextStore()) == "I cannot help with that"
+
+    async def test_a_refusal_that_arrives_in_fragments_is_joined(self) -> None:
+        transport = StubTransport(
+            [
+                [
+                    Refusal(index=0, text="I cannot "),
+                    Refusal(index=0, text="help with that"),
+                    IterationEnd(1, StopReason.refusal, Usage(10, 5)),
+                ]
+            ]
+        )
+        agent = Agent(system="", tools=[], transport=transport)
+        assert await agent.run("hi", MemoryContextStore()) == "I cannot help with that"

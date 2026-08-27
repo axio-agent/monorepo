@@ -38,6 +38,10 @@ class TestStopReason:
             StopReason.tool_use,
             StopReason.max_tokens,
             StopReason.error,
+            StopReason.refusal,
+            StopReason.pause_turn,
+            StopReason.context_window_exceeded,
+            StopReason.cancelled,
         }
 
     def test_is_str(self) -> None:
@@ -58,3 +62,34 @@ class TestAliases:
     def test_tool_call_id_is_str(self) -> None:
         call_id: str = "call_123"
         assert isinstance(call_id, str)
+
+
+class TestUsageDetail:
+    def test_the_slices_stay_inside_their_totals(self) -> None:
+        # The one rule every transport converts into. A slice that escaped its total would make
+        # uncached_input_tokens negative, and any cost computed from it nonsense.
+        usage = Usage(100, 50, cache_read_tokens=70, cache_write_tokens=10, reasoning_tokens=40)
+        assert usage.cache_read_tokens + usage.cache_write_tokens <= usage.input_tokens
+        assert usage.reasoning_tokens <= usage.output_tokens
+        assert usage.uncached_input_tokens == 20
+        assert usage.answer_tokens == 10
+        assert usage.total_tokens == 150
+
+    def test_addition_carries_every_slice(self) -> None:
+        first = Usage(10, 5, cache_read_tokens=4, cache_write_tokens=2, reasoning_tokens=3)
+        second = Usage(20, 7, cache_read_tokens=1, cache_write_tokens=6, reasoning_tokens=2)
+        assert first + second == Usage(30, 12, cache_read_tokens=5, cache_write_tokens=8, reasoning_tokens=5)
+
+    def test_the_invariant_survives_accumulation(self) -> None:
+        # Componentwise sums preserve a linear inequality, so the derived counts never go negative.
+        total = Usage(0, 0)
+        for _ in range(50):
+            total = total + Usage(10, 5, cache_read_tokens=7, cache_write_tokens=1, reasoning_tokens=4)
+        assert total.uncached_input_tokens == 100
+        assert total.answer_tokens == 50
+
+    def test_a_two_argument_usage_still_means_what_it_did(self) -> None:
+        # Every existing caller builds Usage this way; the slices default to nothing known.
+        usage = Usage(input_tokens=10, output_tokens=5)
+        assert (usage.cache_read_tokens, usage.cache_write_tokens, usage.reasoning_tokens) == (0, 0, 0)
+        assert usage.uncached_input_tokens == 10 and usage.answer_tokens == 5

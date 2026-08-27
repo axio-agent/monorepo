@@ -11,17 +11,29 @@ import os
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import aiohttp
 from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
-from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
+from axio.events import (
+    IterationEnd,
+    IterationStart,
+    ProviderEvent,
+    ReasoningDelta,
+    Refusal,
+    StreamEvent,
+    TextDelta,
+    ToolInputDelta,
+    ToolUseStart,
+)
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.tool import Tool
 from axio.transport import CompletionTransport, EmbeddingTransport
 from axio.types import StopReason, Usage
+from axio_responses import Responses, convert_messages, convert_tools
+from axio_sse import Payload, Wire, payloads
 
 from .realtime import OpenAIRealtimeSession, OpenAIRealtimeTransport  # noqa: F401
 
@@ -29,12 +41,55 @@ logger = logging.getLogger(__name__)
 
 
 _VT = frozenset({Capability.text, Capability.vision, Capability.tool_use})
+_VRT = frozenset({Capability.text, Capability.vision, Capability.reasoning, Capability.tool_use})
 _RT = frozenset({Capability.text, Capability.reasoning, Capability.tool_use})
 _TT = frozenset({Capability.text, Capability.tool_use})
 
 OPENAI_MODELS: ModelRegistry = ModelRegistry(
     {
-        # GPT-5.4 family (latest, March 2026)
+        # GPT-5.6 family (latest, 9 July 2026). Sizes and prices are the published ones. The tiers
+        # differ only in price, except gpt-5.6-cyber, which has a smaller window.
+        ModelSpec(
+            id="gpt-5.6",
+            context_window=1_050_000,
+            max_output_tokens=128_000,
+            capabilities=_VRT,
+            input_cost=4.0,
+            output_cost=20.0,
+        ),
+        ModelSpec(
+            id="gpt-5.6-sol",
+            context_window=1_050_000,
+            max_output_tokens=128_000,
+            capabilities=_VRT,
+            input_cost=4.0,
+            output_cost=20.0,
+        ),
+        ModelSpec(
+            id="gpt-5.6-terra",
+            context_window=1_050_000,
+            max_output_tokens=128_000,
+            capabilities=_VRT,
+            input_cost=2.0,
+            output_cost=12.0,
+        ),
+        ModelSpec(
+            id="gpt-5.6-luna",
+            context_window=1_050_000,
+            max_output_tokens=128_000,
+            capabilities=_VRT,
+            input_cost=0.20,
+            output_cost=1.20,
+        ),
+        ModelSpec(
+            id="gpt-5.6-cyber",
+            context_window=400_000,
+            max_output_tokens=128_000,
+            capabilities=_VRT,
+            input_cost=12.50,
+            output_cost=75.0,
+        ),
+        # GPT-5.4 family (March 2026)
         ModelSpec(
             id="gpt-5.4",
             context_window=1_050_000,
@@ -162,10 +217,14 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
     }
 )
 
+#: Every ``finish_reason`` the API publishes, plus the ones compatible servers add. A reason left
+#: out of this map ends the run as an error rather than passing for a finished answer.
 _STOP_REASON_MAP: dict[str, StopReason] = {
     "stop": StopReason.end_turn,
     "tool_calls": StopReason.tool_use,
+    "function_call": StopReason.tool_use,
     "length": StopReason.max_tokens,
+    "content_filter": StopReason.refusal,
     "error": StopReason.error,
 }
 
@@ -284,6 +343,18 @@ def _convert_messages(messages: list[Message], system: str) -> list[dict[str, An
     return result
 
 
+def _tool_key(tool: Any) -> str:
+    """What makes two tool declarations the same one.
+
+    The two endpoints put a function's name in different places. A hosted tool has no name at all
+    and is identified by its type.
+    """
+    if not isinstance(tool, dict):
+        return repr(tool)
+    named = tool.get("name") or (tool.get("function") or {}).get("name")
+    return f"function:{named}" if named else str(tool.get("type", ""))
+
+
 def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
     """Convert axio Tool list to OpenAI tool dicts."""
     return [
@@ -297,6 +368,84 @@ def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
         }
         for tool in tools
     ]
+
+
+# ── The payload shapes a chat.completion.chunk carries ───────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class PromptDetails(Wire):
+    cached_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionDetails(Wire):
+    reasoning_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkUsage(Wire):
+    """Both slices arrive inside their totals here, so the reader adds nothing to either."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    prompt_tokens_details: PromptDetails = field(default_factory=PromptDetails)
+    completion_tokens_details: CompletionDetails = field(default_factory=CompletionDetails)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFunction(Wire):
+    name: str = ""
+    #: None where the chunk carried no arguments at all, which is not the same as empty ones.
+    arguments: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall(Wire):
+    index: int = 0
+    id: str = ""
+    function: ToolFunction = field(default_factory=ToolFunction)
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkDelta(Wire):
+    #: None where the chunk carried no content key, which the API uses to mean "nothing this time".
+    content: str | None = None
+    refusal: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    #: Vendor extensions, not in the OpenAI schema. OpenRouter and vLLM answer in ``reasoning``,
+    #: DeepSeek in ``reasoning_content``. This transport asks for reasoning by sending
+    #: ``enable_thinking``, so unread it was requested, billed and thrown away.
+    reasoning: str | None = None
+    reasoning_content: str | None = None
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkChoice(Wire):
+    index: int = 0
+    delta: ChunkDelta = field(default_factory=ChunkDelta)
+    finish_reason: str | None = None
+    logprobs: Payload = field(default_factory=Payload)
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkError(Wire):
+    message: str = ""
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionChunk(Wire):
+    """One SSE payload. The stream names no event, so every payload is this one shape."""
+
+    id: str = ""
+    model: str = ""
+    choices: list[ChunkChoice] = field(default_factory=list)
+    usage: ChunkUsage | None = None
+    error: ChunkError | None = None
 
 
 class ThinkTagParser:
@@ -356,6 +505,11 @@ class ThinkTagParser:
 @dataclass(slots=True)
 class OpenAITransport(CompletionTransport, EmbeddingTransport):
     name: str = "OpenAI"
+    #: Which endpoint this server speaks. ``"responses"`` is the one that takes function tools and
+    #: reasoning together. /v1/chat/completions refuses that pair for a model that reasons. OpenAI
+    #: recommends ``"responses"`` for new work. Compatible servers rarely implement it, so the
+    #: subclasses that point at them say ``"chat"``.
+    api: Literal["responses", "chat"] = "responses"
     base_url: str = field(default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
     model: ModelSpec = field(default_factory=lambda: OPENAI_MODELS["gpt-4.1-mini"])
@@ -380,7 +534,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                     pass
         return float(self.retry_base_delay * (2 ** (attempt - 1)))
 
-    def build_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
+    def build_chat_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model.id,
             "messages": _convert_messages(messages, system),
@@ -391,124 +545,172 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
 
         if tools:
             payload["tools"] = _convert_tools(tools)
+            if Capability.reasoning in self.model.capabilities and "reasoning_effort" not in self.extra_params:
+                # This endpoint refuses function tools beside any reasoning effort other than
+                # "none". A reasoning model reasons by default. A request carrying tools therefore
+                # fails with a 400 that names a parameter the caller never sent. The choice is made
+                # plainly here rather than left to the provider, because the cost is real. The
+                # model is paid for as a reasoning model and asked not to reason. /v1/responses
+                # takes both.
+                payload["reasoning_effort"] = "none"
+                logger.warning(
+                    "%s reasons and this request carries tools, which /v1/chat/completions refuses "
+                    "together: reasoning_effort set to 'none'. Use /v1/responses, or pass "
+                    "extra_params={'reasoning_effort': ...} to decide otherwise.",
+                    self.model.id,
+                )
 
-        if self.extra_params:
-            payload.update(self.extra_params)
+        self._apply_extra(payload)
+        return payload
 
+    def _apply_extra(self, payload: dict[str, Any]) -> None:
+        """Fold the caller's own parameters into the request.
+
+        ``tools`` is merged rather than substituted. A caller adding a hosted tool — web search,
+        code interpreter — would otherwise take away the function declarations the agent needs
+        dispatched. The turn would then read as the model simply choosing to call nothing. A
+        declaration whose name matches one already there wins, because the caller said it last.
+        """
+        if not self.extra_params:
+            return
+        extra = dict(self.extra_params)
+        added = extra.pop("tools", None)
+        payload.update(extra)
+        if added is None:
+            return
+        replaced = {_tool_key(tool) for tool in added}
+        kept = [tool for tool in payload.get("tools", []) if _tool_key(tool) not in replaced]
+        payload["tools"] = [*kept, *added]
+
+    def _path(self) -> str:
+        return "responses" if self.api == "responses" else "chat/completions"
+
+    def build_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
+        if self.api == "responses":
+            return self.build_responses_payload(messages, tools, system)
+        return self.build_chat_payload(messages, tools, system)
+
+    def build_responses_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
+        """The request /v1/responses takes.
+
+        The system prompt goes in ``instructions`` rather than in a message. Tool calls and their
+        outputs are items beside the messages rather than blocks inside them. This endpoint takes
+        tools and reasoning together, which is the reason to prefer it. /v1/chat/completions
+        refuses that pair outright for a model that reasons.
+        """
+        instructions, items = convert_messages(messages, system)
+        payload: dict[str, Any] = {
+            "model": self.model.id,
+            "input": items,
+            "stream": True,
+            # Nothing is kept on the provider's side, because axio holds the conversation itself.
+            "store": False,
+            "max_output_tokens": self.model.max_output_tokens,
+        }
+        if instructions:
+            payload["instructions"] = instructions
+        if Capability.reasoning in self.model.capabilities:
+            # Nothing is stored on the provider's side, so unless the reasoning comes back encrypted
+            # there is nothing to send on the next round. The model then starts each round blind.
+            payload["include"] = ["reasoning.encrypted_content"]
+        if tools:
+            payload["tools"] = convert_tools(tools)
+            payload["tool_choice"] = "auto"
+            payload["parallel_tool_calls"] = True
+        self._apply_extra(payload)
         return payload
 
     async def _parse_sse(self, resp: aiohttp.ClientResponse) -> AsyncIterator[StreamEvent]:
+        if self.api == "responses":
+            async for event in self._parse_responses(resp):
+                yield event
+            return
+        async for event in self._parse_chat(resp):
+            yield event
+
+    async def _parse_responses(self, resp: aiohttp.ClientResponse) -> AsyncIterator[StreamEvent]:
+        """Read one Responses stream. The vocabulary lives in axio-responses."""
+        turn = Responses()
+        async for made in turn.over(resp.content.iter_any(), until="[DONE]"):
+            yield made
+        yield turn.finished()
+
+    async def _parse_chat(self, resp: aiohttp.ClientResponse) -> AsyncIterator[StreamEvent]:
         tool_index_to_id: dict[int, str] = {}
         usage = Usage(0, 0)
         finish_reason: str | None = None
         error_message: str | None = None
         think_parser = ThinkTagParser()
 
-        buffer = b""
-        async for chunk in resp.content.iter_any():
-            buffer += chunk
-            while b"\n" in buffer:
-                line_bytes, buffer = buffer.split(b"\n", 1)
-                line = line_bytes.decode("utf-8").strip()
-                if not line or line == "data: [DONE]" or not line.startswith("data: "):
-                    continue
+        # payloads() dispatches what a stream that stopped without its last newline had collected.
+        # The second copy of this loop that flushed the trailing buffer is therefore gone, and with
+        # it the ways the two had drifted apart.
+        served_by: str | None = None
+        async for payload in payloads(resp.content.iter_any(), until="[DONE]"):
+            data = CompletionChunk.read(payload)
 
-                data: dict[str, Any] = json.loads(line[6:])
+            if served_by is None and data.model:
+                # Which model actually answered, which need not be the one asked for. A compatible
+                # gateway routes, falls back, and prices the substitute differently.
+                served_by = data.model
+                yield IterationStart(iteration=0, id=data.id or None, model=served_by)
 
-                if "error" in data and data["error"] is not None:
-                    err = data["error"]
-                    error_message = err.get("message") or str(err) if isinstance(err, dict) else str(err)
+            if data.error is not None:
+                error_message = data.error.message or str(dict(data.error.raw))
 
-                if "usage" in data and data["usage"] is not None:
-                    u: dict[str, int] = data["usage"]
-                    usage = Usage(
-                        input_tokens=u.get("prompt_tokens", 0),
-                        output_tokens=u.get("completion_tokens", 0),
+            if data.usage is not None:
+                # The slices are reported inside their totals here, so nothing is added.
+                usage = Usage(
+                    input_tokens=data.usage.prompt_tokens,
+                    output_tokens=data.usage.completion_tokens,
+                    cache_read_tokens=data.usage.prompt_tokens_details.cached_tokens,
+                    cache_write_tokens=data.usage.prompt_tokens_details.cache_write_tokens,
+                    reasoning_tokens=data.usage.completion_tokens_details.reasoning_tokens,
+                )
+
+            if not data.choices:
+                continue
+
+            choice = data.choices[0]
+            delta = choice.delta
+
+            thinking = delta.reasoning or delta.reasoning_content
+            if thinking:
+                yield ReasoningDelta(index=0, delta=thinking)
+
+            if delta.refusal:
+                # This is not a TextDelta, because as assistant text a refusal reads as an answer.
+                finish_reason = finish_reason or "content_filter"
+                yield Refusal(index=choice.index, text=delta.refusal, raw=dict(delta.raw))
+
+            if delta.content is not None:
+                for kind, text in think_parser.feed(delta.content):
+                    if kind == "reasoning":
+                        yield ReasoningDelta(index=0, delta=text)
+                    else:
+                        yield TextDelta(index=0, delta=text)
+
+            for call in delta.tool_calls:
+                if call.id:
+                    tool_index_to_id[call.index] = call.id
+                    yield ToolUseStart(index=call.index, tool_use_id=call.id, name=call.function.name)
+                if call.function.arguments is not None:
+                    yield ToolInputDelta(
+                        index=call.index,
+                        tool_use_id=tool_index_to_id.get(call.index, ""),
+                        partial_json=call.function.arguments,
                     )
 
-                choices: list[dict[str, Any]] = data.get("choices", [])
-                if not choices:
-                    continue
+            if choice.logprobs:
+                yield ProviderEvent(provider="openai", kind="logprobs", data=dict(choice.logprobs))
 
-                choice = choices[0]
-                delta: dict[str, Any] = choice.get("delta") or {}
+            # n>1 asks for several candidates. Only the first is read. The rest travel whole
+            # rather than being discarded without a word.
+            for other in data.choices[1:]:
+                yield ProviderEvent(provider="openai", kind="choice", data=dict(other.raw), index=other.index)
 
-                # llama.cpp and DeepSeek-style servers hand thoughts over in
-                # their own field instead of wrapping them in <think> tags, so
-                # ThinkTagParser never sees them.
-                if delta.get("reasoning_content"):
-                    yield ReasoningDelta(index=0, delta=delta["reasoning_content"])
-
-                if "content" in delta and delta["content"] is not None:
-                    for kind, text in think_parser.feed(delta["content"]):
-                        if kind == "reasoning":
-                            yield ReasoningDelta(index=0, delta=text)
-                        else:
-                            yield TextDelta(index=0, delta=text)
-
-                if "tool_calls" in delta and delta["tool_calls"] is not None:
-                    for tc in delta["tool_calls"]:
-                        idx: int = tc["index"]
-                        if "id" in tc and tc["id"]:
-                            tool_id: str = tc["id"]
-                            fn = tc.get("function") or {}
-                            tool_name: str = fn.get("name", "")
-                            tool_index_to_id[idx] = tool_id
-                            yield ToolUseStart(index=idx, tool_use_id=tool_id, name=tool_name)
-                        fn = tc.get("function") or {}
-                        if "arguments" in fn:
-                            tid = tool_index_to_id.get(idx, "")
-                            yield ToolInputDelta(index=idx, tool_use_id=tid, partial_json=fn["arguments"])
-
-                if "finish_reason" in choice and choice["finish_reason"] is not None:
-                    finish_reason = choice["finish_reason"]
-
-        # Flush remaining SSE buffer (streams that don't end with \n)
-        if buffer:
-            line = buffer.decode("utf-8").strip()
-            if line and line != "data: [DONE]" and line.startswith("data: "):
-                data = json.loads(line[6:])
-
-                if "usage" in data and data["usage"] is not None:
-                    u = data["usage"]
-                    usage = Usage(
-                        input_tokens=u.get("prompt_tokens", 0),
-                        output_tokens=u.get("completion_tokens", 0),
-                    )
-
-                choices = data.get("choices", [])
-                if choices:
-                    choice = choices[0]
-                    delta = choice.get("delta", {})
-
-                    if delta.get("reasoning_content"):
-                        yield ReasoningDelta(index=0, delta=delta["reasoning_content"])
-
-                    if "content" in delta and delta["content"] is not None:
-                        for kind, text in think_parser.feed(delta["content"]):
-                            if kind == "reasoning":
-                                yield ReasoningDelta(index=0, delta=text)
-                            else:
-                                yield TextDelta(index=0, delta=text)
-
-                    if "tool_calls" in delta:
-                        for tc in delta["tool_calls"]:
-                            idx = tc["index"]
-                            if "id" in tc and tc["id"]:
-                                tool_id = tc["id"]
-                                tool_name = tc["function"]["name"]
-                                tool_index_to_id[idx] = tool_id
-                                yield ToolUseStart(index=idx, tool_use_id=tool_id, name=tool_name)
-                            if "function" in tc and "arguments" in tc["function"]:
-                                tid = tool_index_to_id.get(idx, "")
-                                yield ToolInputDelta(
-                                    index=idx,
-                                    tool_use_id=tid,
-                                    partial_json=tc["function"]["arguments"],
-                                )
-
-                    if "finish_reason" in choice and choice["finish_reason"] is not None:
-                        finish_reason = choice["finish_reason"]
+            if choice.finish_reason is not None:
+                finish_reason = choice.finish_reason
 
         for kind, text in think_parser.flush():
             if kind == "reasoning":
@@ -537,7 +739,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         self, messages: list[Message], tools: list[Tool[Any]], system: str
     ) -> AsyncIterator[StreamEvent]:
         assert self.session is not None, "session is required for streaming"
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        url = f"{self.base_url.rstrip('/')}/{self._path()}"
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         payload = self.build_payload(messages, tools, system)
 
@@ -687,9 +889,9 @@ class ThinkingMixin:
 
     Providers like Nebius (Qwen models) and OpenRouter require an explicit
     ``enable_thinking: true`` request parameter to activate chain-of-thought
-    reasoning.  Declare ``thinking: bool = False`` in the concrete dataclass
-    and mix this in to get automatic payload injection and to_dict/from_dict
-    round-trip support.
+    reasoning.  Declare ``thinking: bool = False`` in the concrete dataclass,
+    then mix this in.  That gives automatic payload injection and
+    to_dict/from_dict round-trip support.
     """
 
     __slots__ = ()

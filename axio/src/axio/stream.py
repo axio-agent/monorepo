@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
-from .events import Error, SessionEndEvent, StreamEvent, TextDelta
+from .events import Error, Refusal, SessionEndEvent, StreamEvent, TextDelta
 from .exceptions import StreamError
 
 
@@ -38,6 +38,11 @@ class AgentStream:
                     raise StreamError(str(event.exception)) from event.exception
                 if isinstance(event, TextDelta):
                     parts.append(event.delta)
+                if isinstance(event, Refusal):
+                    # A refusal arrives instead of the answer, never beside it, so it is what the
+                    # turn said. Collected nowhere, run() returned an empty string for a turn that
+                    # had text the caller needed to see.
+                    parts.append(event.text)
         finally:
             await self.aclose()
         return "".join(parts)

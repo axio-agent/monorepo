@@ -53,10 +53,10 @@ flowchart TD
 
 ## 1. Install a transport
 
-The core `axio` package defines the agent loop and the transport protocol, but
-it does not contain an LLM client. Provider packages distribute concrete
-transport classes. Install the package for the API you use; for the first REPL
-we use OpenAI:
+The core `axio` package defines the agent loop and the transport protocol. It
+does not contain an LLM client. Provider packages distribute concrete
+transport classes. Install the package for the API you use. The first REPL
+uses OpenAI:
 
 ~~~bash
 pip install axio axio-transport-openai
@@ -72,6 +72,14 @@ The available packages and their public transports are:
 | `axio-transport-google` | {class}`~axio_transport_google.GoogleTransport`, {class}`~axio_transport_google.VertexAITransport` | Gemini API key, or Google Application Default Credentials |
 | `axio-transport-codex` | {class}`~axio_transport_codex.CodexTransport` | ChatGPT OAuth access, refresh, expiry, and account tokens |
 
+The four classes on the first row differ in one way that outweighs the rest.
+`OpenAITransport` speaks `/v1/responses`. `NebiusTransport`, `OpenRouterTransport`
+and `OpenAICompatibleTransport` speak `/v1/chat/completions`. The field is
+`api: Literal["responses", "chat"]`. It matters because `/v1/chat/completions` refuses
+function tools beside any reasoning effort other than `"none"`, so a reasoning model with
+tools cannot reason there. `/v1/responses` takes both. See
+{ref}`the troubleshooting entry <tools-and-reasoning-400>`.
+
 For example, installing `axio-transport-anthropic` makes this import available:
 
 ~~~python
@@ -82,7 +90,7 @@ transport = AnthropicTransport()
 
 Providers disagree about authentication, endpoints, message formats, tool
 encoding, streaming protocols, stop reasons, usage, retries, and model
-capabilities. Their constructors therefore have different fields; follow the
+capabilities. Their constructors therefore have different fields. Follow the
 class link in the table for the exact API. Once constructed, every completion
 transport presents the same runtime interface to Agent:
 
@@ -169,7 +177,7 @@ flowchart TD
 
 These handlers operate in the REPL process with its filesystem permissions.
 Use them only in a trusted local workspace. They are not a requirement of the
-harness: `axio-tools-docker` provides drop-in replacements with the same tool
+harness. `axio-tools-docker` provides drop-in replacements with the same tool
 names and field schemas. The switch is only the list passed to Agent:
 
 ~~~python
@@ -189,8 +197,8 @@ This choice determines where generated code executes. Local tools run shell
 commands and file operations in the harness process. Docker tools expose the
 same names and input schemas, but run inside a container. The LLM does not know
 which implementation is registered. With Docker tools, the harness only moves
-structured calls and results between the model and the session container;
-generated commands never execute on the harness host.
+structured calls and results between the model and the session container.
+Generated commands never execute on the harness host.
 
 You can see the generated schema in an ordinary Python REPL:
 
@@ -336,8 +344,8 @@ async def persistent_repl() -> None:
         await connection.close()
 ~~~
 
-`SQLiteContextStore.close()` follows the `ContextStore` lifecycle contract,
-but the shared database connection is closed separately. That distinction
+`SQLiteContextStore.close()` follows the `ContextStore` lifecycle contract.
+The shared database connection is closed separately. That distinction
 becomes important in the cloud harness, where many session stores share one
 connection.
 
@@ -373,7 +381,7 @@ sequenceDiagram
 ~~~
 
 One user turn may contain multiple **iterations**. An iteration is one model
-request. The agent continues after tool calls and ends when the model returns
+request. The agent continues after tool calls. It ends when the model returns
 end_turn.
 
 The first transport stream might be:
@@ -406,7 +414,7 @@ The renderer is the boundary between the agent and terminal:
 
 <!-- name: test_tutorial_render_event -->
 ```python
-from axio import StreamEvent, TextDelta, ToolResult, ToolUseStart
+from axio import Refusal, StreamEvent, TextDelta, ToolResult, ToolUseStart
 from axio.events import Error, SessionEndEvent
 
 
@@ -414,6 +422,8 @@ def render_event(event: StreamEvent) -> None:
     match event:
         case TextDelta(delta=delta):
             print(delta, end="", flush=True)
+        case Refusal(text=text, category=category):
+            print(f"\ndeclined ({category or 'unstated'}): {text}", flush=True)
         case ToolUseStart(name=name):
             print(f"\n→ {name}", flush=True)
         case ToolResult(name=name, is_error=is_error, input=tool_input):
@@ -432,6 +442,16 @@ ToolUseStart says a call began. ToolInputDelta is useful for live argument
 rendering. Completed ToolResult contains parsed input, content, and is_error,
 so logs normally use it.
 
+Refusal is a separate event and not a TextDelta on purpose. As assistant text, a
+decline is indistinguishable from an answer. A renderer that matches only TextDelta
+prints nothing at all for a declined turn. Its text may be empty, because a provider
+that blocks the prompt generates nothing. The category carries the reason.
+
+The renderer matches six event types out of the twenty-six in `StreamEvent`. Everything
+else falls through the match. That is the intended shape. Add a case when you need one:
+`Citation` for attribution, `ProviderEvent` for what a provider ran on its own side,
+`ReasoningDelta` for visible thinking. See {doc}`concepts/events` for the whole set.
+
 Transport failures appear as Error followed by SessionEndEvent with an error
 stop reason. End of iteration without a Python exception does not imply
 success.
@@ -443,6 +463,20 @@ The turn runner owns rendering, failure policy, and stream cleanup:
 ~~~python
 from axio import Agent, ContextStore, StopReason
 from axio.events import Error, SessionEndEvent
+
+#: Stop reasons the runner treats as a finished turn. Everything else is a failure.
+COMPLETED = frozenset(
+    {
+        StopReason.end_turn,
+        # The model declined, or the provider blocked the turn. Terminal, and not a
+        # failure: the same prompt sent again will be declined again. Raised here, the
+        # caller cannot tell a decline from a broken connection and retries something
+        # that can never work.
+        StopReason.refusal,
+        # The caller or the provider stopped the turn. Nothing broke.
+        StopReason.cancelled,
+    }
+)
 
 
 class TurnFailed(RuntimeError):
@@ -473,9 +507,14 @@ async def run_repl_turn(
         raise TurnFailed("agent turn failed") from failure
     if session_end is None:
         raise TurnFailed("stream ended without SessionEndEvent")
-    if session_end.stop_reason is not StopReason.end_turn:
+    if session_end.stop_reason not in COMPLETED:
         raise TurnFailed(f"agent stopped with {session_end.stop_reason}")
 ~~~
+
+`StopReason` publishes eight members. The accepted set decides which of them the harness
+treats as a bug. `max_tokens` and `context_window_exceeded` are left out because both
+mean a truncated answer, which a harness does want to hear about. `pause_turn` never
+reaches here. The agent resumes on it rather than ending the run.
 
 The complete input loop is deliberately boring:
 
@@ -519,10 +558,10 @@ async def repl() -> None:
 asyncio.run(repl())
 ~~~
 
-The `while True` loop is intentional: the REPL session has no turn limit. It
+The `while True` loop is intentional. The REPL session has no turn limit. It
 keeps accepting requests against the same context until the user explicitly
 enters `/exit` or `/quit`, sends EOF, or the process receives a shutdown
-signal. Completing one request returns to the prompt; it does not end the
+signal. Completing one request returns to the prompt. It does not end the
 session.
 
 There are therefore two nested loops:
@@ -545,7 +584,7 @@ This is already a harness:
 ## Optional: add tools from an MCP server
 
 `axio-tools-mcp` discovers a server's tool definitions and returns ordinary
-Axio `Tool` objects. Add them to the same list as local tools; the agent loop
+Axio `Tool` objects. Add them to the same list as local tools. The agent loop
 does not need a special MCP mode:
 
 ~~~bash
@@ -584,13 +623,13 @@ asyncio.run(mcp_repl())
 
 The server name prefixes every discovered tool, so a server tool named
 `read_file` becomes `fs__read_file`. The returned sessions own live stdio or
-HTTP connections and must remain open for as long as their tools are in use.
-`mcp-server-filesystem` is an example MCP server executable and must be
-installed separately; replace `command` and `args` with your server, or use
+HTTP connections. They must remain open for as long as their tools are in
+use. `mcp-server-filesystem` is an example MCP server executable. Install it
+separately. Replace `command` and `args` with your server, or use
 `url="https://.../mcp"` for a remote server.
 
 An MCP tool executes wherever its MCP server runs. Starting a stdio server as
-above runs it beside the harness; it does not automatically move execution into
+above runs it beside the harness. It does not automatically move execution into
 the Docker sandbox. For isolation, run the MCP server inside the session
 container or connect to an isolated remote MCP service.
 
@@ -654,15 +693,15 @@ async def shell(command: str) -> str:
     return await sandbox.exec(command)
 ~~~
 
-Therefore never create Docker tools before entering the sandbox, never cache
-one sandbox's tools globally, and never attach one sandbox tool list to every
+Therefore never create Docker tools before entering the sandbox. Never cache
+one sandbox's tools globally. Never attach one sandbox tool list to every
 user. Two agents may both expose shell while each Tool.context points to a
 different container.
 
 ## 9. Implement the small session registry
 
-The cloud harness needs only a session record, a dictionary, and two locks:
-one lock protects creation in the dictionary; one lock per session prevents
+The cloud harness needs only a session record, a dictionary, and two locks.
+One lock protects creation in the dictionary. One lock per session prevents
 two turns from interleaving in the same context.
 
 <!-- name: test_cloud_harness_definition -->
@@ -770,10 +809,10 @@ That is the complete baseline:
   the configured persistence policy;
 - disconnecting a stream reaches the finally block and closes AgentStream.
 
-The registry lock is held during a cold session start to keep the example
-small and correct. Active turns do not hold it. If container startup throughput
-becomes measurable, replace only _session() with keyed single-flight creation;
-the agent, tools, event stream, and public harness API stay unchanged.
+The registry lock is held during a cold session start to keep the example small
+and correct. Active turns do not hold it. If container startup throughput
+becomes measurable, replace only _session() with keyed single-flight creation.
+The agent, tools, event stream, and public harness API stay unchanged.
 
 This baseline keeps active sessions until service shutdown. Idle eviction,
 distributed session routing, and quotas are deployment policies, not Axio
@@ -823,16 +862,16 @@ def docker_for_session(session_id: str) -> DockerSandbox:
     )
 ~~~
 
-The name and volume solve different recovery cases. If the named container
-still exists, the sandbox reattaches to that exact container. If it was removed,
-the sandbox creates a new container and mounts the existing workspace volume.
-Files under `/workspace` therefore survive either case. Packages installed
-elsewhere in the old container do not survive container replacement; bake them
-into the image or install them into an environment under `/workspace`.
+The name and volume solve different recovery cases. If the named container still
+exists, the sandbox reattaches to that exact container. If it was removed, the
+sandbox creates a new container and mounts the existing workspace volume. Files
+under `/workspace` therefore survive either case. Packages installed elsewhere
+in the old container do not survive container replacement. Bake them into the
+image, or install them into an environment under `/workspace`.
 
 If neither the container nor its volume exists, the conversation still opens
-from SQLite but execution starts with an empty workspace. The harness should
-report that state instead of pretending the filesystem was restored.
+from SQLite. Execution then starts with an empty workspace. The harness
+should report that state instead of pretending the filesystem was restored.
 
 An explicit "delete session" operation must remove all three resources: the
 SQLite conversation, the named container, and the named volume. Normal process
@@ -848,9 +887,9 @@ specific product requirement.
 ## 11. Add persistent conversation contexts
 
 Open one shared database connection at service startup. `SQLiteContextStore`
-already accepts `session_id`; pass the authenticated server-side ID directly
-to it. The factory is only how `CloudHarness` constructs a store on demand --
-it is not another session registry:
+already accepts `session_id`. Pass the authenticated server-side ID directly
+to it. The factory is only how `CloudHarness` constructs a store on demand.
+It is not another session registry:
 
 ~~~python
 from axio import Agent
@@ -885,7 +924,7 @@ harness = CloudHarness(
 )
 ~~~
 
-On restart, constructing another store with the same `session_id` is enough;
+On restart, constructing another store with the same `session_id` is enough.
 `get_history()` reads the existing messages. The same ID selects the context,
 the in-process registry entry, and the Docker container. The prototype and
 transport are shared. `agent.copy()` creates the per-session agent with tools
@@ -958,13 +997,22 @@ assert encoded["stop_reason"] == "end_turn"
 assert encoded["total_usage"] == {
     "input_tokens": 10,
     "output_tokens": 4,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 0,
 }
 ```
+
+`Usage` carries the two totals and, beside them, the slices that bill at a
+different rate: tokens served from cache, tokens written to cache, and tokens
+spent on reasoning. The slices are always inside their totals, whatever the
+provider's own arithmetic was, so `input_tokens` and `output_tokens` mean the
+same thing for every transport.
 
 `dataclasses.asdict()` handles the event and nested dataclasses such as
 `Usage`. The small `json_value()` pass handles the three values JSON cannot
 encode directly: enums, exceptions, and binary media. `Message.to_dict()` is
-an Axio method for persisted conversation messages; stream-event dataclasses
+an Axio method for persisted conversation messages. Stream-event dataclasses
 do not define that method.
 
 The endpoint itself is only an adapter:
@@ -999,7 +1047,7 @@ cancel the request task so stream_turn reaches its finally block.
 
 The harness should not parse provider-specific SSE. The transport should not
 know HTTP users or Docker session IDs. A tool should not decide which
-conversation it belongs to; the per-session Tool.context binding answers that.
+conversation it belongs to. The per-session Tool.context binding answers that.
 
 ## 14. Production checklist
 
@@ -1016,7 +1064,7 @@ conversation it belongs to; the per-session Tool.context binding answers that.
   session. Close the harness before shared resources.
 
 **Cancellation**
-: Propagate disconnects and always close AgentStream. Decide whether long tools
+: Propagate disconnects. Always close AgentStream. Decide whether long tools
   should be cancelled or allowed to finish.
 
 **Limits**

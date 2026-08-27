@@ -22,11 +22,21 @@ assert transport._call_count == 0
 Each entry in the list is one transport call. The stub cycles through them
 in order, repeating the last one if the agent makes more calls than expected.
 
+A sequence is any `list[StreamEvent]`, not only what the factories below build. A refusal, a
+reasoning signature or a `ProviderEvent` can therefore be fed to an agent with no network and no
+API key.
+
+What `StubTransport` does not do: `stream()` ignores `messages`, `tools` and `system` entirely. A
+test that needs to assert on what the agent *sent* — that a stored `ReasoningBlock` was replayed,
+that a tool was withheld — has to record it itself. See "Asserting what the transport was sent"
+below.
+
 ## Factory functions
 
 ### make_text_response
 
-Create an event sequence for a simple text reply:
+Create an event sequence for a simple text reply. `iteration` defaults to `2` here and to `1`
+in `make_tool_use_response`, so the pair reads as one tool turn followed by the answer:
 
 <!-- name: test_make_text_response -->
 ```python
@@ -147,6 +157,126 @@ asyncio.run(test_agent_calls_tool())
 
 No `@pytest.mark.asyncio` decorator needed - the project uses
 `asyncio_mode = "auto"`.
+
+## Asserting what the transport was sent
+
+`StubTransport` throws away its arguments, so record them with a transport of your own. This is how
+a transport author tests reasoning replay, and how anyone tests that the selector withheld a tool:
+
+<!-- name: test_recording_transport -->
+```python
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Any
+from axio import Agent, MemoryContextStore, StopReason, StreamEvent, TextDelta, Tool, Usage
+from axio.blocks import TextBlock
+from axio.events import IterationEnd
+from axio.messages import Message
+
+
+class Recorder:
+    """A transport that keeps every history and tool list it was given."""
+
+    def __init__(self, responses: list[list[StreamEvent]]) -> None:
+        self.responses = responses
+        self.sent: list[list[Message]] = []
+        self.offered: list[list[Tool[Any]]] = []
+
+    def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:
+        self.sent.append(list(messages))
+        self.offered.append(list(tools))
+        return self._replay(self.responses[min(len(self.sent) - 1, len(self.responses) - 1)])
+
+    async def _replay(self, events: list[StreamEvent]) -> AsyncIterator[StreamEvent]:
+        for event in events:
+            yield event
+
+
+async def main() -> None:
+    transport = Recorder([[
+        TextDelta(index=0, delta="hi"),
+        IterationEnd(iteration=0, stop_reason=StopReason.end_turn, usage=Usage(10, 2)),
+    ]])
+    agent = Agent(system="", transport=transport)
+    await agent.run("hello", MemoryContextStore())
+
+    [message] = transport.sent[0]
+    said = "".join(b.text for b in message.content if isinstance(b, TextBlock))
+    # The user turn is already in the history the transport is handed, and the agent prefixes
+    # it with a local timestamp.
+    assert said.endswith("hello")
+
+asyncio.run(main())
+```
+
+## Testing a declined turn
+
+A refusal is a normal terminal outcome, not an exception. Build one directly and assert on both the
+text and the stop reason:
+
+<!-- name: test_declined_turn -->
+```python
+import asyncio
+from axio import Agent, MemoryContextStore, Refusal, StopReason, Usage
+from axio.events import IterationEnd, SessionEndEvent
+from axio.testing import StubTransport
+
+
+async def main() -> None:
+    transport = StubTransport([[
+        Refusal(index=0, text="I can't help with that.", category="policy"),
+        IterationEnd(iteration=0, stop_reason=StopReason.refusal, usage=Usage(12, 5)),
+    ]])
+    agent = Agent(system="", transport=transport)
+
+    # get_final_text() collects refusal text, so this is no longer the empty string.
+    assert await agent.run("...", MemoryContextStore()) == "I can't help with that."
+
+    ends = [
+        e async for e in agent.run_stream("...", MemoryContextStore())
+        if isinstance(e, SessionEndEvent)
+    ]
+    assert ends[0].stop_reason is StopReason.refusal
+
+asyncio.run(main())
+```
+
+## Testing an SSE reader
+
+A `Reader` claims only the events it interprets, and forwards the rest. The test worth writing is
+that every name it claims is one the provider publishes, plus a strict read that fails the day the
+provider sends something new:
+
+<!-- name: test_reader_vocabulary -->
+```python
+import pytest
+from collections.abc import Iterator
+from dataclasses import dataclass
+from axio.events import StreamEvent, TextDelta
+from axio_sse import EVENT_NAME, Decoder, Reader, UnknownEvent, Wire, on
+
+# In a real test this is the provider's published event list, checked into the repository.
+PUBLISHED = frozenset({"text.delta", "ping", "web_search.started"})
+
+
+@dataclass(frozen=True, slots=True)
+class TextChunk(Wire, name="text.delta"):
+    text: str = ""
+
+
+class Reply(Reader[StreamEvent], by=EVENT_NAME):
+    @on(TextChunk)
+    def _text(self, wire: TextChunk) -> Iterator[StreamEvent]:
+        yield TextDelta(index=0, delta=wire.text)
+
+
+# One direction only. The reader is meant to be a subset: it names what it interprets.
+assert Reply.names() <= PUBLISHED
+
+[event] = Decoder().decode(b'event: something.new\ndata: {}\n\n', final=True)
+with pytest.raises(UnknownEvent):
+    Reply().read(event, strict=True)
+```
 
 ## Testing tools in isolation
 

@@ -26,10 +26,12 @@ from axio.agent import Agent
 from axio.context import MemoryContextStore
 from axio.events import (
     AudioOutput,
+    Citation,
     Error,
     ImageOutput,
     IterationEnd,
     ReasoningDelta,
+    Refusal,
     SessionEndEvent,
     TextDelta,
     ToolFieldDelta,
@@ -330,6 +332,7 @@ def setup_history() -> None:
 
 async def run_prompt(agent: Agent, ctx: MemoryContextStore, prompt: str) -> None:
     in_text = False
+    declined = False
     arg_streams: dict[str, ToolArgStream] = {}
     streamed_tool_ids: set[str] = set()
 
@@ -351,6 +354,27 @@ async def run_prompt(agent: Agent, ctx: MemoryContextStore, prompt: str) -> None
                 else:
                     sys.stdout.write(delta)
                 sys.stdout.flush()
+
+            case Refusal(text=text, category=category, blocked_input=blocked):
+                # Rendered, and not as ordinary text: unrendered, a declined turn looked to the
+                # user like the model answering with nothing. The banner goes once per turn: a
+                # refusal arrives in fragments, and one banner each read as several refusals.
+                if in_text:
+                    print()
+                    in_text = False
+                if not declined:
+                    declined = True
+                    what = "prompt blocked" if blocked else "declined"
+                    tail = f" ({category})" if category else ""
+                    sys.stdout.write(f"{RED}[{what}{tail}]{RESET} ")
+                sys.stdout.write(text)
+                sys.stdout.flush()
+
+            case Citation(cited_text=cited, title=title, url=url):
+                if in_text:
+                    print()
+                    in_text = False
+                print(f"{DIM}[cited: {url or title or cited or 'source'}]{RESET}")
 
             case ImageOutput(data=data, media_type=mt):
                 if in_text:

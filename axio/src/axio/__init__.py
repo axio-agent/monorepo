@@ -1,11 +1,17 @@
 """axio - public API."""
 
 from .agent import Agent
-from .blocks import TextBlock, ToolResultBlock, ToolUseBlock
+from .blocks import ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from .context import ContextStore, MemoryContextStore
 from .events import (
     AudioOutputDelta,
+    BlockEnd,
+    Citation,
     IterationEnd,
+    IterationStart,
+    ProviderEvent,
+    ReasoningSignature,
+    Refusal,
     SpeechStarted,
     SpeechStopped,
     StreamEvent,
@@ -38,7 +44,13 @@ __all__ = [
     # events
     "StreamEvent",
     "TextDelta",
+    "Refusal",
+    "Citation",
+    "ReasoningSignature",
+    "BlockEnd",
+    "IterationStart",
     "IterationEnd",
+    "ProviderEvent",
     "ToolUseStart",
     "ToolInputDelta",
     "ToolResult",
@@ -54,6 +66,7 @@ __all__ = [
     # messages & blocks
     "Message",
     "TextBlock",
+    "ReasoningBlock",
     "ToolUseBlock",
     "ToolResultBlock",
     # types & errors

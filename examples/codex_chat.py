@@ -25,7 +25,11 @@ SECTION = "auth"
 
 def load_tokens() -> dict[str, str] | None:
     cfg = configparser.ConfigParser()
-    if not CONFIG_PATH.exists() or not cfg.read(CONFIG_PATH) or not cfg.has_section(SECTION):
+    if (
+        not CONFIG_PATH.exists()
+        or not cfg.read(CONFIG_PATH)
+        or not cfg.has_section(SECTION)
+    ):
         return None
     return dict(cfg[SECTION])
 

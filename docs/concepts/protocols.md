@@ -4,7 +4,7 @@
 
 Axio's extensibility comes from a small set of **runtime-checkable protocols**
 and abstract base classes. Implement any of them to plug your own components
-into the framework - no subclassing the agent, no monkey-patching.
+into the framework. Subclassing the agent and monkey-patching are not needed.
 
 ```{mermaid}
 classDiagram
@@ -25,7 +25,7 @@ classDiagram
     }
     class PermissionGuard {
         <<ABC>>
-        +check(handler) handler*
+        +check(tool, **kwargs) dict*
     }
     Agent --> CompletionTransport
     Agent --> ContextStore
@@ -38,7 +38,7 @@ The transport protocol has a single method:
 
 <!-- name: test_completion_transport_protocol -->
 ```python
-from typing import runtime_checkable, Protocol
+from typing import Any, runtime_checkable, Protocol
 from collections.abc import AsyncIterator
 from axio.messages import Message
 from axio import Tool, StreamEvent
@@ -49,7 +49,7 @@ class CompletionTransport(Protocol):
     def stream(
         self,
         messages: list[Message],
-        tools: list[Tool],
+        tools: list[Tool[Any]],
         system: str,
     ) -> AsyncIterator[StreamEvent]: ...
 ```
@@ -68,16 +68,27 @@ Available transports (each in its own installable package):
 | {class}`~axio_transport_google.VertexAITransport` | `axio-transport-google` | Gemini and Anthropic on Vertex AI |
 | {class}`~axio_transport_codex.CodexTransport` | `axio-transport-codex` | ChatGPT via OAuth |
 
-The core `axio` package does not bundle any transport implementation - install
+`OpenAITransport` speaks two endpoints. Its `api` field picks between them, and
+defaults to `"responses"` (`/v1/responses`). The OpenAI-compatible subclasses -
+`OpenAICompatibleTransport`, `NebiusTransport`, `OpenRouterTransport` - set
+`api="chat"`, because compatible servers rarely implement `/v1/responses`.
+
+The core `axio` package does not bundle any transport implementation. Install
 the appropriate package for your model provider.
+
+A transport is also where two contracts outside the protocol are honoured. Every
+published provider stop reason is mapped onto a `StopReason`. An unmapped one
+becomes `StopReason.error`, which the agent's wildcard turns into a terminated
+run. Provider token counts are converted into the inclusive-totals rule
+described in {doc}`models`.
 
 See {doc}`../guides/writing-transports` for a step-by-step guide.
 
 ## ContextStore
 
 The context store manages conversation history. It is an abstract base class
-with async methods. Only `append` and `get_history` are truly abstract -
-everything else has a working default implementation:
+with async methods. Only `append` and `get_history` are truly abstract.
+Everything else has a working default implementation:
 
 <!-- name: test_context_store_abc -->
 ```python
@@ -111,10 +122,11 @@ assert store.session_id  # auto-generated UUID hex
 
 Built-in implementations:
 
-- `MemoryContextStore` (in `axio`) - in-memory, no persistence; ideal for
-  short-lived agents, tests, and prototypes.
-- `SQLiteContextStore` (in `axio-context-sqlite`) - persistent, SQLite-backed;
-  survives process restarts and supports multiple named sessions per project.
+- `MemoryContextStore` (in `axio`) - in-memory, with no persistence. It
+  suits short-lived agents, tests, and prototypes.
+- `SQLiteContextStore` (in `axio-context-sqlite`) - persistent and
+  SQLite-backed. It survives process restarts and supports multiple named
+  sessions per project.
 
 Implement your own `ContextStore` to back conversations with Redis, a database,
 or any other storage layer.
@@ -150,17 +162,17 @@ The `ConcurrentGuard` subclass additionally wraps `check()` in an
 Axio ships three built-in guards:
 
 `AllowAllGuard`
-: Always returns kwargs unchanged - useful as a no-op default.
+: Always returns kwargs unchanged. Useful as a no-op default.
 
 `DenyAllGuard`
-: Always raises `GuardError("denied")` - useful for locked-down environments.
+: Always raises `GuardError("denied")`. Useful for locked-down environments.
 
 `ConcurrentGuard`
 : Abstract base that serializes (or rate-limits) concurrent `check()` calls
   via a semaphore. Set the `concurrency` class attribute to control
   parallelism (default: 1).
 
-Multiple guards compose sequentially - each guard's output is passed to the
+Multiple guards compose sequentially. Each guard's output is passed to the
 next.
 
 See {doc}`guards` for the full guard system and
@@ -168,10 +180,9 @@ See {doc}`guards` for the full guard system and
 
 ## Additional transport protocols
 
-Beyond `CompletionTransport`, Axio defines protocols for other AI modalities.
-These protocols are **protocol-only** - the core `axio` package defines the
-interfaces, but does not ship with implementations. You can implement them
-yourself or use third-party packages when available.
+Beyond `CompletionTransport`, axio defines protocols for other AI modalities.
+Some are implemented by a shipped transport, and some are interfaces waiting
+for an implementation. Each section below says which.
 
 ### ImageGenTransport
 
@@ -184,43 +195,100 @@ from typing import runtime_checkable, Protocol
 
 @runtime_checkable
 class ImageGenTransport(Protocol):
-    async def generate(
+    async def generate_images(
         self,
         prompt: str,
         *,
-        size: tuple[int, int] | None = None,
+        model: str | None = None,
         n: int = 1,
     ) -> list[bytes]:
-        """Generate images from a text prompt.
+        """Generate ``n`` image samples for a text prompt.
 
         Args:
             prompt: Text description of the image to generate.
-            size: Optional (width, height) tuple in pixels.
-            n: Number of images to generate (default: 1).
+            model: Optional model id, overriding the transport's default.
+            n: Number of samples to generate (default: 1).
 
         Returns:
-            List of raw image bytes (one per generated image).
+            List of raw image bytes - PNG, JPEG or WebP, provider-defined.
         """
         ...
 ```
 
-**Purpose**: Text-to-image generation for tasks like creating diagrams,
-illustrations, or visual content on demand.
+There is no `size` argument. Aspect ratio, resolution and the rest are
+provider-specific knobs that live as extra keyword arguments on the
+implementation rather than in the protocol.
 
 **Usage pattern**:
 
+<!-- name: test_imagegen_transport_protocol -->
 ```python
 async def example():
     from axio.transport import ImageGenTransport
 
     transport: ImageGenTransport = ...  # your implementation
-    images = await transport.generate("a red moon", size=(1024, 1024), n=1)
+    images = await transport.generate_images("a red moon", n=1)
     assert len(images) == 1
     assert isinstance(images[0], bytes)
 ```
 
-**Implementation status**: Protocol-only. No official implementation package
-ships with Axio. Implement your own or use a third-party package.
+**Implementation status**: implemented by
+{class}`~axio_transport_google.GoogleTransport`, which declares
+`CompletionTransport`, `ImageGenTransport` and `VideoGenTransport` together.
+
+### VideoGenTransport
+
+Generates videos from text prompts, optionally seeded with an image.
+
+<!-- name: test_videogen_transport_protocol -->
+```python
+from typing import runtime_checkable, Protocol
+
+
+@runtime_checkable
+class VideoGenTransport(Protocol):
+    async def generate_videos(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        n: int = 1,
+        image: bytes | None = None,
+        duration_seconds: int | None = None,
+        aspect_ratio: str | None = None,
+    ) -> list[bytes]:
+        """Generate ``n`` video samples. Returns raw MP4 / WebM bytes."""
+        ...
+```
+
+**Implementation status**: implemented by
+{class}`~axio_transport_google.GoogleTransport` (Veo).
+
+### AudioGenTransport
+
+Generates non-speech audio - music, sound effects, ambience. Distinct from
+`TTSTransport`, which is text-to-speech.
+
+<!-- name: test_audiogen_transport_protocol -->
+```python
+from typing import runtime_checkable, Protocol
+
+
+@runtime_checkable
+class AudioGenTransport(Protocol):
+    async def generate_audios(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        n: int = 1,
+    ) -> list[bytes]:
+        """Generate ``n`` audio samples. Returns raw MP3 / WAV / OGG bytes."""
+        ...
+```
+
+**Implementation status**: Protocol-only. No package that ships with axio
+implements it.
 
 ### TTSTransport
 
@@ -360,14 +428,81 @@ async def example():
     assert isinstance(embeddings[0][0], float)
 ```
 
-**Implementation status**: Protocol-only. No official implementation package
-ships with Axio. Implement your own or use a third-party package.
+**Implementation status**: implemented by
+{class}`~axio_transport_openai.OpenAITransport`, which declares
+`CompletionTransport` and `EmbeddingTransport` together and calls
+`/v1/embeddings` with its own `model`.
+
+### RealtimeTransport and RealtimeSession
+
+A duplex session - audio, text and tools travelling both ways at once - rather
+than a request that yields a response. `RealtimeTransport.connect()` opens one:
+
+<!-- name: test_realtime_transport_protocol -->
+```python
+from typing import Any, runtime_checkable, Protocol
+from collections.abc import AsyncIterator
+
+from axio import StreamEvent, Tool
+from axio.blocks import ContentBlock
+from axio.types import ToolCallID, ToolName
+
+
+@runtime_checkable
+class RealtimeSession(Protocol):
+    async def send(self, content: ContentBlock | list[ContentBlock]) -> None: ...
+    async def commit(self) -> None: ...
+    async def interrupt(self) -> None: ...
+    async def send_tool_result(
+        self, tool_use_id: ToolCallID, name: ToolName, content: str | list[ContentBlock]
+    ) -> None: ...
+    def events(self) -> AsyncIterator[StreamEvent]: ...
+    async def close(self) -> None: ...
+
+
+@runtime_checkable
+class RealtimeTransport(Protocol):
+    async def connect(
+        self,
+        *,
+        system: str,
+        tools: list[Tool[Any]],
+        voice: str | None = None,
+        input_audio_format: str = "audio/pcm;rate=16000",
+        output_audio_format: str = "audio/pcm;rate=24000",
+    ) -> RealtimeSession: ...
+```
+
+`send_tool_result` takes the tool `name` beside the call id because some
+providers (Gemini Live) require it. OpenAI realtime ignores it. `commit()`
+signals end-of-utterance for manual voice-activity detection. It is a no-op
+under server VAD.
+
+A session yields the realtime events described in {doc}`events` -
+`AudioOutputDelta`, `TranscriptDelta`, `SpeechStarted`, `SpeechStopped`,
+`TurnComplete` - alongside the ordinary content events.
+
+**Implementation status**: implemented by `OpenAIRealtimeTransport`
+(`axio-transport-openai`) and by `GeminiLiveTransport` / `VertexLiveTransport`
+(`axio-transport-google`). See {doc}`../guides/realtime-audio`.
+
+## Placeholder transports
+
+`axio.transport` also ships a `Dummy*` implementation of each protocol -
+`DummyCompletionTransport`, `DummyImageGenTransport`, `DummyVideoGenTransport`,
+`DummyAudioGenTransport`, `DummyTTSTransport`, `DummySTTTransport`,
+`DummyEmbeddingTransport`. Each one raises `RuntimeError` when called.
+
+They exist so an agent prototype can be declared before a provider is chosen.
+Construct the agent with a placeholder. Swap the real transport in with
+`agent.copy(transport=...)` at runtime. A prototype that was never configured
+then fails loudly at the call site, instead of quietly doing nothing.
 
 ---
 
 **Note**: All transport protocols follow the same design principles:
 
-- **Stateless**: All state is passed via arguments; no hidden state between calls.
+- **Stateless**: All state is passed via arguments. No state is hidden between calls.
 - **Type-safe**: Protocols are `@runtime_checkable` for isinstance checks.
 - **Composable**: Multiple transports can be combined or wrapped.
 

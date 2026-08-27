@@ -3,20 +3,40 @@
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any
 
-from axio.blocks import AudioBlock, ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock, VideoBlock
+import aiohttp
+import pytest
+from aiohttp import web
+from axio.blocks import (
+    AudioBlock,
+    ImageBlock,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    VideoBlock,
+)
+from axio.events import Refusal, TextDelta
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry
 from axio.tool import Tool
+from axio.types import StopReason
+from axio_sse import Payload
 
 from axio_transport_google import (
+    _FINISH_REASON_MAP,
     GENAI_MODELS,
+    ContentPart,
+    GenerateContentChunk,
     GoogleTransport,
+    UsageMetadata,
     _build_contents_json,
     _build_tools_json,
     _get_anthropic_models,
     _tool_name_from_id,
+    _usage,
 )
 
 
@@ -430,3 +450,339 @@ def test_generation_config_thinking() -> None:
     config = t._build_generation_config_json()
     assert config["thinkingConfig"]["includeThoughts"] is True
     assert config["thinkingConfig"]["thinkingLevel"] == "HIGH"
+
+
+class TestUsageAccounting:
+    def test_thinking_and_tool_prompt_tokens_are_added_to_their_totals(self) -> None:
+        """Gemini reports thinking beside the candidates, not inside them.
+
+        Read as reported, a thinking model billed its reasoning to nobody. Cached content is the
+        other way round and is already inside promptTokenCount, so adding it would double-count.
+        """
+        usage = _usage(
+            UsageMetadata.read(
+                Payload(
+                    {
+                        "promptTokenCount": 1000,
+                        "cachedContentTokenCount": 800,
+                        "toolUsePromptTokenCount": 30,
+                        "candidatesTokenCount": 60,
+                        "thoughtsTokenCount": 400,
+                        "totalTokenCount": 1490,
+                    }
+                )
+            )
+        )
+        assert usage.input_tokens == 1030, "tool-use prompt tokens stand outside promptTokenCount"
+        assert usage.output_tokens == 460, "thinking was billed and not counted"
+        assert usage.cache_read_tokens == 800
+        assert usage.uncached_input_tokens == 230
+        assert usage.answer_tokens == 60
+        assert usage.total_tokens == 1490, "the provider's own total disagreed with the parts"
+
+    def test_a_plain_response_needs_no_arithmetic(self) -> None:
+        usage = _usage(
+            UsageMetadata.read(Payload({"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15}))
+        )
+        assert (usage.input_tokens, usage.output_tokens) == (10, 5)
+        assert (usage.cache_read_tokens, usage.reasoning_tokens) == (0, 0)
+
+
+class TestNothingIsDropped:
+    def test_every_published_finish_reason_is_mapped(self) -> None:
+        """Two of twenty-one were mapped; the rest were read as a transport error.
+
+        The list is the one the discovery document publishes. A blocked answer is not the transport
+        failing, and a malformed tool call is not a finished turn.
+        """
+        # The union of both surfaces: 21 in the developer discovery document, 17 in Vertex,
+        # which publishes MODEL_ARMOR and lacks five of the others.
+        published = {
+            "FINISH_REASON_UNSPECIFIED",
+            "MODEL_ARMOR",
+            "STOP",
+            "MAX_TOKENS",
+            "SAFETY",
+            "RECITATION",
+            "LANGUAGE",
+            "OTHER",
+            "BLOCKLIST",
+            "PROHIBITED_CONTENT",
+            "SPII",
+            "MALFORMED_FUNCTION_CALL",
+            "IMAGE_SAFETY",
+            "IMAGE_PROHIBITED_CONTENT",
+            "IMAGE_OTHER",
+            "NO_IMAGE",
+            "IMAGE_RECITATION",
+            "UNEXPECTED_TOOL_CALL",
+            "TOO_MANY_TOOL_CALLS",
+            "MISSING_THOUGHT_SIGNATURE",
+            "MALFORMED_RESPONSE",
+            "ESCALATION",
+        }
+        assert set(_FINISH_REASON_MAP) == published
+        assert _FINISH_REASON_MAP["STOP"] == StopReason.end_turn
+        # A blocked turn is not the transport failing.
+        assert _FINISH_REASON_MAP["SAFETY"] == StopReason.refusal
+        assert _FINISH_REASON_MAP["MODEL_ARMOR"] == StopReason.refusal
+        # A call the API could not parse asks to be prompted again; too many of them does not.
+        assert _FINISH_REASON_MAP["MALFORMED_FUNCTION_CALL"] == StopReason.tool_use
+        assert _FINISH_REASON_MAP["TOO_MANY_TOOL_CALLS"] == StopReason.error
+
+    def test_a_part_reads_its_declared_fields(self) -> None:
+        part = ContentPart.read(
+            Payload({"text": "thinking out loud", "thought": True, "thoughtSignature": "sig", "unknown": 1})
+        )
+        assert (part.text, part.thought, part.thoughtSignature) == ("thinking out loud", True, "sig")
+
+    def test_a_thought_flag_that_is_a_number_does_not_pass_for_true(self) -> None:
+        # bool is an int in Python, so a count of 1 must not read as a flag.
+        assert ContentPart.read(Payload({"text": "x", "thought": 1})).thought is False
+
+    def test_the_usage_slices_are_read_from_their_own_names(self) -> None:
+        um = UsageMetadata.read(
+            Payload({"promptTokenCount": 10, "thoughtsTokenCount": 4, "cachedContentTokenCount": 6})
+        )
+        assert (um.promptTokenCount, um.thoughtsTokenCount, um.cachedContentTokenCount) == (10, 4, 6)
+        assert um.totalTokenCount is None
+
+    def test_a_chunk_with_nothing_in_it_reads_as_empty_rather_than_failing(self) -> None:
+        chunk = GenerateContentChunk.read(Payload({"candidates": None, "usageMetadata": "not an object"}))
+        assert chunk.candidates == [] and chunk.usageMetadata == UsageMetadata()
+
+
+class TestPromptFeedbackAndSignatureOrder:
+    def test_safety_ratings_on_a_healthy_answer_are_not_a_blocked_prompt(self) -> None:
+        """The developer API attaches promptFeedback to healthy answers too.
+
+        A Payload is a dict, so gating on its truthiness called every one of them a blocked prompt:
+        the user got the right answer with a red "prompt blocked" printed over it.
+        """
+        chunk = GenerateContentChunk.read(
+            Payload(
+                {
+                    "candidates": [{"content": {"parts": [{"text": "Paris."}]}, "finishReason": "STOP"}],
+                    "promptFeedback": {
+                        "safetyRatings": [{"category": "HARM_CATEGORY_HATE", "probability": "NEGLIGIBLE"}]
+                    },
+                }
+            )
+        )
+        assert chunk.promptFeedback, "the object is present"
+        assert not chunk.promptFeedback.string("blockReason"), "and it is what the transport now gates on"
+
+    def test_a_genuinely_blocked_prompt_still_says_so(self) -> None:
+        chunk = GenerateContentChunk.read(Payload({"promptFeedback": {"blockReason": "SAFETY"}}))
+        assert chunk.promptFeedback.string("blockReason") == "SAFETY"
+
+
+class TestThoughtSignatureIsReplayed:
+    def test_a_stored_thought_goes_back_with_its_signature(self) -> None:
+        """Read from the stored block, not from the map on the transport instance.
+
+        That map is per-transport and empty after a restart, so a resumed session used to send the
+        turn back without the proof and come back MISSING_THOUGHT_SIGNATURE.
+        """
+        messages = [
+            Message(
+                role="assistant",
+                content=[ReasoningBlock(text="weighing it", signature="SIG"), TextBlock(text="Paris.")],
+            )
+        ]
+        parts = _build_contents_json(messages)[0]["parts"]
+        assert parts[0] == {"text": "weighing it", "thought": True, "thoughtSignature": "SIG"}
+        assert parts[1] == {"text": "Paris."}
+
+    def test_a_thought_with_no_signature_still_travels_as_a_thought(self) -> None:
+        # Gemini does not refuse an unsigned thought the way Anthropic refuses an unsigned block.
+        messages = [Message(role="assistant", content=[ReasoningBlock(text="unsigned")])]
+        assert _build_contents_json(messages)[0]["parts"] == [{"text": "unsigned", "thought": True}]
+
+
+class TestEmissionOrder:
+    """Driven through the real stream, because the order is the whole point of the fix."""
+
+    async def test_a_signature_arrives_after_the_reasoning_it_signs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The agent attaches a signature to the block it just built and refuses to extend a signed
+        # one, so emitted first, one part became two blocks: a signature on nothing, and the
+        # reasoning stored unsigned.
+        chunk = {
+            "candidates": [
+                {
+                    "content": {"parts": [{"text": "weighing it", "thought": True, "thoughtSignature": "SIG"}]},
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2, "totalTokenCount": 5},
+        }
+        events = await _stream_one(monkeypatch, chunk)
+        kinds = [type(e).__name__ for e in events]
+        assert kinds.index("ReasoningDelta") < kinds.index("ReasoningSignature")
+
+    async def test_safety_ratings_on_a_healthy_answer_raise_no_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A Payload is a dict, so gating on its truthiness called every healthy answer that carried
+        # safety ratings a blocked prompt, and the user saw "prompt blocked" over the right answer.
+        chunk = {
+            "candidates": [{"content": {"parts": [{"text": "Paris."}]}, "finishReason": "STOP"}],
+            "promptFeedback": {"safetyRatings": [{"category": "HARM_CATEGORY_HATE", "probability": "NEGLIGIBLE"}]},
+        }
+        events = await _stream_one(monkeypatch, chunk)
+        assert not [e for e in events if isinstance(e, Refusal)]
+        assert [e.delta for e in events if isinstance(e, TextDelta)] == ["Paris."]
+
+    async def test_a_blocked_prompt_still_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        events = await _stream_one(monkeypatch, {"promptFeedback": {"blockReason": "SAFETY"}})
+        refusals = [e for e in events if isinstance(e, Refusal)]
+        assert [(r.blocked_input, r.category) for r in refusals] == [(True, "SAFETY")]
+
+
+async def _stream_one(monkeypatch: pytest.MonkeyPatch, chunk: dict[str, Any]) -> list[Any]:
+    """Serve one SSE chunk from a local server and collect what the transport made of it."""
+    body = f"data: {json.dumps(chunk)}\n\n".encode()
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(body)
+        await resp.write_eof()
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/{tail:.*}", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    host, port = site._server.sockets[0].getsockname()[:2]  # type: ignore[union-attr]
+    monkeypatch.setattr("axio_transport_google._DEVELOPER_API_BASE", f"http://{host}:{port}/v1beta")
+    try:
+        async with aiohttp.ClientSession() as session:
+            transport = GoogleTransport(
+                api_key="test-key", model=GENAI_MODELS["gemini-3-flash-preview"], session=session, max_retries=1
+            )
+            return [event async for event in transport.stream([], [], "")]
+    finally:
+        await runner.cleanup()
+
+
+class TestFunctionCallSignatureSurvivesARestart:
+    """A signature that arrived on a functionCall part has to go back on that part.
+
+    Held only in the transport's own map, it was lost the moment a session was restored into a new
+    transport, and Gemini answered MISSING_THOUGHT_SIGNATURE.
+    """
+
+    @staticmethod
+    def _restored() -> list[Message]:
+        # What the agent stores for a part carrying both a call and its signature: ToolUseStart
+        # goes to `pending` and materialises at IterationEnd, so the signature lands first.
+        return [
+            Message(
+                role="assistant",
+                content=[
+                    ReasoningBlock(text="", signature="FCSIG"),
+                    ToolUseBlock(id="call_1", name="get_weather", input={"city": "Paris"}),
+                ],
+            )
+        ]
+
+    def test_the_call_carries_its_signature_with_no_help_from_the_transport(self) -> None:
+        parts = _build_contents_json(self._restored(), thought_signatures=None)[0]["parts"]
+        assert len(parts) == 1, "an empty thought part was sent instead of signing the call"
+        assert parts[0]["functionCall"]["id"] == "call_1"
+        assert parts[0]["thoughtSignature"] == "FCSIG"
+
+    def test_a_live_transport_map_still_works_for_a_call_with_no_stored_signature(self) -> None:
+        messages = [
+            Message(role="assistant", content=[ToolUseBlock(id="call_2", name="t", input={})]),
+        ]
+        parts = _build_contents_json(messages, thought_signatures={"call_2": "LIVE"})[0]["parts"]
+        assert parts[0]["thoughtSignature"] == "LIVE"
+
+    def test_a_signature_with_reasoning_beside_it_stays_on_the_reasoning(self) -> None:
+        messages = [
+            Message(
+                role="assistant",
+                content=[
+                    ReasoningBlock(text="weighing it", signature="THOUGHTSIG"),
+                    ToolUseBlock(id="call_3", name="t", input={}),
+                ],
+            )
+        ]
+        parts = _build_contents_json(messages, thought_signatures=None)[0]["parts"]
+        assert parts[0] == {"text": "weighing it", "thought": True, "thoughtSignature": "THOUGHTSIG"}
+        assert "thoughtSignature" not in parts[1], "the thought's own proof was moved onto the call"
+
+
+class TestParallelCallSignatures:
+    def test_each_parallel_call_gets_its_own_signature(self) -> None:
+        """Several signed calls in one turn: the agent appends every signature before any of the
+        calls, so a single slot gave the first call the last signature and left the rest unsigned."""
+        stored = [
+            Message(
+                role="assistant",
+                content=[
+                    ReasoningBlock(text="", signature="SIG-A"),
+                    ReasoningBlock(text="", signature="SIG-B"),
+                    ToolUseBlock(id="call_a", name="weather", input={}),
+                    ToolUseBlock(id="call_b", name="clock", input={}),
+                ],
+            )
+        ]
+        parts = _build_contents_json(stored, thought_signatures=None)[0]["parts"]
+        assert [(p["functionCall"]["id"], p.get("thoughtSignature")) for p in parts] == [
+            ("call_a", "SIG-A"),
+            ("call_b", "SIG-B"),
+        ]
+
+    def test_a_call_with_no_stored_signature_falls_back_to_the_live_map(self) -> None:
+        stored = [
+            Message(
+                role="assistant",
+                content=[
+                    ReasoningBlock(text="", signature="SIG-A"),
+                    ToolUseBlock(id="call_a", name="weather", input={}),
+                    ToolUseBlock(id="call_b", name="clock", input={}),
+                ],
+            )
+        ]
+        parts = _build_contents_json(stored, thought_signatures={"call_b": "LIVE-B"})[0]["parts"]
+        assert [(p["functionCall"]["id"], p.get("thoughtSignature")) for p in parts] == [
+            ("call_a", "SIG-A"),
+            ("call_b", "LIVE-B"),
+        ]
+
+    def test_signatures_do_not_leak_across_messages(self) -> None:
+        stored = [
+            Message(role="assistant", content=[ReasoningBlock(text="", signature="SIG-A")]),
+            Message(role="assistant", content=[ToolUseBlock(id="call_b", name="clock", input={})]),
+        ]
+        built = _build_contents_json(stored, thought_signatures=None)
+        assert "thoughtSignature" not in built[-1]["parts"][0]
+
+
+def test_each_signed_part_is_indexed_by_its_own_position() -> None:
+    """The index on a signature says which block it proves.
+
+    Fixed at zero, two parallel signed calls looked to the agent like two halves of one proof and
+    were joined into a signature that matches neither.
+    """
+    chunk = GenerateContentChunk.read(
+        Payload(
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "a"}, "thoughtSignature": "SIG-A"},
+                                {"functionCall": {"name": "b"}, "thoughtSignature": "SIG-B"},
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+    )
+    positions = [at for at, part in enumerate(chunk.candidates[0].content.parts) if part.thoughtSignature]
+    assert positions == [0, 1], "the two parts must not share an index"

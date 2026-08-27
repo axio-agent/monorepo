@@ -6,20 +6,31 @@ to conversation history to LLM responses.
 
 ## Content blocks
 
-All content is a block. The core package defines four block types:
+All content is a block. Four of them carry media or text a message is made of:
 
 | Block | Media types |
 |---|---|
 | `TextBlock` | - |
 | `ImageBlock` | `image/jpeg`, `image/png`, `image/gif`, `image/webp` |
-| `AudioBlock` | `audio/x-aac`, `audio/flac`, `audio/mp3`, `audio/m4a`, `audio/mpeg`, `audio/mpga`, `audio/ogg`, `audio/pcm`, `audio/wav`, `audio/webm` |
+| `AudioBlock` | `audio/x-aac`, `audio/flac`, `audio/mp3`, `audio/m4a`, `audio/mpeg`, `audio/mpga`, `audio/mp4`, `audio/ogg`, `audio/pcm`, `audio/wav`, `audio/webm` |
 | `VideoBlock` | `video/mp4`, `video/mpeg`, `video/mov`, `video/avi`, `video/x-flv`, `video/mpg`, `video/webm`, `video/wmv`, `video/3gpp` |
 
 ```python
 from axio.blocks import TextBlock, ImageBlock, AudioBlock, VideoBlock
 ```
 
-All block types are frozen dataclasses with two fields: `media_type` and `data: bytes`.
+The three media blocks are frozen dataclasses with two fields, `media_type` and `data: bytes`.
+`TextBlock` has one, `text`.
+
+Three more `ContentBlock` types complete the set and carry no media: `ToolUseBlock`,
+`ToolResultBlock`, and `ReasoningBlock`. `ReasoningBlock` holds the model's own reasoning,
+stored with the provider's signature so the turn can be replayed unaltered. A stored assistant
+turn can hold any of them, so code that walks `Message.content` must not assume it holds only
+text.
+
+```python
+from axio.blocks import ReasoningBlock, ToolResultBlock, ToolUseBlock
+```
 
 ## Sending images to the agent
 

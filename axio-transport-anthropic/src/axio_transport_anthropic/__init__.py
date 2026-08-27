@@ -8,19 +8,40 @@ import importlib.util
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol, Self, cast
+from typing import Any, Literal, Protocol, Self, cast
 
 import aiohttp
-from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock, VideoBlock
-from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
+from axio.blocks import (
+    ImageBlock,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    VideoBlock,
+)
+from axio.events import (
+    BlockEnd,
+    Citation,
+    IterationEnd,
+    IterationStart,
+    ProviderEvent,
+    ReasoningDelta,
+    ReasoningSignature,
+    Refusal,
+    StreamEvent,
+    TextDelta,
+    ToolInputDelta,
+    ToolUseStart,
+)
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.tool import Tool
 from axio.transport import CompletionTransport
 from axio.types import StopReason, Usage
+from axio_sse import EVENT_NAME, Payload, Reader, Wire, on
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +111,26 @@ ANTHROPIC_MODELS: ModelRegistry = ModelRegistry(
     }
 )
 
+#: Every ``stop_reason`` the API publishes. One left out ends the run as an error rather than
+#: passing for a finished answer.
 _STOP_REASON_MAP: dict[str, StopReason] = {
     "end_turn": StopReason.end_turn,
     "stop_sequence": StopReason.end_turn,
     "tool_use": StopReason.tool_use,
     "max_tokens": StopReason.max_tokens,
+    "refusal": StopReason.refusal,
+    "pause_turn": StopReason.pause_turn,
+    "model_context_window_exceeded": StopReason.context_window_exceeded,
+}
+
+#: What each citation shape counts its span in. The unit is never assumed. Only ``char_location``
+#: counts characters. Offsets from different units must not be compared.
+_CITATION_UNITS: dict[str, Literal["char", "byte", "page", "block", "unknown"]] = {
+    "char_location": "char",
+    "page_location": "page",
+    "content_block_location": "block",
+    "search_result_location": "block",
+    "web_search_result_location": "char",
 }
 
 
@@ -162,6 +198,19 @@ def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
             for b in msg.content:
                 if isinstance(b, TextBlock):
                     content_parts.append({"type": "text", "text": b.text})
+                elif isinstance(b, ReasoningBlock):
+                    # Sent back unaltered, or not at all. With extended thinking on, a turn that
+                    # thought and then called a tool is refused unless its thinking comes back with
+                    # the signature the API issued for it.
+                    if b.redacted:
+                        content_parts.append({"type": "redacted_thinking", "data": b.signature})
+                    elif b.signature:
+                        content_parts.append({"type": "thinking", "thinking": b.text, "signature": b.signature})
+                    else:
+                        # Unsigned, so the API would refuse it. Dropped rather than sent, because
+                        # this is a block the API never signed. Nothing proves the text is the
+                        # model's.
+                        logger.debug("Dropping an unsigned reasoning block from the replayed turn")
                 elif isinstance(b, ToolUseBlock):
                     content_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
 
@@ -224,6 +273,297 @@ def _get_vertex_access_token() -> str:
     if not creds.token:
         raise RuntimeError("Google credentials did not return an access token")
     return creds.token
+
+
+# ── The payload shapes the Messages API sends ────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class OutputDetails(Wire):
+    thinking_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class MessageUsage(Wire):
+    """The cache counts stand OUTSIDE ``input_tokens``, which holds only what follows the last
+    cache breakpoint. The API states the arithmetic itself:
+    ``total = cache_read + cache_creation + input_tokens``."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    output_tokens_details: OutputDetails = field(default_factory=OutputDetails)
+
+
+@dataclass(frozen=True, slots=True)
+class MessageObject(Wire):
+    id: str = ""
+    model: str = ""
+    usage: MessageUsage = field(default_factory=MessageUsage)
+
+
+@dataclass(frozen=True, slots=True)
+class ContentBlock(Wire):
+    type: str = ""
+    id: str = ""
+    name: str = ""
+    #: The opaque reasoning of a ``redacted_thinking`` block, which carries no text at all.
+    data: str = ""
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class CitationObject(Wire):
+    """One attribution. It arrives under five location shapes that name their span differently, so
+    the fields worth reading are declared. The whole object travels in ``raw``."""
+
+    type: str = ""
+    cited_text: str = ""
+    document_title: str | None = None
+    title: str | None = None
+    url: str | None = None
+    document_index: int | None = None
+    start_char_index: int | None = None
+    end_char_index: int | None = None
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class BlockDelta(Wire):
+    """Every delta the format defines, in one shape. The ``type`` says which field was filled."""
+
+    type: str = ""
+    text: str = ""
+    thinking: str = ""
+    signature: str = ""
+    partial_json: str = ""
+    citation: CitationObject = field(default_factory=CitationObject)
+
+
+@dataclass(frozen=True, slots=True)
+class StopDetails(Wire):
+    """Why the model declined. Null for every stop reason other than ``refusal``. Both fields are
+    null where the decline maps to no named category."""
+
+    type: str = ""
+    category: str = ""
+    #: Human-readable, and documented as unstable. Show it, never parse it.
+    explanation: str = ""
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class MessageDeltaObject(Wire):
+    stop_reason: str = ""
+    stop_sequence: str | None = None
+    stop_details: StopDetails = field(default_factory=StopDetails)
+
+
+@dataclass(frozen=True, slots=True)
+class ErrorObject(Wire):
+    type: str = ""
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MessageStart(Wire, name="message_start"):
+    message: MessageObject = field(default_factory=MessageObject)
+
+
+@dataclass(frozen=True, slots=True)
+class BlockStart(Wire, name="content_block_start"):
+    index: int = 0
+    content_block: ContentBlock = field(default_factory=ContentBlock)
+
+
+@dataclass(frozen=True, slots=True)
+class BlockDeltaEvent(Wire, name="content_block_delta"):
+    index: int = 0
+    delta: BlockDelta = field(default_factory=BlockDelta)
+
+
+@dataclass(frozen=True, slots=True)
+class BlockStop(Wire, name="content_block_stop"):
+    index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class MessageDeltaEvent(Wire, name="message_delta"):
+    delta: MessageDeltaObject = field(default_factory=MessageDeltaObject)
+    usage: MessageUsage = field(default_factory=MessageUsage)
+
+
+@dataclass(frozen=True, slots=True)
+class StreamFailure(Wire, name="error"):
+    error: ErrorObject = field(default_factory=ErrorObject)
+
+
+class Messages(Reader[StreamEvent], by=EVENT_NAME):
+    """Every event the Messages API sends, and what each one becomes.
+
+    The format names each event in its own ``event:`` field, so this reader dispatches on that
+    rather than on anything inside the payload. The eight names below are the whole published
+    vocabulary. A ninth would be news, which is what a test reading with ``strict=True`` holds
+    against it.
+
+    One instance reads one turn. The token counts and the index-to-id map are that turn's state.
+    """
+
+    def __init__(self) -> None:
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cache_read = 0
+        self.cache_write = 0
+        self.reasoning_tokens = 0
+        self.stop_reason = ""
+        # content_block_delta carries the index and never the tool id. Only the block's start
+        # carries that, so the pairing has to be kept here.
+        self.tool_use_ids: dict[int, str] = {}
+
+    # ── what reaches the caller ──────────────────────────────────────────────────────────────
+
+    @on(MessageStart)
+    def _started(self, wire: MessageStart) -> Iterator[StreamEvent]:
+        usage = wire.message.usage
+        self.cache_read = usage.cache_read_input_tokens
+        self.cache_write = usage.cache_creation_input_tokens
+        # Added back, because input_tokens counts only what follows the last cache breakpoint. This
+        # transport sets cache_control itself, so without them a cached 100k prompt reported as the
+        # handful of tokens after the breakpoint.
+        self.input_tokens = usage.input_tokens + self.cache_read + self.cache_write
+        yield IterationStart(iteration=0, id=wire.message.id or None, model=wire.message.model or None)
+
+    @on(BlockStart)
+    def _block_started(self, wire: BlockStart) -> Iterator[StreamEvent]:
+        block = wire.content_block
+        if block.type == "tool_use":
+            self.tool_use_ids[wire.index] = block.id
+            yield ToolUseStart(index=wire.index, tool_use_id=block.id, name=block.name)
+        elif block.type == "redacted_thinking":
+            # The reasoning is withheld. Only the proof travels. Dropped, the turn cannot be sent
+            # back, because the API refuses a thinking block whose signature is missing.
+            yield ReasoningSignature(index=wire.index, data=block.data, redacted=True)
+        elif block.type not in ("text", "thinking"):
+            # server_tool_use, web_search_tool_result, code execution, mcp: the API runs these on
+            # its own side, so axio has nothing to dispatch. They are still content of the turn.
+            yield ProviderEvent(provider="anthropic", kind=block.type, data=dict(block.raw), index=wire.index)
+
+    @on(BlockDeltaEvent)
+    def _block_delta(self, wire: BlockDeltaEvent) -> Iterator[StreamEvent]:
+        delta, index = wire.delta, wire.index
+        match delta.type:
+            case "text_delta":
+                yield TextDelta(index=index, delta=delta.text)
+            case "thinking_delta":
+                yield ReasoningDelta(index=index, delta=delta.thinking)
+            case "signature_delta":
+                yield ReasoningSignature(index=index, data=delta.signature)
+            case "input_json_delta":
+                yield ToolInputDelta(
+                    index=index,
+                    tool_use_id=self.tool_use_ids.get(index, ""),
+                    partial_json=delta.partial_json,
+                )
+            case "citations_delta":
+                yield self._citation(index, delta.citation)
+            case other:
+                # The block names the delta, so the delta type is a second vocabulary inside one
+                # event. One policy covers both. A delta nobody reads fails the same strict replay
+                # a new event fails, instead of disappearing.
+                self.unknown(other)
+
+    @on(BlockStop)
+    def _block_stopped(self, wire: BlockStop) -> Iterator[StreamEvent]:
+        """The block is complete, so anything accumulated for it now parses."""
+        yield BlockEnd(index=wire.index)
+
+    # ── what only moves this turn's state ────────────────────────────────────────────────────
+
+    @on(MessageDeltaEvent)
+    def _message_delta(self, wire: MessageDeltaEvent) -> Iterator[StreamEvent]:
+        # An empty reason means "none yet". It must not erase the reason an earlier delta gave.
+        self.stop_reason = wire.delta.stop_reason or self.stop_reason
+
+        # This usage is cumulative, in every field and not only the output ones. Reading back the
+        # output alone left the input frozen at what message_start had said. On a turn that ran a
+        # server-side tool that figure is a fraction of what was billed.
+        if wire.usage.input_tokens:
+            self.cache_read = wire.usage.cache_read_input_tokens or self.cache_read
+            self.cache_write = wire.usage.cache_creation_input_tokens or self.cache_write
+            self.input_tokens = wire.usage.input_tokens + self.cache_read + self.cache_write
+        # Thinking is already inside output_tokens. The API documents "output_tokens -
+        # thinking_tokens" as the non-reasoning output.
+        self.output_tokens = wire.usage.output_tokens or self.output_tokens
+        self.reasoning_tokens = wire.usage.output_tokens_details.thinking_tokens or self.reasoning_tokens
+
+        if wire.delta.stop_reason == "refusal":
+            # A decline arrives as a successful response with no content at all, so with nothing
+            # emitted here the turn reached the caller as an empty answer.
+            details = wire.delta.stop_details
+            yield Refusal(
+                index=0,
+                text=details.explanation,
+                category=details.category or None,
+                raw=dict(wire.delta.stop_details.raw),
+            )
+
+    @on("message_stop", "ping")
+    def _quiet(self, payload: Payload) -> None:
+        """Arrive every turn and carry nothing. Named so strict fires only on something new."""
+
+    def unmatched(self, name: str, payload: Payload) -> Iterator[StreamEvent]:
+        """Anything this reader does not interpret, passed on rather than dropped.
+
+        The eight names above are the whole published vocabulary today, so nothing reaches here
+        yet. When the API adds a ninth it arrives under its own name instead of disappearing.
+        """
+        yield ProviderEvent(provider="anthropic", kind=name, data=dict(payload))
+
+    # ── what ends the turn ───────────────────────────────────────────────────────────────────
+
+    @on(StreamFailure)
+    def _failed(self, wire: StreamFailure) -> None:
+        raise StreamError(f"Anthropic error: {wire.error.type or 'unknown'}: {wire.error.message}")
+
+    # ── the turn, once it is over ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _citation(index: int, citation: CitationObject) -> Citation:
+        """One attribution, whichever of the five location shapes it arrived in."""
+        return Citation(
+            index=index,
+            cited_text=citation.cited_text,
+            title=citation.title or citation.document_title,
+            url=citation.url,
+            source_id=str(citation.document_index) if citation.document_index is not None else None,
+            start=citation.start_char_index,
+            end=citation.end_char_index,
+            # Only the char_location shape counts characters. The others count pages or blocks and
+            # say so in their own type, so the unit is read from there rather than assumed.
+            unit=_CITATION_UNITS.get(citation.type, "unknown"),
+            raw=dict(citation.raw),
+        )
+
+    def finished(self) -> IterationEnd:
+        """What the turn added up to. The API sends no event that means this."""
+        stop = _STOP_REASON_MAP.get(self.stop_reason, StopReason.error)
+        if self.stop_reason and self.stop_reason not in _STOP_REASON_MAP:
+            logger.warning("Unknown stop_reason %r, mapped to %s", self.stop_reason, stop)
+        usage = Usage(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read,
+            cache_write_tokens=self.cache_write,
+            reasoning_tokens=self.reasoning_tokens,
+        )
+        logger.info(
+            "Stream complete: stop_reason=%s, input_tokens=%d, output_tokens=%d",
+            stop,
+            self.input_tokens,
+            self.output_tokens,
+        )
+        return IterationEnd(iteration=0, stop_reason=stop, usage=usage)
 
 
 @dataclass(slots=True)
@@ -352,77 +692,11 @@ class AnthropicTransport(CompletionTransport):
         return payload
 
     async def _parse_sse(self, resp: aiohttp.ClientResponse) -> AsyncIterator[StreamEvent]:
-        input_tokens = 0
-        output_tokens = 0
-        stop_reason: str | None = None
-        index_to_tool_use_id: dict[int, str] = {}
-
-        buffer = b""
-        event_type: str = ""
-
-        async for chunk in resp.content.iter_any():
-            buffer += chunk
-            while b"\n" in buffer:
-                line_bytes, buffer = buffer.split(b"\n", 1)
-                line = line_bytes.decode("utf-8").strip()
-                if not line:
-                    continue
-                if line.startswith("event: "):
-                    event_type = line[7:]
-                    continue
-                if not line.startswith("data: "):
-                    continue
-
-                data: dict[str, Any] = json.loads(line[6:])
-
-                if event_type == "message_start":
-                    usage = data.get("message", {}).get("usage", {})
-                    input_tokens = usage.get("input_tokens", 0)
-
-                elif event_type == "content_block_start":
-                    block = data.get("content_block", {})
-                    if block.get("type") == "tool_use":
-                        idx: int = data.get("index", 0)
-                        tool_use_id: str = block.get("id", "")
-                        tool_name: str = block.get("name", "")
-                        index_to_tool_use_id[idx] = tool_use_id
-                        yield ToolUseStart(index=idx, tool_use_id=tool_use_id, name=tool_name)
-
-                elif event_type == "content_block_delta":
-                    idx = data.get("index", 0)
-                    delta: dict[str, Any] = data.get("delta", {})
-                    delta_type: str = delta.get("type", "")
-
-                    if delta_type == "text_delta":
-                        yield TextDelta(index=idx, delta=delta.get("text", ""))
-                    elif delta_type == "thinking_delta":
-                        yield ReasoningDelta(index=idx, delta=delta.get("thinking", ""))
-                    elif delta_type == "input_json_delta":
-                        tid = index_to_tool_use_id.get(idx, "")
-                        yield ToolInputDelta(index=idx, tool_use_id=tid, partial_json=delta.get("partial_json", ""))
-
-                elif event_type == "message_delta":
-                    delta = data.get("delta", {})
-                    if "stop_reason" in delta and delta["stop_reason"] is not None:
-                        stop_reason = delta["stop_reason"]
-                    usage = data.get("usage", {})
-                    output_tokens = usage.get("output_tokens", output_tokens)
-
-                elif event_type == "error":
-                    err = data.get("error", {})
-                    raise StreamError(f"Anthropic error: {err.get('type', 'unknown')}: {err.get('message', '')}")
-
-        usage_obj = Usage(input_tokens=input_tokens, output_tokens=output_tokens)
-        stop = _STOP_REASON_MAP.get(stop_reason or "", StopReason.error)
-        if stop_reason and stop_reason not in _STOP_REASON_MAP:
-            logger.warning("Unknown stop_reason %r, mapped to %s", stop_reason, stop)
-        logger.info(
-            "Stream complete: stop_reason=%s, input_tokens=%d, output_tokens=%d",
-            stop,
-            input_tokens,
-            output_tokens,
-        )
-        yield IterationEnd(iteration=0, stop_reason=stop, usage=usage_obj)
+        """Read one Messages stream into axio StreamEvents."""
+        turn = Messages()
+        async for made in turn.over(resp.content.iter_any()):
+            yield made
+        yield turn.finished()
 
     def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:
         return self._do_stream(messages, tools, system)

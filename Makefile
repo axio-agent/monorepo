@@ -1,6 +1,7 @@
-PACKAGES := axio axio-audio axio-context-sqlite axio-repl axio-tools-docker \
-            axio-tools-local axio-tools-mcp axio-transport-anthropic \
-            axio-transport-codex axio-transport-google axio-transport-openai \
+PACKAGES := axio axio-audio axio-context-sqlite axio-repl axio-responses axio-sse \
+            axio-tools-docker axio-tools-local axio-tools-mcp \
+            axio-transport-anthropic axio-transport-codex \
+            axio-transport-google axio-transport-openai \
             axio-tui axio-tui-guards examples/gas_town examples/agent_swarm \
             examples/realtime_smoke examples/realtime_chat
 

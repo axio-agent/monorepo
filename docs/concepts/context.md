@@ -15,8 +15,22 @@ classDiagram
         +text: str
     }
     class ImageBlock {
-        +media_type: str
+        +media_type: ImageMediaType
         +data: bytes
+    }
+    class AudioBlock {
+        +media_type: AudioMediaType
+        +data: bytes
+    }
+    class VideoBlock {
+        +media_type: VideoMediaType
+        +data: bytes
+    }
+    class ReasoningBlock {
+        +text: str
+        +signature: str
+        +redacted: bool
+        +id: str
     }
     class ToolUseBlock {
         +id: ToolCallID
@@ -30,11 +44,14 @@ classDiagram
     }
     ContentBlock <|-- TextBlock
     ContentBlock <|-- ImageBlock
+    ContentBlock <|-- AudioBlock
+    ContentBlock <|-- VideoBlock
+    ContentBlock <|-- ReasoningBlock
     ContentBlock <|-- ToolUseBlock
     ContentBlock <|-- ToolResultBlock
 ```
 
-All content blocks are frozen dataclasses:
+All seven content blocks are frozen dataclasses:
 
 `TextBlock(text)`
 : Plain text content.
@@ -42,12 +59,30 @@ All content blocks are frozen dataclasses:
 `ImageBlock(media_type, data)`
 : Binary image data with MIME type (jpeg, png, gif, webp).
 
+`AudioBlock(media_type, data)`
+: Binary audio data (wav, mp3, flac, ogg, pcm, and the rest of
+  `AudioMediaType`).
+
+`VideoBlock(media_type, data)`
+: Binary video data (mp4, webm, mov, and the rest of `VideoMediaType`).
+
+`ReasoningBlock(text="", signature="", redacted=False, id="")`
+: The model's own reasoning, stored so the turn can be replayed unaltered.
+  `signature` is the provider's proof that the block is its own. Dropping it,
+  or decoding and re-encoding it, makes the *next* request fail. Anthropic
+  refuses a returned thinking block whose signature is missing or changed.
+  Google reports `MISSING_THOUGHT_SIGNATURE` for the same failure.
+  `redacted=True` marks a block whose reasoning the provider withheld. The
+  signature still has to travel, and `text` is empty. The agent writes these
+  into stored assistant turns, so any store must round-trip them intact.
+
 `ToolUseBlock(id, name, input)`
 : A tool call issued by the model, with its ID, tool name, and input dict.
 
-`ToolResultBlock(tool_use_id, content, is_error)`
-: The result of a tool call. `content` can be a string or a list of
-  `TextBlock` / `ImageBlock` values.
+`ToolResultBlock(tool_use_id, content, is_error=False)`
+: The result of a tool call. `content` is a string or a list of `TextBlock` /
+  `ImageBlock` / `AudioBlock` / `VideoBlock` values. A tool may return media,
+  not only text.
 
 ### Serialization
 
@@ -62,6 +97,29 @@ assert d == {"type": "text", "text": "hello"}
 block = from_dict(d)
 assert block == TextBlock(text="hello")
 ```
+
+`to_dict` is a `singledispatch` with one registration per block type. Binary
+payloads are base64-encoded. `ToolResultBlock` recurses into its content. A
+`ReasoningBlock` carries its proof through the round trip:
+
+<!-- name: test_serialization -->
+```python
+from axio import ReasoningBlock
+
+d = to_dict(ReasoningBlock(text="step one", signature="sig-abc", id="rs_1"))
+assert d == {
+    "type": "reasoning",
+    "text": "step one",
+    "signature": "sig-abc",
+    "redacted": False,
+    "id": "rs_1",
+}
+assert from_dict(d) == ReasoningBlock(text="step one", signature="sig-abc", id="rs_1")
+```
+
+A store that persists messages by hand rather than through `to_dict` must keep
+`signature` and `id` byte for byte. They are opaque. A provider that gets back
+a signature it did not issue refuses the request.
 
 ## Message
 
@@ -86,7 +144,7 @@ supported for representing system-level messages in history.
 
 ## ContextStore
 
-`ContextStore` is an abstract base class - implement it to store conversations
+`ContextStore` is an abstract base class. Implement it to store conversations
 anywhere. Only two methods are truly abstract and must be overridden:
 
 <!-- name: test_context_store_abc -->
@@ -122,7 +180,7 @@ assert store.session_id  # auto-generated UUID hex
 
 #### MemoryContextStore
 
-In-memory list of messages. No persistence - use it for short-lived agents,
+In-memory list of messages. No persistence. Use it for short-lived agents,
 tests, and prototypes. `fork()` returns an independent deep copy.
 
 <!-- name: test_memory_context_store -->
@@ -160,9 +218,9 @@ when the context window fills up.
 
 #### SQLiteContextStore
 
-Persistent storage backed by SQLite. Survives process restarts and supports
-multiple named sessions within a project. Install the `axio-context-sqlite`
-package to use it.
+Persistent storage backed by SQLite. It survives process restarts. It
+supports multiple named sessions within a project. Install the
+`axio-context-sqlite` package to use it.
 
 <!-- name: test_sqlite_context_store -->
 ```python
@@ -296,7 +354,7 @@ assert info.message_count == 10
 
 `created_at`
 : Creation timestamp as a string. `MemoryContextStore` returns an empty
-  string; `SQLiteContextStore` returns an ISO-format datetime.
+  string. `SQLiteContextStore` returns an ISO-format datetime.
 
 `input_tokens`
 : Cumulative input token count for the session. Defaults to 0.
@@ -346,8 +404,8 @@ async def main():
 asyncio.run(main())
 ```
 
-The threshold is read from `transport.model.context_window` via duck typing;
-falls back to 128 000 if the transport has no `model` attribute. Pass
+The threshold is read from `transport.model.context_window` via duck typing.
+It falls back to 128 000 if the transport has no `model` attribute. Pass
 `max_tokens` explicitly to override:
 
 <!-- name: test_auto_compact_explicit_max_tokens -->
@@ -369,7 +427,10 @@ threshold and `keep_recent` settings.
 
 1. The agent loop calls `context.add_context_tokens(usage.input_tokens, ...)`
    after each `IterationEnd`. `input_tokens` here is the actual context size
-   sent to the model - not a cumulative sum.
+   sent to the model - not a cumulative sum. It counts cached tokens too,
+   because every transport normalises it to an inclusive total (see
+   {doc}`models`). Read as the provider reports it, a cache-heavy Anthropic
+   turn would look tiny. Compaction would then never fire.
 2. If `input_tokens > max_tokens`, `_do_compact()` fires.
 3. `_do_compact()` forks the inner store first, giving `compact_context` a
    stable snapshot while the live store remains writable.
@@ -398,7 +459,7 @@ async def compact_context(
 ```
 
 Returns the compacted message list, or `None` if the history is too short to
-split (`len(history) <= keep_recent`). Does not modify the store - the caller
+split (`len(history) <= keep_recent`). Does not modify the store. The caller
 applies the result.
 
 <!--

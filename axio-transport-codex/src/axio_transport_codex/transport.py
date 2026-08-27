@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import platform
@@ -13,14 +12,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
-from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
-from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
+from axio.events import (
+    StreamEvent,
+)
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.tool import Tool
 from axio.transport import CompletionTransport
-from axio.types import StopReason, Usage
+from axio_responses import STOP_REASONS, Responses, convert_messages, convert_tools, strip_title
 
 from .oauth import CLIENT_ID, ORIGINATOR, TOKEN_URL, _decode_jwt_payload
 
@@ -46,116 +46,16 @@ CODEX_MODELS: ModelRegistry = ModelRegistry(
     }
 )
 
-_STOP_REASON_MAP: dict[str, StopReason] = {
-    "completed": StopReason.end_turn,
-    "end_turn": StopReason.end_turn,
-    "stop": StopReason.end_turn,
-    "max_output_tokens": StopReason.max_tokens,
-    "length": StopReason.max_tokens,
-}
-
-
-def _strip_title(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove pydantic 'title' keys from a JSON schema recursively."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "title":
-            continue
-        if isinstance(value, dict):
-            out[key] = _strip_title(value)
-        elif isinstance(value, list):
-            out[key] = [_strip_title(item) if isinstance(item, dict) else item for item in value]
-        else:
-            out[key] = value
-    return out
-
-
-def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
-    """Convert axio Tool list to Responses API function tool dicts."""
-    return [
-        {
-            "type": "function",
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": _strip_title(tool.input_schema),
-        }
-        for tool in tools
-    ]
-
-
-def _convert_messages(messages: list[Message], system: str) -> tuple[str, list[dict[str, Any]]]:
-    """Convert axio Message list to Responses API input array.
-
-    Returns (instructions, input_items).
-    """
-    items: list[dict[str, Any]] = []
-
-    for msg in messages:
-        if msg.role == "user":
-            # Check if this is purely tool results
-            tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-            if tool_results and len(tool_results) == len(msg.content):
-                for tr in tool_results:
-                    content = tr.content if isinstance(tr.content, str) else json.dumps(tr.content)
-                    items.append(
-                        {
-                            "type": "function_call_output",
-                            "call_id": tr.tool_use_id,
-                            "output": content,
-                        }
-                    )
-            else:
-                content_parts: list[dict[str, Any]] = []
-                for b in msg.content:
-                    if isinstance(b, TextBlock):
-                        content_parts.append({"type": "input_text", "text": b.text})
-                    elif isinstance(b, ImageBlock):
-                        encoded = base64.b64encode(b.data).decode("ascii")
-                        data_uri = f"data:{b.media_type};base64,{encoded}"
-                        content_parts.append({"type": "input_image", "image_url": data_uri})
-                if content_parts:
-                    items.append({"role": "user", "content": content_parts})
-
-        elif msg.role == "assistant":
-            # Collect text and tool uses
-            content_parts_a: list[dict[str, Any]] = []
-            for b in msg.content:
-                if isinstance(b, TextBlock):
-                    content_parts_a.append({"type": "output_text", "text": b.text})
-                elif isinstance(b, ToolUseBlock):
-                    items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": b.id,
-                            "name": b.name,
-                            "arguments": json.dumps(b.input),
-                            "status": "completed",
-                        }
-                    )
-            if content_parts_a:
-                items.insert(
-                    len(items) - sum(1 for b in msg.content if isinstance(b, ToolUseBlock)),
-                    {
-                        "role": "assistant",
-                        "content": content_parts_a,
-                    },
-                )
-
-    # Synthesize placeholder outputs for orphan function_calls (no corresponding output)
-    output_ids = {i["call_id"] for i in items if i.get("type") == "function_call_output"}
-    for item in list(items):
-        if item.get("type") == "function_call" and item.get("call_id") not in output_ids:
-            call_id = item.get("call_id", "")
-            logger.warning("Synthesizing placeholder output for orphan function_call: call_id=%s", call_id)
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": "[Tool was not executed - context was interrupted or compacted]",
-                }
-            )
-
-    return system, items
+#: Every ``status`` the Responses API publishes, and every ``incomplete_details.reason``, mapped to
+#: the reason axio ends a run on. A status left out of this map ends the run as an error rather than
+#: passing for a finished answer.
+#: The Responses vocabulary lives in axio-responses. The same request items and the same 58
+#: stream events serve the public /v1/responses endpoint and this ChatGPT backend, so both
+#: transports read one implementation. Re-exported under the names this module has always used.
+_STOP_REASON_MAP = STOP_REASONS
+_strip_title = strip_title
+_convert_tools = convert_tools
+_convert_messages = convert_messages
 
 
 @dataclass(slots=True)
@@ -267,114 +167,10 @@ class CodexTransport(CompletionTransport):
 
     async def _parse_sse(self, resp: aiohttp.ClientResponse) -> AsyncIterator[StreamEvent]:
         """Parse Responses API SSE events into axio StreamEvents."""
-        usage = Usage(0, 0)
-        stop_reason: StopReason | None = None
-        # Map item_id → call_id so ToolInputDelta uses the same ID as ToolUseStart
-        item_to_call: dict[str, str] = {}
-
-        buffer = b""
-        async for chunk in resp.content.iter_any():
-            buffer += chunk
-            while b"\n" in buffer:
-                # Yield to event loop between SSE lines to keep the TUI responsive.
-                # Codex sends many event types that don't produce StreamEvents,
-                # so without this the inner loop can starve the event loop.
-                await asyncio.sleep(0)
-                line_bytes, buffer = buffer.split(b"\n", 1)
-                line = line_bytes.decode("utf-8").strip()
-                if not line or not line.startswith("data: "):
-                    continue
-
-                raw = line[6:]
-                if raw == "[DONE]":
-                    continue
-
-                try:
-                    data: dict[str, Any] = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.warning("Failed to parse SSE JSON: %s", raw[:200])
-                    continue
-
-                event_type = data.get("type", "")
-
-                if event_type == "response.output_text.delta":
-                    yield TextDelta(index=0, delta=data.get("delta", ""))
-
-                elif event_type == "response.reasoning_summary_text.delta":
-                    yield ReasoningDelta(index=0, delta=data.get("delta", ""))
-
-                elif event_type == "response.output_item.added":
-                    item = data.get("item", {})
-                    item_type = item.get("type", "")
-                    if item_type == "function_call":
-                        call_id = item.get("call_id", "")
-                        item_id = item.get("id", "")
-                        name = item.get("name", "")
-                        if item_id:
-                            item_to_call[item_id] = call_id
-                        logger.info("Tool call started: %s (call_id=%s, item_id=%s)", name, call_id, item_id)
-                        yield ToolUseStart(
-                            index=data.get("output_index", 0),
-                            tool_use_id=call_id,
-                            name=name,
-                        )
-                    else:
-                        logger.info("Output item added: type=%s", item_type)
-
-                elif event_type == "response.function_call_arguments.delta":
-                    item_id = data.get("item_id", "")
-                    resolved_id = item_to_call.get(item_id, item_id)
-                    delta = data.get("delta", "")
-                    logger.debug("Tool args delta: call_id=%s, +%d chars", resolved_id, len(delta))
-                    yield ToolInputDelta(
-                        index=data.get("output_index", 0),
-                        tool_use_id=resolved_id,
-                        partial_json=delta,
-                    )
-
-                elif event_type == "response.function_call_arguments.done":
-                    item_id = data.get("item_id", "")
-                    resolved_id = item_to_call.get(item_id, item_id)
-                    args = data.get("arguments", "")
-                    logger.info("Tool args complete: call_id=%s, args=%s", resolved_id, args[:200])
-
-                elif event_type == "response.completed":
-                    response = data.get("response", {})
-                    resp_usage = response.get("usage", {})
-                    usage = Usage(
-                        input_tokens=resp_usage.get("input_tokens", 0),
-                        output_tokens=resp_usage.get("output_tokens", 0),
-                    )
-                    status = response.get("status", "completed")
-                    stop_reason = _STOP_REASON_MAP.get(status, StopReason.end_turn)
-                    output = response.get("output", [])
-                    if any(item.get("type") == "function_call" for item in output):
-                        stop_reason = StopReason.tool_use
-                    logger.info(
-                        "Response completed: status=%s, stop=%s, in=%d, out=%d",
-                        status,
-                        stop_reason,
-                        usage.input_tokens,
-                        usage.output_tokens,
-                    )
-
-                elif event_type == "response.failed":
-                    response = data.get("response", {})
-                    err = response.get("error", {})
-                    msg = err.get("message", "Unknown error")
-                    logger.error("Response failed: %s", msg)
-                    raise StreamError(f"Codex API error: {msg}")
-
-        if stop_reason is None:
-            stop_reason = StopReason.end_turn
-
-        logger.debug(
-            "Stream complete: stop_reason=%s, input_tokens=%d, output_tokens=%d",
-            stop_reason,
-            usage.input_tokens,
-            usage.output_tokens,
-        )
-        yield IterationEnd(iteration=0, stop_reason=stop_reason, usage=usage)
+        turn = Responses()
+        async for made in turn.over(resp.content.iter_any(), until="[DONE]"):
+            yield made
+        yield turn.finished()
 
     def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:
         return self._do_stream(messages, tools, system)

@@ -5,6 +5,7 @@ import pytest
 from axio.blocks import (
     ContentBlock,
     ImageBlock,
+    ReasoningBlock,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
@@ -202,3 +203,28 @@ class TestMessageSerialization:
     def test_empty_content(self) -> None:
         msg = Message(role="user")
         assert Message.from_dict(msg.to_dict()) == msg
+
+
+class TestReasoningBlock:
+    def test_a_reasoning_block_survives_the_round_trip(self) -> None:
+        # from_dict raises on a type it does not know, so a block that serialises without a reader
+        # makes every saved session fail to load.
+        block = ReasoningBlock(text="weighing the options", signature="ErUBCkYIBRgCIkD...")
+        assert from_dict(to_dict(block)) == block
+
+    def test_a_redacted_block_keeps_its_signature(self) -> None:
+        # The reasoning is withheld but the proof still has to travel, or the replay is refused.
+        block = ReasoningBlock(text="", signature="EroBCkYIBRgC...", redacted=True)
+        restored = from_dict(to_dict(block))
+        assert restored == block and restored.signature == block.signature
+
+    def test_a_session_saved_before_these_fields_existed_still_loads(self) -> None:
+        assert from_dict({"type": "reasoning", "text": "old"}) == ReasoningBlock(text="old")
+
+
+def test_a_reasoning_block_keeps_the_id_a_provider_names_it_by() -> None:
+    # One provider identifies reasoning by id and refuses the proof without it, so a stored turn
+    # that dropped the id cannot be replayed even though it kept the proof.
+    block = ReasoningBlock(text="", signature="gAAAAAB...", id="rs_1")
+    restored = from_dict(to_dict(block))
+    assert restored == block and restored.id == "rs_1"

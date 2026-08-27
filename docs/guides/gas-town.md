@@ -61,9 +61,9 @@ role: polecat, witness, refinery, and crew.
 
 ## 1. Beads - the data plane
 
-Beads are stored in `workspace/.gas-town/beads.db` (SQLite).
-`run_gastown()` opens a single `aiosqlite.Connection` and passes it as tool context -
-the same lifetime pattern as an `aiohttp.ClientSession`.
+Beads are stored in `workspace/.gas-town/beads.db` (SQLite). `run_gastown()` opens a
+single `aiosqlite.Connection` and passes it as tool context. That is the same
+lifetime pattern as an `aiohttp.ClientSession`.
 
 ```python
 async with aiosqlite.connect(db_path) as db:
@@ -210,7 +210,7 @@ are not ephemeral and not managed by the Witness. Each crew member gets an
 contexts - not closures. The Mayor uses two tools to manage polecats asynchronously:
 
 **`sling`** - fire-and-forget polecat dispatch. Marks the bead `in_progress` and puts
-the bead ID into a shared async channel; returns immediately so the Mayor can sling
+the bead ID into a shared async channel. Returns immediately, so the Mayor can sling
 multiple polecats in one response:
 
 ```python
@@ -267,10 +267,10 @@ await asyncio.gather(*worker_tasks, return_exceptions=True)
 
 Key points:
 
-- `sling` is called multiple times in one Mayor response - all beads are queued
-  immediately and workers pick them up in parallel.
-- `topic` populates the status bar: **Polecat [auth middleware]**, **Polecat [data models]**,
-  making parallel polecats identifiable at a glance.
+- `sling` is called multiple times in one Mayor response. All beads are queued
+  immediately, and workers pick them up in parallel.
+- `topic` populates the status bar: **Polecat [auth middleware]**, **Polecat [data models]**.
+  That makes parallel polecats identifiable at a glance.
 - `mark_in_progress()` updates the SQLite row before the polecat starts, so Witness
   sees accurate status if it runs mid-convoy.
 - `channel.close()` provides clean shutdown - no sentinel values, no `task.cancel()`.
@@ -290,10 +290,10 @@ class AnalyzeContext(TypedDict):
     counter: list[int]  # [0] holds mutable call count
 ```
 
-`workspace: Path` is gone - the analyst's read tools come directly from the sandbox
+`workspace: Path` is gone. The analyst's read tools come directly from the sandbox
 toolbox, already bound to the running container. The analyst is told to look in
-`/workspace` (the constant `WORKDIR`), which maps to the host workspace directory
-via the Docker volume mount.
+`/workspace` (the constant `WORKDIR`), which maps to the host workspace directory via
+the Docker volume mount.
 
 Analysts are fast (`max_iterations=10`, fast model) and safe to call in parallel
 from multiple polecats simultaneously.
@@ -321,10 +321,10 @@ async with DockerSandbox(
     # roles == {"polecat": ("Autonomous worker...", Agent(...)), "witness": ..., ...}
 ```
 
-All file and shell tools in the toolbox are bound to the running container - agents
+All file and shell tools in the toolbox are bound to the running container. Agents
 read and write files inside `/workspace`, which is mounted from the host workspace
 directory. The Mayor gets its own separate tool set (sling + await_beads + bead +
-analyze + read tools) and does not use the worker toolbox directly.
+analyze + read tools). It does not use the worker toolbox directly.
 
 ## 6. GUPP in practice
 

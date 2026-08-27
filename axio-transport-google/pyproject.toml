@@ -8,6 +8,7 @@ license = {text = "MIT"}
 keywords = ["llm", "agent", "ai", "google", "gemini", "genai", "transport"]
 dependencies = [
     "axio",
+    "axio-sse",
     "axio-transport-anthropic[vertexai]",
     "google-auth[urllib3]>=2.0",
 ]

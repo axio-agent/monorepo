@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import aiohttp
 from axio.models import ModelRegistry
@@ -47,6 +47,9 @@ class OpenAICompatibleTransport(OpenAITransport):
     with ``name``, ``base_url``, ``api_key``, and ``models`` populated from the JSON
     config.  Supports JSON round-trip via :meth:`to_dict` / :meth:`from_dict`.
     """
+
+    # These point at servers that implement /v1/chat/completions and not /v1/responses.
+    api: Literal["responses", "chat"] = "chat"
 
     base_url: str = ""  # override OpenAITransport default
     models: ModelRegistry = field(default_factory=ModelRegistry)  # empty default

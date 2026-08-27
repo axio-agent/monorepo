@@ -6,9 +6,19 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from axio.agent import Agent
-from axio.blocks import TextBlock
+from axio.blocks import ReasoningBlock, TextBlock
 from axio.context import MemoryContextStore
-from axio.events import IterationEnd, ReasoningDelta, SessionEndEvent, StreamEvent, TextDelta, ToolResult
+from axio.events import (
+    Error,
+    IterationEnd,
+    ReasoningDelta,
+    ReasoningSignature,
+    Refusal,
+    SessionEndEvent,
+    StreamEvent,
+    TextDelta,
+    ToolResult,
+)
 from axio.messages import Message
 from axio.testing import StubTransport, make_echo_tool, make_text_response, make_tool_use_response
 from axio.tool import Tool
@@ -269,3 +279,250 @@ class TestLastIterationMessage:
 
         history = await context.get_history()
         assert hint not in history
+
+
+class TestStopReasonGuard:
+    """A stop reason the agent does not name must end the run, not start another one."""
+
+    async def test_an_unnamed_stop_reason_ends_the_run(self) -> None:
+        # Without the wildcard this fell out of the match and the loop ran again, re-prompting the
+        # model with unchanged history until max_iterations — every one of those turns paid for.
+        transport = StubTransport([[TextDelta(0, "no"), IterationEnd(1, StopReason.cancelled, Usage(10, 5))]])
+        agent = Agent(system="", tools=[], transport=transport, max_iterations=5)
+
+        events = [event async for event in agent.run_stream("hi", MemoryContextStore())]
+
+        assert transport._call_count == 1, "the agent asked again after a reason it does not act on"
+        assert any(isinstance(e, Error) for e in events)
+        ends = [e for e in events if isinstance(e, SessionEndEvent)]
+        assert [e.stop_reason for e in ends] == [StopReason.error]
+
+    async def test_a_refusal_ends_the_session_as_a_refusal_and_not_as_an_error(self) -> None:
+        # The model declined. Reported as an error the caller cannot tell a decline from a broken
+        # connection, and retries something that can never work.
+        transport = StubTransport(
+            [
+                [
+                    Refusal(index=0, text="I cannot help with that"),
+                    IterationEnd(1, StopReason.refusal, Usage(10, 5)),
+                ]
+            ]
+        )
+        agent = Agent(system="", tools=[], transport=transport, max_iterations=5)
+
+        events = [event async for event in agent.run_stream("hi", MemoryContextStore())]
+
+        assert not [e for e in events if isinstance(e, Error)], "a decline was reported as a failure"
+        ends = [e for e in events if isinstance(e, SessionEndEvent)]
+        assert [e.stop_reason for e in ends] == [StopReason.refusal]
+        assert transport._call_count == 1
+
+    async def test_a_paused_turn_is_resumed_rather_than_ended(self) -> None:
+        # The one reason that does not end the run: the provider stopped its own tool loop and
+        # expects the assistant content back so it can finish.
+        transport = StubTransport(
+            [
+                [TextDelta(0, "half"), IterationEnd(1, StopReason.pause_turn, Usage(10, 5))],
+                [TextDelta(0, " and half"), IterationEnd(2, StopReason.end_turn, Usage(3, 2))],
+            ]
+        )
+        agent = Agent(system="", tools=[], transport=transport, max_iterations=5)
+
+        events = [event async for event in agent.run_stream("hi", MemoryContextStore())]
+
+        assert transport._call_count == 2, "the paused turn was never resumed"
+        assert not [e for e in events if isinstance(e, Error)]
+        ends = [e for e in events if isinstance(e, SessionEndEvent)]
+        assert [e.stop_reason for e in ends] == [StopReason.end_turn]
+
+
+class TestReasoningIsKept:
+    """Reasoning has to survive into the stored turn, or the turn cannot be replayed."""
+
+    async def test_reasoning_and_its_signature_reach_the_stored_message(self) -> None:
+        transport = StubTransport(
+            [
+                [
+                    ReasoningDelta(0, "weighing "),
+                    ReasoningDelta(0, "the options"),
+                    ReasoningSignature(0, "ErUBCkYIBRgC"),
+                    TextDelta(0, "the answer"),
+                    IterationEnd(1, StopReason.end_turn, Usage(10, 5)),
+                ]
+            ]
+        )
+        context = MemoryContextStore()
+        agent = Agent(system="", tools=[], transport=transport)
+
+        async for _ in agent.run_stream("hi", context):
+            pass
+
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        assert assistant.content[0] == ReasoningBlock(text="weighing the options", signature="ErUBCkYIBRgC")
+        assert assistant.content[1] == TextBlock(text="the answer")
+
+    async def test_a_delta_after_a_signature_starts_a_new_block(self) -> None:
+        # The provider signed the text it had. Extending that block would leave a stored signature
+        # that disagrees with the text beside it, and the replay is refused.
+        transport = StubTransport(
+            [
+                [
+                    ReasoningDelta(0, "first"),
+                    ReasoningSignature(0, "sig-one"),
+                    ReasoningDelta(0, "second"),
+                    ReasoningSignature(0, "sig-two"),
+                    IterationEnd(1, StopReason.end_turn, Usage(10, 5)),
+                ]
+            ]
+        )
+        context = MemoryContextStore()
+        agent = Agent(system="", tools=[], transport=transport)
+
+        async for _ in agent.run_stream("hi", context):
+            pass
+
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        assert assistant.content == [
+            ReasoningBlock(text="first", signature="sig-one"),
+            ReasoningBlock(text="second", signature="sig-two"),
+        ]
+
+
+class TestRefusalIsKept:
+    async def test_a_refusal_reaches_the_stored_turn(self) -> None:
+        # A refusal is what the assistant said. Left out, the stored turn is empty and the next
+        # request carries a blank assistant message the provider then rejects.
+        transport = StubTransport(
+            [
+                [
+                    Refusal(index=0, text="I cannot help with that", category="cyber"),
+                    IterationEnd(1, StopReason.refusal, Usage(10, 5)),
+                ]
+            ]
+        )
+        context = MemoryContextStore()
+        agent = Agent(system="", tools=[], transport=transport)
+
+        events = [event async for event in agent.run_stream("hi", context)]
+
+        assert any(isinstance(e, Refusal) for e in events), "the refusal never reached the caller"
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        assert assistant.content == [TextBlock(text="I cannot help with that")]
+        assert transport._call_count == 1, "a refusal was retried, which cannot succeed"
+
+
+class TestSignaturesAreNotConcatenated:
+    """Two signatures in a row are two proofs, not one proof in two pieces.
+
+    Anthropic documents one per block — "The thinking block opens, receives a single
+    signature_delta, and closes" — and Gemini puts one on each parallel function-call part. So a
+    reader that appended a second signature to the first would corrupt both of Gemini's, which is
+    the case these two tests hold the line on.
+    """
+
+    async def test_two_reasoning_blocks_each_keep_their_own_proof(self) -> None:
+        transport = StubTransport(
+            [
+                [
+                    ReasoningDelta(0, "first"),
+                    ReasoningSignature(0, "SIG-1"),
+                    ReasoningDelta(1, "second"),
+                    ReasoningSignature(1, "SIG-2"),
+                    IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+                ]
+            ]
+        )
+        context = MemoryContextStore()
+        async for _ in Agent(system="", tools=[], transport=transport).run_stream("hi", context):
+            pass
+
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        assert assistant.content == [
+            ReasoningBlock(text="first", signature="SIG-1"),
+            ReasoningBlock(text="second", signature="SIG-2"),
+        ]
+
+    async def test_two_signatures_for_different_blocks_stay_apart(self) -> None:
+        # What Gemini sends for two signed parallel function calls: one proof per part, and the
+        # index says which part. Merged, the first call would replay with both proofs joined and
+        # the second with none.
+        transport = StubTransport(
+            [
+                [
+                    ReasoningSignature(0, "SIG-A"),
+                    ReasoningSignature(1, "SIG-B"),
+                    IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+                ]
+            ]
+        )
+        context = MemoryContextStore()
+        async for _ in Agent(system="", tools=[], transport=transport).run_stream("hi", context):
+            pass
+
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        assert [b.signature for b in assistant.content if isinstance(b, ReasoningBlock)] == ["SIG-A", "SIG-B"]
+
+
+class TestReasoningIdIsKept:
+    async def test_the_id_reaches_the_stored_block(self) -> None:
+        # Carried by the event and dropped by the agent, the proof would be stored without the name
+        # the provider requires beside it, and the replay refused.
+        transport = StubTransport(
+            [
+                [
+                    ReasoningSignature(0, "gAAAAAB...", id="rs_1"),
+                    IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+                ]
+            ]
+        )
+        context = MemoryContextStore()
+        async for _ in Agent(system="", tools=[], transport=transport).run_stream("hi", context):
+            pass
+
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        assert assistant.content == [ReasoningBlock(signature="gAAAAAB...", id="rs_1")]
+
+
+class TestFragmentedSignatures:
+    """A proof split across events is one proof; two proofs are two. The index says which."""
+
+    @staticmethod
+    async def _stored(*events: object) -> list[object]:
+        transport = StubTransport([[*events, IterationEnd(1, StopReason.end_turn, Usage(1, 1))]])  # type: ignore[list-item]
+        context = MemoryContextStore()
+        async for _ in Agent(system="", tools=[], transport=transport).run_stream("hi", context):
+            pass
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        return list(assistant.content)
+
+    async def test_a_proof_split_across_events_is_stored_whole(self) -> None:
+        # Stored apart, the block replays with half a signature and the turn after it is refused.
+        stored = await self._stored(
+            ReasoningDelta(0, "thinking"),
+            ReasoningSignature(0, "EqQBCg"),
+            ReasoningSignature(0, "IYAhIM"),
+        )
+        assert stored == [ReasoningBlock(text="thinking", signature="EqQBCgIYAhIM")]
+
+    async def test_two_thinking_blocks_keep_their_own_proofs(self) -> None:
+        stored = await self._stored(
+            ReasoningDelta(0, "first"),
+            ReasoningSignature(0, "SIG-1"),
+            ReasoningDelta(1, "second"),
+            ReasoningSignature(1, "SIG-2"),
+        )
+        assert stored == [
+            ReasoningBlock(text="first", signature="SIG-1"),
+            ReasoningBlock(text="second", signature="SIG-2"),
+        ]
+
+    async def test_two_reasoning_items_keep_their_own_proofs(self) -> None:
+        # What the Responses API sends for two reasoning items: one proof each, indexed by output.
+        stored = await self._stored(
+            ReasoningSignature(0, "gAAAAAB-one", id="rs_1"),
+            ReasoningSignature(1, "gAAAAAB-two", id="rs_2"),
+        )
+        assert stored == [
+            ReasoningBlock(signature="gAAAAAB-one", id="rs_1"),
+            ReasoningBlock(signature="gAAAAAB-two", id="rs_2"),
+        ]

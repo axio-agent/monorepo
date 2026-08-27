@@ -75,6 +75,7 @@ def _make_transport(**kwargs: Any) -> OpenAITransport:
     transport = OpenAITransport(
         api_key="test-key",
         **kwargs,
+        api="chat",
     )
     transport.session = MagicMock(spec=aiohttp.ClientSession)
     return transport
