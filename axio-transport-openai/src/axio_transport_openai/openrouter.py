@@ -14,6 +14,8 @@ from axio_transport_openai import OpenAITransport, ThinkingMixin
 
 logger = logging.getLogger(__name__)
 
+_DYNAMIC_MODEL_VARIANTS = frozenset({"online", "nitro", "floor", "exacto"})
+
 
 @dataclass(slots=True)
 class OpenRouterTransport(ThinkingMixin, OpenAITransport):
@@ -28,8 +30,8 @@ class OpenRouterTransport(ThinkingMixin, OpenAITransport):
         try:
             return self.models[model_id]
         except KeyError:
-            base_id, sep, _variant = model_id.rpartition(":")
-            if not sep or not base_id:
+            base_id, sep, variant = model_id.rpartition(":")
+            if not sep or not base_id or variant not in _DYNAMIC_MODEL_VARIANTS:
                 raise KeyError(model_id) from None
             try:
                 base = self.models[base_id]

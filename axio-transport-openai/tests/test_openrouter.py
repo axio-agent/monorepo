@@ -173,6 +173,18 @@ def test_resolve_model_variant_missing_base_raises_requested_id() -> None:
     assert exc_info.value.args == ("z-ai/glm-4.7:nitro",)
 
 
+@pytest.mark.parametrize("suffix", ["", "ntiro", "unknown"])
+def test_resolve_model_rejects_invalid_dynamic_variant(suffix: str) -> None:
+    base = ModelSpec(id="z-ai/glm-4.7")
+    t = OpenRouterTransport(models=ModelRegistry([base]))
+    requested = f"{base.id}:{suffix}"
+
+    with pytest.raises(KeyError) as exc_info:
+        t.resolve_model(requested)
+
+    assert exc_info.value.args == (requested,)
+
+
 # ---------------------------------------------------------------------------
 # fetch_models
 # ---------------------------------------------------------------------------
