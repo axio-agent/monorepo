@@ -29,9 +29,10 @@ from axio.events import (
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
+from axio.retry import is_retryable, retry_delay
 from axio.tool import Tool
 from axio.transport import CompletionTransport, EmbeddingTransport
-from axio.types import StopReason, Usage
+from axio.types import StopReason, Usage, stop_reason_from
 from axio_responses import Responses, convert_messages, convert_tools
 from axio_sse import Payload, Wire, payloads
 
@@ -227,21 +228,6 @@ _STOP_REASON_MAP: dict[str, StopReason] = {
     "content_filter": StopReason.refusal,
     "error": StopReason.error,
 }
-
-
-def _strip_title(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove pydantic 'title' keys from a JSON schema recursively."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "title":
-            continue
-        if isinstance(value, dict):
-            out[key] = _strip_title(value)
-        elif isinstance(value, list):
-            out[key] = [_strip_title(item) if isinstance(item, dict) else item for item in value]
-        else:
-            out[key] = value
-    return out
 
 
 def _extract_tool_result_text(tr: ToolResultBlock) -> str:
@@ -528,17 +514,6 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         if not isinstance(self.extra_params, MappingProxyType):
             self.extra_params = MappingProxyType(self.extra_params)
 
-    def _get_retry_delay(self, resp: aiohttp.ClientResponse | None, attempt: int) -> float:
-        """Return delay in seconds: prefer Retry-After header, fall back to exponential backoff."""
-        if resp is not None:
-            retry_after: str | None = resp.headers.get("Retry-After")
-            if retry_after is not None:
-                try:
-                    return max(0.0, float(retry_after))
-                except (ValueError, TypeError):
-                    pass
-        return float(self.retry_base_delay * (2 ** (attempt - 1)))
-
     def build_chat_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model.id,
@@ -721,9 +696,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             else:
                 yield TextDelta(index=0, delta=text)
 
-        stop = _STOP_REASON_MAP.get(finish_reason or "", StopReason.error)
-        if finish_reason and finish_reason not in _STOP_REASON_MAP:
-            logger.warning("Unknown finish_reason %r, mapped to %s", finish_reason, stop)
+        stop = stop_reason_from(finish_reason or "", _STOP_REASON_MAP, provider="OpenAI")
         logger.info(
             "Stream complete: stop_reason=%s, input_tokens=%d, output_tokens=%d",
             stop,
@@ -771,7 +744,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                         return
 
                     body = await resp.text()
-                    if resp.status == 429 or resp.status >= 500:
+                    if is_retryable(resp.status):
                         retry_resp = resp
                         last_exc = StreamError(f"OpenAI API error {resp.status}: {body}")
                         logger.warning(
@@ -789,7 +762,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                 logger.warning("Connection error (attempt %d/%d): %s", attempt, self.max_retries, exc)
 
             if attempt < self.max_retries:
-                delay = self._get_retry_delay(retry_resp, attempt)
+                delay = retry_delay(retry_resp, attempt, base=self.retry_base_delay)
                 logger.info("Retrying in %.1fs...", delay)
                 await asyncio.sleep(delay)
 
@@ -813,7 +786,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                         return [item["embedding"] for item in items]
 
                     body = await resp.text()
-                    if resp.status == 429 or resp.status >= 500:
+                    if is_retryable(resp.status):
                         retry_resp = resp
                         last_exc = StreamError(f"Embedding API error {resp.status}: {body}")
                         logger.warning(
@@ -830,7 +803,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                 logger.warning("Embedding connection error (attempt %d/%d): %s", attempt, self.max_retries, exc)
 
             if attempt < self.max_retries:
-                delay = self._get_retry_delay(retry_resp, attempt)
+                delay = retry_delay(retry_resp, attempt, base=self.retry_base_delay)
                 logger.info("Embedding retrying in %.1fs...", delay)
                 await asyncio.sleep(delay)
 

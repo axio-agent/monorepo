@@ -438,7 +438,7 @@ class Tool[T]:
     guards: tuple[PermissionGuard, ...] = ()   # Run sequentially; any GuardError denies
     concurrency: int | None = None          # Optional per-tool semaphore limit
     context: T = field(default=MappingProxyType({}), compare=False)   # Runtime state for CONTEXT.get()
-    schema: MappingProxyType[str, Any] = field(default=MappingProxyType({}), ...)  # Explicit schema override
+    schema: MappingProxyType[str, Any] = field(default=MappingProxyType({}), repr=False, compare=False)
 ```
 
 The return annotation is `Awaitable[Any]`, not `Awaitable[str]`. The widening is load-bearing. The agent accepts a list of `ContentBlock`s, so a handler may return an image or audio and not only a string. Anything else is `str()`-ed.

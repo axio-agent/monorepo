@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Iterator
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Self
@@ -487,6 +488,78 @@ class Agent:
                     turn.stop_reason = reason
                     await context.add_context_tokens(usage.input_tokens, usage.output_tokens)
 
+    async def _dispatch_phase(
+        self, blocks: list[ToolUseBlock], turn: _Turn, context: ContextStore, iteration: int
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Run the turn's calls, store the turn beside their results, and report what happened."""
+        if turn.stop_reason != StopReason.tool_use:
+            logger.warning("Dispatching %d tool(s) despite stop_reason=%s", len(blocks), turn.stop_reason)
+
+        # Run before the turn is stored. A cancellation between here and the two appends below
+        # would otherwise leave calls in the store with no result beside them.
+        runnable = [b for b in blocks if b.id not in turn.malformed]
+        partial: dict[str, list[tuple[float, str, str]]] = {}
+        results: list[ToolResultBlock] = []
+        try:
+            async for delta in self._run_tools(runnable, iteration, partial, results):
+                yield delta
+        except asyncio.CancelledError:
+            await self._append(context, Message(role="assistant", content=list(turn.content)))
+            interrupted = self._interrupted_results(blocks, partial)
+            await self._append(context, Message(role="user", content=list(interrupted)))
+            raise
+        results += _malformed_results(blocks, turn.malformed)
+
+        # Both messages together: the turn, and the results that answer its calls.
+        await self._append(context, Message(role="assistant", content=list(turn.content)))
+        await self._append(context, Message(role="user", content=list(results)))
+        if getattr(self.transport, "nudge_on_media_tool_result", False) and _carries_media(results):
+            await self._append(context, Message(role="user", content=[TextBlock(text=_MEDIA_NUDGE)]))
+
+        for event in _result_events(results, {b.id: b for b in blocks}):
+            yield event
+
+    async def _run_tools(
+        self,
+        runnable: list[ToolUseBlock],
+        iteration: int,
+        partial: dict[str, list[tuple[float, str, str]]],
+        into: list[ToolResultBlock],
+    ) -> AsyncGenerator[ToolOutputDelta, None]:
+        """Run the calls, yielding what a streaming tool produces while it produces it.
+
+        Results land in ``into`` rather than being returned: an async generator's return value is
+        not reachable from ``async for``. ``partial`` keeps what each tool produced, so a
+        cancellation can still report the part of the work that was done.
+        """
+        if not runnable:
+            return
+        if not any((t := self._find_tool(b.name)) is not None and t.supports_streaming for b in runnable):
+            into += await self.dispatch_tools(runnable, iteration)
+            return
+
+        queue: asyncio.Queue[ToolOutputDelta | None] = asyncio.Queue()
+
+        async def run() -> list[ToolResultBlock]:
+            made = await self._dispatch_tools_streaming(runnable, iteration, queue)
+            await queue.put(None)
+            return made
+
+        task = asyncio.create_task(run())
+        started: dict[str, float] = {}
+        try:
+            while (delta := await queue.get()) is not None:
+                at = started.setdefault(delta.tool_use_id, time.monotonic())
+                partial.setdefault(delta.tool_use_id, []).append((time.monotonic() - at, delta.key, delta.delta))
+                yield delta
+            into += await task
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
+            raise
+
     async def _run_loop(self, user_message: str, context: ContextStore) -> AsyncGenerator[StreamEvent, None]:
         total_usage = Usage(0, 0)
         session_end_emitted = False
@@ -523,7 +596,6 @@ class Agent:
 
                 content = turn.content
                 stop_reason = turn.stop_reason
-                malformed = turn.malformed
                 total_usage = total_usage + turn.usage
 
                 if turn.repeated:
@@ -551,75 +623,7 @@ class Agent:
                     tool_blocks = []
 
                 if tool_blocks:
-                    if stop_reason != StopReason.tool_use:
-                        logger.warning(
-                            "Dispatching %d tool(s) despite stop_reason=%s",
-                            len(tool_blocks),
-                            stop_reason,
-                        )
-
-                    # Dispatch tools BEFORE appending to context. Cancellation
-                    # between here and the two appends below then cannot leave
-                    # orphan ToolUseBlocks in the persistent context store.
-                    valid = [b for b in tool_blocks if b.id not in malformed]
-                    error_results = _malformed_results(tool_blocks, malformed)
-
-                    partial_output: dict[str, list[tuple[float, str, str]]] = {}
-                    t0_map: dict[str, float] = {}
-                    dispatch_task: asyncio.Task[list[ToolResultBlock]] | None = None
-                    try:
-                        if valid:
-                            has_streaming = any(
-                                (t := self._find_tool(b.name)) is not None and t.supports_streaming for b in valid
-                            )
-                            if has_streaming:
-                                output_queue: asyncio.Queue[ToolOutputDelta | None] = asyncio.Queue()
-
-                                async def _dispatch_and_signal() -> list[ToolResultBlock]:
-                                    result = await self._dispatch_tools_streaming(valid, iteration, output_queue)
-                                    await output_queue.put(None)
-                                    return result
-
-                                dispatch_task = asyncio.create_task(_dispatch_and_signal())
-                                while True:
-                                    ev = await output_queue.get()
-                                    if ev is None:
-                                        break
-                                    if ev.tool_use_id not in t0_map:
-                                        t0_map[ev.tool_use_id] = time.monotonic()
-                                    partial_output.setdefault(ev.tool_use_id, []).append(
-                                        (time.monotonic() - t0_map[ev.tool_use_id], ev.key, ev.delta)
-                                    )
-                                    yield ev
-                                dispatched = await dispatch_task
-                            else:
-                                dispatched = await self.dispatch_tools(valid, iteration)
-                        else:
-                            dispatched = []
-                        results = dispatched + error_results
-                    except asyncio.CancelledError:
-                        if dispatch_task is not None and not dispatch_task.done():
-                            dispatch_task.cancel()
-                            try:
-                                await dispatch_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                        interrupted_results = self._interrupted_results(tool_blocks, partial_output)
-                        await self._append(context, Message(role="assistant", content=list(content)))
-                        await self._append(context, Message(role="user", content=list(interrupted_results)))
-                        raise
-
-                    # Append both messages atomically (assistant + tool results)
-                    await self._append(context, Message(role="assistant", content=list(content)))
-                    await self._append(context, Message(role="user", content=list(results)))
-
-                    # Gemini stops generating (~20 tokens, end_turn) after receiving
-                    # media as sibling inlineData parts alongside functionResponse.
-                    # A "Proceed." user message nudges it to actually analyze the content.
-                    if getattr(self.transport, "nudge_on_media_tool_result", False) and _carries_media(results):
-                        await self._append(context, Message(role="user", content=[TextBlock(text=_MEDIA_NUDGE)]))
-
-                    for event in _result_events(results, {b.id: b for b in tool_blocks}):
+                    async for event in self._dispatch_phase(tool_blocks, turn, context, iteration):
                         yield event
                     continue
 

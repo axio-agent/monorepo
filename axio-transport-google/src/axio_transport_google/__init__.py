@@ -43,9 +43,11 @@ from axio.events import (
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
+from axio.retry import is_retryable, retry_delay
+from axio.schema import strip_title
 from axio.tool import Tool
 from axio.transport import CompletionTransport, ImageGenTransport, VideoGenTransport
-from axio.types import StopReason, Usage
+from axio.types import StopReason, Usage, stop_reason_from
 from axio_sse import Payload, Wire, payloads
 
 from axio_transport_google._generated_types import (
@@ -318,26 +320,11 @@ def _usage(um: UsageMetadata, *, final: bool = False) -> Usage:
 # ── JSON payload builders (no SDK dependency) ───────────────────────
 
 
-def _strip_title(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove pydantic 'title' keys from a JSON schema recursively."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "title":
-            continue
-        if isinstance(value, dict):
-            out[key] = _strip_title(value)
-        elif isinstance(value, list):
-            out[key] = [_strip_title(item) if isinstance(item, dict) else item for item in value]
-        else:
-            out[key] = value
-    return out
-
-
 def _build_tools_json(tools: list[Tool[Any]]) -> list[ToolDict]:
     """Convert axio Tool list to Gemini REST API tool declarations."""
     declarations: list[FunctionDeclaration] = []
     for tool in tools:
-        schema = _strip_title(tool.input_schema)
+        schema = strip_title(tool.input_schema)
         declarations.append(
             {
                 "name": tool.name,
@@ -357,6 +344,86 @@ def _inline_data_part(block: ImageBlock | AudioBlock | VideoBlock) -> Part:
     }
 
 
+def _tool_result_parts(results: list[ToolResultBlock], messages: list[Message]) -> list[Part]:
+    """One functionResponse per result, with any media it carried beside it."""
+    parts: list[Part] = []
+    for result in results:
+        if isinstance(result.content, str):
+            answer: dict[str, Any] = {"result": result.content}
+        else:
+            text = "\n".join(b.text for b in result.content if isinstance(b, TextBlock))
+            answer = {"result": text}
+        if result.is_error:
+            answer = {"error": answer["result"]}
+        parts.append(
+            {
+                "functionResponse": {
+                    "name": _tool_name_from_id(result.tool_use_id, messages),
+                    "response": answer,
+                    "id": result.tool_use_id,
+                }
+            }
+        )
+        if not isinstance(result.content, str):
+            # Media travels as a sibling inlineData part: functionResponse takes only JSON.
+            parts.extend(
+                _inline_data_part(b) for b in result.content if isinstance(b, (ImageBlock, AudioBlock, VideoBlock))
+            )
+    return parts
+
+
+def _user_parts(msg: Message, messages: list[Message]) -> list[Part]:
+    """What one user turn sends, which is either its tool results or its own content."""
+    results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
+    if results and len(results) == len(msg.content):
+        return _tool_result_parts(results, messages)
+    parts: list[Part] = []
+    for block in msg.content:
+        if isinstance(block, TextBlock):
+            parts.append({"text": block.text})
+        elif isinstance(block, (ImageBlock, AudioBlock, VideoBlock)):
+            parts.append(_inline_data_part(block))
+    return parts
+
+
+def _assistant_parts(msg: Message, thought_signatures: dict[str, str] | None) -> list[Part]:
+    """What one assistant turn sends back, each proof on the part Gemini issued it for."""
+    parts: list[Part] = []
+    # Proofs from parts that carried no text of their own. They belong to the calls that follow,
+    # in arrival order.
+    unplaced: deque[str] = deque()
+    for block in msg.content:
+        if isinstance(block, TextBlock):
+            parts.append({"text": block.text})
+        elif isinstance(block, ReasoningBlock):
+            if block.text:
+                thought: Part = {"text": block.text, "thought": True}
+                if block.signature:
+                    thought["thoughtSignature"] = block.signature
+                parts.append(thought)
+            elif block.signature:
+                # Gemini puts the proof on the part it signed, and a thought with no text is not it.
+                unplaced.append(block.signature)
+        elif isinstance(block, (ImageBlock, AudioBlock, VideoBlock)):
+            parts.append(_inline_data_part(block))
+        elif isinstance(block, ToolUseBlock):
+            parts.append(_call_part(block, unplaced, thought_signatures))
+    return parts
+
+
+def _call_part(block: ToolUseBlock, unplaced: deque[str], from_transport: dict[str, str] | None) -> Part:
+    """One functionCall, carrying whichever proof is most likely to be its own.
+
+    The call's own signature comes first because it survives a restart, which the map held on the
+    transport does not.
+    """
+    part: Part = {"functionCall": {"name": block.name, "args": block.input, "id": block.id}}
+    proof = block.signature or (unplaced.popleft() if unplaced else "") or (from_transport or {}).get(block.id, "")
+    if proof:
+        part["thoughtSignature"] = proof
+    return part
+
+
 def _build_contents_json(
     messages: list[Message],
     thought_signatures: dict[str, str] | None = None,
@@ -366,94 +433,22 @@ def _build_contents_json(
     thought_signatures values are base64-encoded strings ready for JSON.
     """
     contents: list[Content] = []
-
     for msg in messages:
         if msg.role == "user":
-            tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-            if tool_results and len(tool_results) == len(msg.content):
-                tool_result_parts: list[Part] = []
-                for tr in tool_results:
-                    if isinstance(tr.content, str):
-                        response_dict: dict[str, Any] = {"result": tr.content}
-                    else:
-                        text_parts = [b.text for b in tr.content if isinstance(b, TextBlock)]
-                        response_dict = {"result": "\n".join(text_parts)} if text_parts else {"result": ""}
-                    if tr.is_error:
-                        response_dict = {"error": response_dict.get("result", "")}
-                    tool_result_parts.append(
-                        {
-                            "functionResponse": {
-                                "name": _tool_name_from_id(tr.tool_use_id, messages),
-                                "response": response_dict,
-                                "id": tr.tool_use_id,
-                            }
-                        }
-                    )
-                    # Media from tool results as sibling inlineData parts
-                    if not isinstance(tr.content, str):
-                        for content_block in tr.content:
-                            if isinstance(content_block, (ImageBlock, AudioBlock, VideoBlock)):
-                                tool_result_parts.append(_inline_data_part(content_block))
-                contents.append({"role": "user", "parts": tool_result_parts})
-            else:
-                user_parts: list[Part] = []
-                for message_block in msg.content:
-                    if isinstance(message_block, TextBlock):
-                        user_parts.append({"text": message_block.text})
-                    elif isinstance(message_block, (ImageBlock, AudioBlock, VideoBlock)):
-                        user_parts.append(_inline_data_part(message_block))
-                if user_parts:
-                    contents.append({"role": "user", "parts": user_parts})
-
+            if parts := _user_parts(msg, messages):
+                contents.append({"role": "user", "parts": parts})
         elif msg.role == "assistant":
-            assistant_parts: list[Part] = []
-            # Signatures for parts that carried no text of their own. They belong to the calls that
-            # follow, in arrival order.
-            unplaced_signatures: deque[str] = deque()
-            for assistant_block in msg.content:
-                if isinstance(assistant_block, TextBlock):
-                    assistant_parts.append({"text": assistant_block.text})
-                elif isinstance(assistant_block, ReasoningBlock):
-                    # From the stored block, not from the map on this instance: that map is empty after a
-                    # restart.
-                    if assistant_block.text:
-                        thought: Part = {"text": assistant_block.text, "thought": True}
-                        if assistant_block.signature:
-                            thought["thoughtSignature"] = assistant_block.signature
-                        assistant_parts.append(thought)
-                    elif assistant_block.signature:
-                        # Gemini puts the proof on the part it signed, and a thought part with no text is not it.
-                        unplaced_signatures.append(assistant_block.signature)
-                elif isinstance(assistant_block, (ImageBlock, AudioBlock, VideoBlock)):
-                    assistant_parts.append(_inline_data_part(assistant_block))
-                elif isinstance(assistant_block, ToolUseBlock):
-                    part: Part = {
-                        "functionCall": {
-                            "name": assistant_block.name,
-                            "args": assistant_block.input,
-                            "id": assistant_block.id,
-                        }
-                    }
-                    # Stored signatures first, in arrival order.
-                    # The call's own proof first: it survives a restart, which the map does not.
-                    stored_signature = assistant_block.signature
-                    if not stored_signature and unplaced_signatures:
-                        stored_signature = unplaced_signatures.popleft()
-                    signature = stored_signature or (thought_signatures or {}).get(assistant_block.id, "")
-                    if signature:
-                        part["thoughtSignature"] = signature
-                    assistant_parts.append(part)
-            if assistant_parts:
-                contents.append({"role": "model", "parts": assistant_parts})
+            if parts := _assistant_parts(msg, thought_signatures):
+                contents.append({"role": "model", "parts": parts})
 
-    # Gemini requires alternating user/model roles.  Merge consecutive
-    # same-role contents (e.g. tool-result message + "Proceed." nudge).
+    # Gemini requires alternating user/model roles, so consecutive same-role turns merge. A tool
+    # result followed by a "Proceed." nudge is one such pair.
     merged: list[Content] = []
-    for c in contents:
-        if merged and merged[-1]["role"] == c["role"]:
-            merged[-1]["parts"].extend(c["parts"])
+    for content in contents:
+        if merged and merged[-1]["role"] == content["role"]:
+            merged[-1]["parts"].extend(content["parts"])
         else:
-            merged.append(c)
+            merged.append(content)
     return merged
 
 
@@ -732,7 +727,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                 async with self.session.post(url, json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
-                        if resp.status in (429, 500, 503) and attempt < self.max_retries:
+                        if is_retryable(resp.status) and attempt < self.max_retries:
                             logger.warning(
                                 "Gemini HTTP %d (attempt %d/%d): %.200s",
                                 resp.status,
@@ -740,7 +735,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 self.max_retries,
                                 error_text,
                             )
-                            await asyncio.sleep(2.0 * (2 ** (attempt - 1)))
+                            await asyncio.sleep(retry_delay(resp, attempt))
                             continue
                         raise StreamError(f"{resp.status} {resp.reason}: {error_text[:1000]}")
 
@@ -778,14 +773,16 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             except Exception as exc:
                 last_exc = exc
                 status = getattr(exc, "status", getattr(exc, "status_code", None))
-                if status in (429, 500, 503) or "ResourceExhausted" in str(exc):
+                if (isinstance(status, int) and is_retryable(status)) or "ResourceExhausted" in str(exc):
                     logger.warning("Gemini retryable error (attempt %d/%d): %s", attempt, self.max_retries, exc)
                     if attempt < self.max_retries:
-                        await asyncio.sleep(2.0 * (2 ** (attempt - 1)))
+                        await asyncio.sleep(retry_delay(None, attempt))
                         continue
                 logger.error("Gemini stream error: %s", exc, exc_info=True)
                 raise StreamError(str(exc)) from exc
 
+        # Chained, not flattened: the transports that kept the original exception let a caller see
+        # what actually failed after the last attempt.
         raise StreamError(str(last_exc)) from last_exc
 
     def _chunk_events(self, chunk: GenerateContentChunk, turn: _Turn) -> Iterator[StreamEvent]:
@@ -813,9 +810,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
 
         if candidate.finishReason:
             turn.finished = True
-            turn.stop_reason = _FINISH_REASON_MAP.get(candidate.finishReason, StopReason.error)
-            if candidate.finishReason not in _FINISH_REASON_MAP:
-                logger.warning("Unknown finishReason %r", candidate.finishReason)
+            turn.stop_reason = stop_reason_from(candidate.finishReason, _FINISH_REASON_MAP, provider="Gemini")
 
         # Grounding travels whole. Four providers shape it four incompatible ways.
         for kind, metadata in (

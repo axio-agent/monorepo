@@ -18,9 +18,11 @@ from axio.events import (
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
+from axio.retry import is_retryable, retry_delay
+from axio.schema import strip_title
 from axio.tool import Tool
 from axio.transport import CompletionTransport
-from axio_responses import STOP_REASONS, Responses, convert_messages, convert_tools, strip_title
+from axio_responses import STOP_REASONS, Responses, convert_messages, convert_tools
 
 from .oauth import CLIENT_ID, ORIGINATOR, TOKEN_URL, _decode_jwt_payload
 
@@ -72,17 +74,6 @@ class CodexTransport(CompletionTransport):
     )
     max_retries: int = 10
     retry_base_delay: float = 5.0
-
-    def _get_retry_delay(self, resp: aiohttp.ClientResponse | None, attempt: int) -> float:
-        """Return delay in seconds: prefer Retry-After header, fall back to exponential backoff."""
-        if resp is not None:
-            retry_after: str | None = resp.headers.get("Retry-After")
-            if retry_after is not None:
-                try:
-                    return max(0.0, float(retry_after))
-                except (ValueError, TypeError):
-                    pass
-        return float(self.retry_base_delay * (2 ** (attempt - 1)))
 
     async def _ensure_token(self) -> None:
         """Refresh access token if expired or about to expire."""
@@ -218,7 +209,7 @@ class CodexTransport(CompletionTransport):
                         return
 
                     body = await resp.text()
-                    if resp.status == 429 or resp.status >= 500:
+                    if is_retryable(resp.status):
                         retry_resp = resp
                         last_exc = StreamError(f"Codex API error {resp.status}: {body}")
                         logger.warning(
@@ -236,7 +227,7 @@ class CodexTransport(CompletionTransport):
                 logger.warning("Connection error (attempt %d/%d): %s", attempt, self.max_retries, exc)
 
             if attempt < self.max_retries:
-                delay = self._get_retry_delay(retry_resp, attempt)
+                delay = retry_delay(retry_resp, attempt, base=self.retry_base_delay)
                 logger.info("Retrying in %.1fs...", delay)
                 await asyncio.sleep(delay)
 

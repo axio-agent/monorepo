@@ -143,3 +143,34 @@ def build_tool_schema(
     if required:
         schema["required"] = required
     return schema
+
+
+#: Keys whose value maps names to schemas. A key inside one of these is the caller's own name, so
+#: ``title`` there is a tool argument rather than the JSON Schema keyword.
+_NAMED_SCHEMAS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
+
+
+def strip_title(schema: dict[str, Any]) -> dict[str, Any]:
+    """The schema without its ``title`` keywords, at every depth.
+
+    ``build_tool_schema`` writes none, so this is for a schema that came from somewhere else: a
+    pydantic model names every model and field, no provider reads those names, and a large tool set
+    pays for them on every request.
+
+    An argument that happens to be called ``title`` is kept. Stripped as a keyword, a tool declaring
+    ``create_issue(title, body)`` reached the provider with ``title`` still in ``required`` and no
+    property of that name.
+    """
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "title":
+            continue
+        if key in _NAMED_SCHEMAS and isinstance(value, dict):
+            out[key] = {name: strip_title(sub) if isinstance(sub, dict) else sub for name, sub in value.items()}
+        elif isinstance(value, dict):
+            out[key] = strip_title(value)
+        elif isinstance(value, list):
+            out[key] = [strip_title(item) if isinstance(item, dict) else item for item in value]
+        else:
+            out[key] = value
+    return out

@@ -1307,35 +1307,6 @@ async def test_embed_500_retries_and_recovers(
     assert len(server.received_embedding_payloads) == 2
 
 
-def test_get_retry_delay_uses_header() -> None:
-    """_get_retry_delay prefers Retry-After header value."""
-    t = OpenAITransport(retry_base_delay=1.0)
-    # Create a mock response with Retry-After header
-    from unittest.mock import MagicMock
-
-    resp = MagicMock()
-    resp.headers = {"Retry-After": "5"}
-    assert t._get_retry_delay(resp, 1) == 5.0
-
-
-def test_get_retry_delay_falls_back_to_exponential() -> None:
-    """_get_retry_delay uses exponential backoff when no header."""
-    t = OpenAITransport(retry_base_delay=2.0)
-    assert t._get_retry_delay(None, 1) == 2.0  # 2 * 2^0
-    assert t._get_retry_delay(None, 2) == 4.0  # 2 * 2^1
-    assert t._get_retry_delay(None, 3) == 8.0  # 2 * 2^2
-
-
-def test_get_retry_delay_ignores_invalid_header() -> None:
-    """_get_retry_delay falls back when Retry-After is not a number."""
-    t = OpenAITransport(retry_base_delay=1.0)
-    from unittest.mock import MagicMock
-
-    resp = MagicMock()
-    resp.headers = {"Retry-After": "invalid"}
-    assert t._get_retry_delay(resp, 1) == 1.0
-
-
 # ---------------------------------------------------------------------------
 # Tool call: id + arguments in the same delta (vLLM/Nebius pattern)
 # ---------------------------------------------------------------------------

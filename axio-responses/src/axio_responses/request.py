@@ -17,6 +17,7 @@ from axio.blocks import (
     VideoBlock,
 )
 from axio.messages import Message
+from axio.schema import strip_title
 from axio.tool import Tool
 from axio.types import StopReason
 
@@ -31,21 +32,6 @@ STOP_REASONS: dict[str, StopReason] = {
     "cancelled": StopReason.cancelled,
     "content_filter": StopReason.refusal,
 }
-
-
-def strip_title(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove pydantic 'title' keys from a JSON schema recursively."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "title":
-            continue
-        if isinstance(value, dict):
-            out[key] = strip_title(value)
-        elif isinstance(value, list):
-            out[key] = [strip_title(item) if isinstance(item, dict) else item for item in value]
-        else:
-            out[key] = value
-    return out
 
 
 def convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:

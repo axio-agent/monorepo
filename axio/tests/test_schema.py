@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any, ClassVar, Literal, Optional
 
 from axio.field import Field, FieldInfo, StrictStr
-from axio.schema import build_tool_schema, property_schema
+from axio.schema import build_tool_schema, property_schema, strip_title
 
 
 class TestPropertySchemaPrimitives:
@@ -392,3 +393,33 @@ class TestBuildToolSchemaTypeMapping:
 
         prop = build_tool_schema(f)["properties"]["query"]
         assert "default" not in prop
+
+
+class TestStripTitle:
+    """A schema that came from pydantic rather than from build_tool_schema."""
+
+    def test_it_reaches_into_nested_schemas(self) -> None:
+        schema = {"title": "Root", "properties": {"a": {"title": "A", "items": {"title": "I", "type": "string"}}}}
+
+        assert "title" not in json.dumps(strip_title(schema))
+
+    def test_it_reaches_into_a_list_of_schemas(self) -> None:
+        # anyOf and oneOf hold their branches in a list, and pydantic names every one of them.
+        schema = {"anyOf": [{"title": "A", "type": "string"}, {"title": "B", "type": "integer"}]}
+
+        assert "title" not in json.dumps(strip_title(schema))
+
+    def test_a_property_actually_called_title_survives(self) -> None:
+        # Only the schema keyword goes. A tool taking a `title` argument still declares it.
+        schema = {"properties": {"title": {"type": "string", "title": "Title"}}}
+
+        stripped = strip_title(schema)
+
+        assert stripped == {"properties": {"title": {"type": "string"}}}
+
+    def test_the_original_is_left_alone(self) -> None:
+        schema = {"title": "Root", "type": "object"}
+
+        strip_title(schema)
+
+        assert schema["title"] == "Root"

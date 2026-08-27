@@ -33,7 +33,7 @@ from .reader import (
     StreamFailure,
     TextDeltaEvent,
 )
-from .request import STOP_REASONS, convert_messages, convert_tools, strip_title, tool_output
+from .request import STOP_REASONS, convert_messages, convert_tools, tool_output
 
 __all__ = [
     "STOP_REASONS",
@@ -63,6 +63,5 @@ __all__ = [
     "TextDeltaEvent",
     "convert_messages",
     "convert_tools",
-    "strip_title",
     "tool_output",
 ]

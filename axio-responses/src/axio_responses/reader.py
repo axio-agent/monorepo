@@ -26,7 +26,7 @@ from axio.events import (
     ToolUseStart,
 )
 from axio.exceptions import StreamError
-from axio.types import StopReason, Usage
+from axio.types import StopReason, Usage, stop_reason_from
 from axio_sse import Payload, Reader, Wire, on
 
 from .request import STOP_REASONS
@@ -327,9 +327,7 @@ class Responses(Reader[StreamEvent]):
         the agent a truncated answer is a whole one."""
         self._count(wire.response.usage)
         reason = wire.response.incomplete_details.reason
-        # The event says the response did not complete, so a reason nobody here knows must not
-        # default to the one that means it did.
-        self.stop_reason = STOP_REASONS.get(reason, StopReason.error)
+        self.stop_reason = stop_reason_from(reason, STOP_REASONS, provider="Responses")
         logger.warning("Response incomplete: reason=%s, stop=%s", reason or "unstated", self.stop_reason)
 
     @on(ArgumentsDone)

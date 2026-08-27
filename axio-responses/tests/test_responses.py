@@ -23,7 +23,7 @@ from axio.tool import Tool
 from axio.types import StopReason, Usage
 from axio_sse import Event, UnknownEvent
 
-from axio_responses import Responses, convert_messages, convert_tools, strip_title
+from axio_responses import Responses, convert_messages, convert_tools
 
 
 async def get_weather(location: str, units: str = "celsius") -> str:
@@ -302,11 +302,6 @@ def test_a_tool_declares_itself_without_the_titles_pydantic_adds() -> None:
     declared = convert_tools([tool])[0]
     assert declared["name"] == "get_weather"
     assert "title" not in json.dumps(declared["parameters"])
-
-
-def test_strip_title_reaches_into_nested_schemas() -> None:
-    schema = {"title": "Root", "properties": {"a": {"title": "A", "items": {"title": "I", "type": "string"}}}}
-    assert "title" not in json.dumps(strip_title(schema))
 
 
 # ---------------------------------------------------------------------------

@@ -38,9 +38,11 @@ from axio.events import (
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
+from axio.retry import is_retryable, retry_delay
+from axio.schema import strip_title
 from axio.tool import Tool
 from axio.transport import CompletionTransport
-from axio.types import StopReason, Usage
+from axio.types import StopReason, Usage, stop_reason_from
 from axio_sse import EVENT_NAME, Payload, Reader, Wire, on
 
 logger = logging.getLogger(__name__)
@@ -135,21 +137,6 @@ _CITATION_UNITS: dict[str, Literal["char", "byte", "page", "block", "unknown"]] 
 }
 
 
-def _strip_title(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove pydantic 'title' keys from a JSON schema recursively."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "title":
-            continue
-        if isinstance(value, dict):
-            out[key] = _strip_title(value)
-        elif isinstance(value, list):
-            out[key] = [_strip_title(item) if isinstance(item, dict) else item for item in value]
-        else:
-            out[key] = value
-    return out
-
-
 def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
     """Convert axio Message list to Anthropic messages."""
     result: list[dict[str, Any]] = []
@@ -224,7 +211,7 @@ def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
         {
             "name": tool.name,
             "description": tool.description,
-            "input_schema": _strip_title(tool.input_schema),
+            "input_schema": strip_title(tool.input_schema),
             # Stream tool input deltas as they're generated instead of buffering.
             # May produce truncated JSON if max_tokens is reached mid-call.
             "eager_input_streaming": True,
@@ -545,9 +532,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             # Every turn ends on a message_delta carrying a stop_reason. Without one the connection
             # was cut.
             raise StreamError("Anthropic stream ended without a stop_reason")
-        stop = _STOP_REASON_MAP.get(self.stop_reason, StopReason.error)
-        if self.stop_reason not in _STOP_REASON_MAP:
-            logger.warning("Unknown stop_reason %r, mapped to %s", self.stop_reason, stop)
+        stop = stop_reason_from(self.stop_reason, _STOP_REASON_MAP, provider="Anthropic")
         usage = Usage(
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
@@ -637,17 +622,6 @@ class AnthropicTransport(CompletionTransport):
             headers["anthropic-version"] = ANTHROPIC_API_VERSION
         return headers
 
-    def _get_retry_delay(self, resp: aiohttp.ClientResponse | None, attempt: int) -> float:
-        """Return delay in seconds: prefer Retry-After header, fall back to exponential backoff."""
-        if resp is not None:
-            retry_after: str | None = resp.headers.get("Retry-After")
-            if retry_after is not None:
-                try:
-                    return max(0.0, float(retry_after))
-                except (ValueError, TypeError):
-                    pass
-        return float(self.retry_base_delay * (2 ** (attempt - 1)))
-
     def build_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
         converted_messages = _convert_messages(messages)
 
@@ -732,7 +706,7 @@ class AnthropicTransport(CompletionTransport):
                         return
 
                     body = await resp.text()
-                    if resp.status == 429 or resp.status >= 500:
+                    if is_retryable(resp.status):
                         retry_resp = resp
                         last_exc = StreamError(f"Anthropic API error {resp.status}: {body}")
                         logger.warning(
@@ -750,7 +724,7 @@ class AnthropicTransport(CompletionTransport):
                 logger.warning("Connection error (attempt %d/%d): %s", attempt, self.max_retries, exc)
 
             if attempt < self.max_retries:
-                delay = self._get_retry_delay(retry_resp, attempt)
+                delay = retry_delay(retry_resp, attempt, base=self.retry_base_delay)
                 logger.info("Retrying in %.1fs...", delay)
                 await asyncio.sleep(delay)
 
