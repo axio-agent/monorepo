@@ -162,6 +162,10 @@ class RefusalDeltaEvent(Wire, name="response.refusal.delta"):
 
 @dataclass(frozen=True, slots=True)
 class AnnotationAdded(Wire, name="response.output_text.annotation.added"):
+    #: Which output item the cited text belongs to. The deltas and the event that closes a block
+    #: are indexed by this, so a citation indexed by content_index named a different block.
+    output_index: int = 0
+    #: Which content part inside that item, which axio has no index of its own for.
     content_index: int = 0
     annotation: Annotation = field(default_factory=Annotation)
 
@@ -232,7 +236,7 @@ class Responses(Reader[StreamEvent]):
         """What the text just sent was attributed to."""
         note = wire.annotation
         yield Citation(
-            index=wire.content_index,
+            index=wire.output_index,
             cited_text=note.text,
             title=note.title,
             url=note.url or note.source.url or None,
@@ -289,16 +293,21 @@ class Responses(Reader[StreamEvent]):
         response = wire.response
         self._count(response.usage)
         status = response.status or "completed"
-        # A refusal already decided this turn. The status enum has no refusal member, so the
-        # response that carries a refusal still completes. Reading the status over the top
-        # reported a declined turn as a finished answer.
-        if self.stop_reason != StopReason.refusal:
-            self.stop_reason = STOP_REASONS.get(status, StopReason.end_turn)
-        if status not in STOP_REASONS:
-            logger.warning("Unknown response status %r, read as %s", status, self.stop_reason)
-        # A finished response still holding a call is a turn that wants the tool run first.
-        if any(item.type == "function_call" for item in response.output):
-            self.stop_reason = StopReason.tool_use
+        if self.stop_reason == StopReason.refusal:
+            # A refusal already decided this turn. The status enum has no refusal member, so the
+            # response carrying a refusal still completes. Reading the status over the top
+            # reported a declined turn as a finished answer.
+            pass
+        elif status not in STOP_REASONS:
+            # A status nobody here knows is not a finished answer. Read as end_turn, a response
+            # the API failed or cut short is stored and returned as the model's whole answer.
+            logger.warning("Unknown response status %r, read as an error", status)
+            self.stop_reason = StopReason.error
+        else:
+            self.stop_reason = STOP_REASONS[status]
+            # A finished response still holding a call is a turn that wants the tool run first.
+            if any(item.type == "function_call" for item in response.output):
+                self.stop_reason = StopReason.tool_use
         logger.info(
             "Response completed: status=%s, stop=%s, in=%d, out=%d",
             status,

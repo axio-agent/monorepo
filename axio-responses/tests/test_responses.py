@@ -160,7 +160,8 @@ def test_an_annotation_becomes_a_citation() -> None:
     made = _reads(
         Responses(),
         type="response.output_text.annotation.added",
-        content_index=1,
+        output_index=1,
+        content_index=3,
         annotation={
             "type": "url",
             "text": "as reported",
@@ -172,6 +173,8 @@ def test_an_annotation_becomes_a_citation() -> None:
     )
     citation = made[0]
     assert isinstance(citation, Citation)
+    # Indexed by the output item, as the deltas and BlockEnd are. content_index numbers the content
+    # part inside that item, which axio has no index of its own for.
     assert (citation.index, citation.url, citation.title) == (1, "https://example.invalid/r", "The Report")
     assert (citation.start, citation.end, citation.unit) == (10, 21, "char")
 
@@ -497,3 +500,65 @@ def test_an_incomplete_stream_still_finishes() -> None:
         response={"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "usage": {}},
     )
     assert reader.finished().stop_reason == StopReason.max_tokens
+
+
+def test_a_completed_status_nobody_knows_is_not_a_finished_answer() -> None:
+    # Read as end_turn, a response the API failed or cut short is stored and returned as the
+    # model's whole answer.
+    reader = Responses()
+    _reads(reader, type="response.completed", response={"status": "some_new_state", "usage": {}})
+    assert reader.finished().stop_reason == StopReason.error
+
+
+def test_a_failed_status_on_a_completed_event_is_an_error() -> None:
+    reader = Responses()
+    _reads(reader, type="response.completed", response={"status": "failed", "usage": {}})
+    assert reader.finished().stop_reason == StopReason.error
+
+
+def test_an_unknown_status_is_not_overridden_by_a_pending_tool_call() -> None:
+    # The calls are real output, but an unrecognised status says the turn is not known to have
+    # succeeded, so running the tool on it would act on a response nobody vouched for.
+    reader = Responses()
+    _reads(
+        reader,
+        type="response.completed",
+        response={"status": "some_new_state", "usage": {}, "output": [{"type": "function_call"}]},
+    )
+    assert reader.finished().stop_reason == StopReason.error
+
+
+def test_a_completed_turn_holding_a_call_still_asks_for_the_tool() -> None:
+    reader = Responses()
+    _reads(
+        reader,
+        type="response.completed",
+        response={"status": "completed", "usage": {}, "output": [{"type": "function_call"}]},
+    )
+    assert reader.finished().stop_reason == StopReason.tool_use
+
+
+def test_a_refusal_still_survives_the_status() -> None:
+    reader = Responses()
+    _reads(reader, type="response.refusal.delta", delta="no", output_index=0)
+    _reads(reader, type="response.completed", response={"status": "completed", "usage": {}})
+    assert reader.finished().stop_reason == StopReason.refusal
+
+
+def test_a_citation_names_the_same_block_the_text_did() -> None:
+    """Indexed by content_index a citation named a different block from its own text.
+
+    The deltas and the event that closes a block are both indexed by output item.
+    """
+    reader = Responses()
+    delta = _reads(reader, type="response.output_text.delta", delta="as reported", output_index=2)
+    cited = _reads(
+        reader,
+        type="response.output_text.annotation.added",
+        output_index=2,
+        content_index=0,
+        annotation={"type": "url", "source": {"url": "https://example.invalid/r"}},
+    )
+    text, citation = delta[0], cited[0]
+    assert isinstance(text, TextDelta) and isinstance(citation, Citation)
+    assert text.index == citation.index == 2

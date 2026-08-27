@@ -774,11 +774,14 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 index=0,
                             )
 
+                        # Every event of a part carries that part's position. Fixed at zero,
+                        # the reasoning of one part and the signature of another shared an
+                        # index, and nothing downstream could group a part's events together.
                         for at, part in enumerate(candidate.content.parts):
                             if part.text and part.thought:
-                                yield ReasoningDelta(index=0, delta=part.text)
+                                yield ReasoningDelta(index=at, delta=part.text)
                             elif part.text:
-                                yield TextDelta(index=0, delta=part.text)
+                                yield TextDelta(index=at, delta=part.text)
                             elif part.inlineData.data:
                                 mt = part.inlineData.mimeType
                                 raw = base64.b64decode(part.inlineData.data)
@@ -787,28 +790,28 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 # outside that list. So the check tests the prefix. The cast says
                                 # so rather than pretending the narrower type was proven.
                                 if mt.startswith("image/"):
-                                    yield ImageOutput(index=0, data=raw, media_type=cast(ImageMediaType, mt))
+                                    yield ImageOutput(index=at, data=raw, media_type=cast(ImageMediaType, mt))
                                 elif mt.startswith("audio/"):
-                                    yield AudioOutput(index=0, data=raw, media_type=cast(AudioMediaType, mt))
+                                    yield AudioOutput(index=at, data=raw, media_type=cast(AudioMediaType, mt))
                                 elif mt.startswith("video/"):
-                                    yield VideoOutput(index=0, data=raw, media_type=cast(VideoMediaType, mt))
+                                    yield VideoOutput(index=at, data=raw, media_type=cast(VideoMediaType, mt))
                                 else:
                                     yield ProviderEvent(
-                                        provider="google", kind="inlineData", data=dict(part.raw), index=0
+                                        provider="google", kind="inlineData", data=dict(part.raw), index=at
                                     )
                             elif part.functionCall.name:
                                 call = part.functionCall
                                 call_id = call.id or f"genai_{call.name}_{id(part)}"
                                 if part.thoughtSignature:
                                     self._thought_signatures[call_id] = part.thoughtSignature
-                                yield ToolUseStart(index=0, tool_use_id=call_id, name=call.name)
+                                yield ToolUseStart(index=at, tool_use_id=call_id, name=call.name)
                                 args_json = json.dumps(dict(call.args)) if call.args else "{}"
-                                yield ToolInputDelta(index=0, tool_use_id=call_id, partial_json=args_json)
+                                yield ToolInputDelta(index=at, tool_use_id=call_id, partial_json=args_json)
                                 has_tool_calls = True
                             elif not part.thoughtSignature:
                                 # executableCode, codeExecutionResult, fileData and whatever the API
                                 # adds next: content of the turn that axio has no type for.
-                                yield ProviderEvent(provider="google", kind="part", data=dict(part.raw), index=0)
+                                yield ProviderEvent(provider="google", kind="part", data=dict(part.raw), index=at)
 
                             if part.thoughtSignature:
                                 # Emit after the reasoning it signs, never before. The agent

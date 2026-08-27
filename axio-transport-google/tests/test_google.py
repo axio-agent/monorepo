@@ -18,7 +18,7 @@ from axio.blocks import (
     ToolUseBlock,
     VideoBlock,
 )
-from axio.events import Refusal, TextDelta
+from axio.events import Refusal, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry
@@ -804,3 +804,49 @@ class TestACutStreamIsNotAFinishedAnswer:
         # Nothing was generated, so no candidate and no finishReason ever arrive. That is not a cut.
         events = await _stream_one(monkeypatch, {"promptFeedback": {"blockReason": "SAFETY"}})
         assert [e for e in events if isinstance(e, Refusal)]
+
+
+class TestPartIndexes:
+    async def test_every_event_of_a_part_carries_that_parts_position(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Fixed at zero, the reasoning of one part and the signature of another shared an index.
+
+        Nothing downstream could then group a part's events together.
+        """
+        chunk = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "weighing it", "thought": True, "thoughtSignature": "SIG-0"},
+                            {"text": "the answer"},
+                        ]
+                    },
+                    "finishReason": "STOP",
+                }
+            ]
+        }
+        events = await _stream_one(monkeypatch, chunk)
+        by_kind = {type(e).__name__: e for e in events if hasattr(e, "index")}
+        assert by_kind["ReasoningDelta"].index == 0
+        assert by_kind["ReasoningSignature"].index == 0
+        assert by_kind["TextDelta"].index == 1
+
+    async def test_a_tool_call_in_the_second_part_is_indexed_there(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        chunk = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "let me look"},
+                            {"functionCall": {"id": "call_1", "name": "get_weather", "args": {}}},
+                        ]
+                    },
+                    "finishReason": "STOP",
+                }
+            ]
+        }
+        events = await _stream_one(monkeypatch, chunk)
+        starts = [e for e in events if isinstance(e, ToolUseStart)]
+        deltas = [e for e in events if isinstance(e, ToolInputDelta)]
+        assert [s.index for s in starts] == [1]
+        assert [d.index for d in deltas] == [1]
