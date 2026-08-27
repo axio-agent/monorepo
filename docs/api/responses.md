@@ -68,7 +68,7 @@ assert reader.finished().stop_reason.value == "end_turn"
 ```
 
 ```{eval-rst}
-.. autofunction:: axio_responses.strip_title
+.. autofunction:: axio.schema.strip_title
 ```
 
 `STOP_REASONS` maps a published response status, or the reason an incomplete response
@@ -112,7 +112,7 @@ wire name of its own is only ever nested inside another.
 | `AnnotationAdded` | `response.output_text.annotation.added` |
 | `ItemAdded` | `response.output_item.added` |
 | `ItemDone` | `response.output_item.done` |
-| `BlockDone` | `response.content_part.done` |
+| `ContentPartDone` | `response.content_part.done` |
 | `ArgumentsDelta` | `response.function_call_arguments.delta` |
 | `ArgumentsDone` | `response.function_call_arguments.done` |
 | `Created` | `response.created` |
@@ -198,7 +198,7 @@ wire name of its own is only ever nested inside another.
 ```
 
 ```{eval-rst}
-.. autoclass:: axio_responses.BlockDone
+.. autoclass:: axio_responses.ContentPartDone
    :members:
 ```
 

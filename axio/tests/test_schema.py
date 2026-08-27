@@ -446,3 +446,10 @@ class TestStripTitle:
         schema = {"anyOf": [{"title": "A", "type": "string"}], "items": {"title": "I", "type": "integer"}}
 
         assert strip_title(schema) == {"anyOf": [{"type": "string"}], "items": {"type": "integer"}}
+
+    def test_every_key_that_maps_names_to_schemas_is_walked(self) -> None:
+        # Only `properties` was covered. A pydantic model with a nested model writes `$defs`, and
+        # a field there called `title` is a tool argument like any other.
+        schema = {"$defs": {"Inner": {"title": "Inner", "properties": {"title": {"type": "string"}}}}}
+
+        assert strip_title(schema) == {"$defs": {"Inner": {"properties": {"title": {"type": "string"}}}}}

@@ -434,7 +434,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             yield ToolUseStart(index=wire.index, tool_use_id=block.id, name=block.name)
         elif block.type == "redacted_thinking":
             # Only the proof travels. The API refuses a thinking block without one.
-            yield ReasoningSignature(index=wire.index, data=block.data, redacted=True)
+            yield ReasoningSignature(index=wire.index, signature=block.data, redacted=True)
         elif block.type not in ("text", "thinking"):
             # server_tool_use, web_search_tool_result, code execution, mcp: run on the API's side.
             yield ProviderEvent(provider="anthropic", kind=block.type, data=dict(block.raw), index=wire.index)
@@ -448,7 +448,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             case "thinking_delta":
                 yield ReasoningDelta(index=index, delta=delta.thinking)
             case "signature_delta":
-                yield ReasoningSignature(index=index, data=delta.signature)
+                yield ReasoningSignature(index=index, signature=delta.signature)
             case "input_json_delta":
                 yield ToolInputDelta(
                     index=index,

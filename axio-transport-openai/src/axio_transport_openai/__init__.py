@@ -261,7 +261,7 @@ def _collect_tool_result_images(tool_results: list[ToolResultBlock]) -> list[dic
     return parts
 
 
-def _convert_messages(messages: list[Message], system: str) -> list[dict[str, Any]]:
+def _chat_messages(messages: list[Message], system: str) -> list[dict[str, Any]]:
     """Convert axio Message list to OpenAI message dicts."""
     result: list[dict[str, Any]] = []
     if system:
@@ -357,7 +357,7 @@ def _tool_key(tool: Any) -> str:
     return repr(sorted((repr(key), repr(value)) for key, value in tool.items()))
 
 
-def _convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
+def _chat_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
     """Convert axio Tool list to OpenAI tool dicts."""
     return [
         {
@@ -531,14 +531,14 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
     def build_chat_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model.id,
-            "messages": _convert_messages(messages, system),
+            "messages": _chat_messages(messages, system),
             "stream": True,
             "stream_options": {"include_usage": True},
             "max_completion_tokens": self.model.max_output_tokens,
         }
 
         if tools:
-            payload["tools"] = _convert_tools(tools)
+            payload["tools"] = _chat_tools(tools)
             if _TAKES_NO_REASONING.match(self.model.id) and "reasoning_effort" not in self.extra_params:
                 # This endpoint refuses function tools beside any reasoning effort other than "none", so a
                 # request carrying both fails with a 400 naming a parameter the caller never sent. The model

@@ -42,6 +42,7 @@ from .events import (
     ToolUseStart,
     VideoOutput,
 )
+from .exceptions import StreamError
 from .messages import Message
 from .models import Capability
 from .selector import ToolSelector
@@ -133,6 +134,19 @@ class _RepetitionDetector:
         return False
 
 
+def _last_unsigned(blocks: list[TurnBlock], kind: type[TextBlock] | type[ReasoningBlock]) -> int | None:
+    """Where the nearest block of this kind still waiting for its proof sits, or None.
+
+    Read as ``blocks[-1]`` alone, a proof that arrived after a block of another kind appended a
+    signed empty one, which the next request replays as content the provider never produced.
+    """
+    for at in range(len(blocks) - 1, -1, -1):
+        block = blocks[at]
+        if isinstance(block, kind):
+            return None if block.signature else at
+    return None
+
+
 #: The only reasons that vouch for the calls a turn produced. Named as the reasons to refuse
 #: instead, a reason added later would let a failed turn's half-written arguments run.
 _DISPATCH = frozenset(
@@ -201,6 +215,15 @@ def _result_events(results: list[ToolResultBlock], by_id: dict[str, ToolUseBlock
         )
 
 
+@dataclass(slots=True)
+class _PendingCall:
+    """One tool call while its arguments are still arriving."""
+
+    name: str
+    signature: str = ""
+    json_parts: list[str] = field(default_factory=list)
+
+
 #: What one iteration accumulates while the transport streams it.
 type TurnBlock = TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock
 
@@ -210,11 +233,13 @@ class _Turn:
     """What one iteration accumulates from the transport's stream."""
 
     content: list[TurnBlock] = field(default_factory=list)
-    pending: dict[str, dict[str, Any]] = field(default_factory=dict)
+    pending: dict[str, _PendingCall] = field(default_factory=dict)
     #: Calls whose arguments would not parse, so nothing may be dispatched from them.
     malformed: set[str] = field(default_factory=set)
     usage: Usage = Usage(0, 0)
-    stop_reason: StopReason = StopReason.end_turn
+    #: None until the transport says why it stopped. Defaulted to end_turn, a stream that simply
+    #: ended stored half an answer as a whole one.
+    stop_reason: StopReason | None = None
     repeated: bool = False
     #: Which block the last proof was for. A repeated index continues that proof.
     signed_at: int | None = None
@@ -239,29 +264,30 @@ class Agent:
     async def run(self, user_message: str, context: ContextStore) -> str:
         return await self.run_stream(user_message, context).get_final_text()
 
+    async def _call_one(self, block: ToolUseBlock) -> ToolResultBlock:
+        """Run one call and shape whatever it returned, or the exception it raised, as a result."""
+        tool = self._find_tool(block.name)
+        if tool is None:
+            logger.warning("Unknown tool requested: %s", block.name)
+            return ToolResultBlock(tool_use_id=block.id, content=f"Unknown tool: {block.name}", is_error=True)
+        logger.debug("Tool %s (id=%s) args=%s", block.name, block.id, json.dumps(block.input)[:200])
+        try:
+            result = await tool(**block.input)
+        except Exception as exc:
+            logger.error("Tool %s raised %s: %s", block.name, type(exc).__name__, exc, exc_info=True)
+            return ToolResultBlock(tool_use_id=block.id, content=str(exc), is_error=True)
+        content: str | list[TextBlock | ImageBlock | AudioBlock | VideoBlock]
+        if isinstance(result, str):
+            content = result
+        elif isinstance(result, list) and all(isinstance(b, ContentBlock) for b in result):
+            content = result
+        else:
+            content = str(result)
+        return ToolResultBlock(tool_use_id=block.id, content=content)
+
     async def dispatch_tools(self, blocks: list[ToolUseBlock], iteration: int) -> list[ToolResultBlock]:
         logger.info("Dispatching %d tool(s): %r", len(blocks), blocks)
-
-        async def _run_one(block: ToolUseBlock) -> ToolResultBlock:
-            tool = self._find_tool(block.name)
-            if tool is None:
-                logger.warning("Unknown tool requested: %s", block.name)
-                return ToolResultBlock(tool_use_id=block.id, content=f"Unknown tool: {block.name}", is_error=True)
-            logger.debug("Tool %s (id=%s) args=%s", block.name, block.id, json.dumps(block.input)[:200])
-            try:
-                result = await tool(**block.input)
-                if isinstance(result, str):
-                    content: str | list[TextBlock | ImageBlock | AudioBlock | VideoBlock] = result
-                elif isinstance(result, list) and all(isinstance(b, ContentBlock) for b in result):
-                    content = result
-                else:
-                    content = str(result)
-            except Exception as exc:
-                logger.error("Tool %s raised %s: %s", block.name, type(exc).__name__, exc, exc_info=True)
-                return ToolResultBlock(tool_use_id=block.id, content=str(exc), is_error=True)
-            return ToolResultBlock(tool_use_id=block.id, content=content)
-
-        results = list(await asyncio.gather(*[_run_one(b) for b in blocks]))
+        results = list(await asyncio.gather(*[self._call_one(b) for b in blocks]))
         error_count = sum(1 for r in results if r.is_error)
         logger.info("Tools complete: %d total, %d errors", len(results), error_count)
         return results
@@ -277,37 +303,19 @@ class Agent:
 
         async def _run_one(block: ToolUseBlock) -> ToolResultBlock:
             tool = self._find_tool(block.name)
-            if tool is None:
-                logger.warning("Unknown tool requested: %s", block.name)
-                return ToolResultBlock(tool_use_id=block.id, content=f"Unknown tool: {block.name}", is_error=True)
+            if tool is None or not tool.supports_streaming:
+                return await self._call_one(block)
             logger.debug("Tool %s (id=%s) args=%s", block.name, block.id, json.dumps(block.input)[:200])
-
-            if tool.supports_streaming:
-                chunks: list[tuple[float, str, str]] = []
-                t0 = time.monotonic()
-                try:
-                    async for key, text in tool.call_streaming(**block.input):
-                        chunks.append((time.monotonic() - t0, key, text))
-                        await output_queue.put(
-                            ToolOutputDelta(tool_use_id=block.id, name=block.name, key=key, delta=text)
-                        )
-                except Exception as exc:
-                    logger.error("Tool %s raised %s: %s", block.name, type(exc).__name__, exc, exc_info=True)
-                    return ToolResultBlock(tool_use_id=block.id, content=str(exc), is_error=True)
-                return ToolResultBlock(tool_use_id=block.id, content=tool.format_stream_result(chunks))
-            else:
-                try:
-                    result = await tool(**block.input)
-                    if isinstance(result, str):
-                        content: str | list[TextBlock | ImageBlock | AudioBlock | VideoBlock] = result
-                    elif isinstance(result, list) and all(isinstance(b, ContentBlock) for b in result):
-                        content = result
-                    else:
-                        content = str(result)
-                except Exception as exc:
-                    logger.error("Tool %s raised %s: %s", block.name, type(exc).__name__, exc, exc_info=True)
-                    return ToolResultBlock(tool_use_id=block.id, content=str(exc), is_error=True)
-                return ToolResultBlock(tool_use_id=block.id, content=content)
+            chunks: list[tuple[float, str, str]] = []
+            started = time.monotonic()
+            try:
+                async for key, text in tool.call_streaming(**block.input):
+                    chunks.append((time.monotonic() - started, key, text))
+                    await output_queue.put(ToolOutputDelta(tool_use_id=block.id, name=block.name, key=key, delta=text))
+            except Exception as exc:
+                logger.error("Tool %s raised %s: %s", block.name, type(exc).__name__, exc, exc_info=True)
+                return ToolResultBlock(tool_use_id=block.id, content=str(exc), is_error=True)
+            return ToolResultBlock(tool_use_id=block.id, content=tool.format_stream_result(chunks))
 
         results = list(await asyncio.gather(*[_run_one(b) for b in blocks]))
         error_count = sum(1 for r in results if r.is_error)
@@ -325,7 +333,7 @@ class Agent:
 
     @staticmethod
     def _accumulate_text(
-        content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
+        content: list[TurnBlock],
         delta: str,
     ) -> None:
         """Append a text delta, merging into the block still being built.
@@ -341,7 +349,7 @@ class Agent:
 
     @staticmethod
     def _accumulate_reasoning(
-        content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
+        content: list[TurnBlock],
         delta: str,
     ) -> None:
         """Append a reasoning delta, merging into the block still being built.
@@ -358,7 +366,7 @@ class Agent:
 
     @staticmethod
     def _sign_reasoning(
-        content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
+        content: list[TurnBlock],
         data: str,
         redacted: bool,
         id: str = "",
@@ -376,30 +384,35 @@ class Agent:
         last = content[-1] if content else None
         if joining and isinstance(last, ReasoningBlock) and last.signature:
             content[-1] = replace(last, signature=last.signature + data)
-        elif isinstance(last, ReasoningBlock) and not last.signature:
-            content[-1] = replace(last, signature=data, redacted=redacted, id=id)
-        else:
+            return
+        at = _last_unsigned(content, ReasoningBlock)
+        if at is None:
+            # A provider that sends the proof before the reasoning, which none does today.
             content.append(ReasoningBlock(signature=data, redacted=redacted, id=id))
+            return
+        content[at] = replace(content[at], signature=data, redacted=redacted, id=id)  # type: ignore[arg-type]
 
     @staticmethod
     def _sign_text(
-        content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
+        content: list[TurnBlock],
         data: str,
     ) -> None:
         """Attach the provider's proof to the answer text it belongs to.
 
-        The proof arrives after the text it signs, so it goes on the block just built. Put on a
-        reasoning block or a call instead, it is replayed on a part the provider never signed.
+        The proof arrives after the text it signs, so it goes on the nearest text still unsigned.
+        Put on a reasoning block or a call instead, it is replayed on a part nobody signed.
         """
-        last = content[-1] if content else None
-        if isinstance(last, TextBlock) and not last.signature:
-            content[-1] = replace(last, signature=data)
-        else:
-            content.append(TextBlock(text="", signature=data))
+        at = _last_unsigned(content, TextBlock)
+        if at is None:
+            # Better to lose the proof than to invent a block for it: a signed empty text part is
+            # replayed to the provider as content it never produced.
+            logger.warning("Dropping a text signature with no text to attach it to")
+            return
+        content[at] = replace(content[at], signature=data)  # type: ignore[arg-type]
 
     @staticmethod
     def _finalize_pending_tools(
-        pending: dict[str, dict[str, Any]],
+        pending: dict[str, _PendingCall],
         usage: Usage,
     ) -> tuple[list[ToolUseBlock], set[str]]:
         """Convert streamed tool-call fragments into ToolUseBlocks.
@@ -412,11 +425,11 @@ class Agent:
         blocks: list[ToolUseBlock] = []
         malformed: set[str] = set()
         for tid, info in pending.items():
-            raw = "".join(info["json_parts"])
+            raw = "".join(info.json_parts)
             if not raw:
                 logger.warning(
                     "Tool %s (id=%s) received empty arguments (output may be truncated, output_tokens=%d)",
-                    info["name"],
+                    info.name,
                     tid,
                     usage.output_tokens,
                 )
@@ -427,14 +440,14 @@ class Agent:
                 except json.JSONDecodeError as exc:
                     logger.warning(
                         "Tool %s (id=%s) has malformed JSON arguments: %s\nRaw: %s",
-                        info["name"],
+                        info.name,
                         tid,
                         exc,
                         raw,
                     )
                     malformed.add(tid)
                     inp = {}
-            blocks.append(ToolUseBlock(id=tid, name=info["name"], input=inp, signature=info.get("signature", "")))
+            blocks.append(ToolUseBlock(id=tid, name=info.name, input=inp, signature=info.signature))
         return blocks, malformed
 
     async def _select_tools(self, history: list[Message], tools: list[Tool[Any]]) -> Iterable[Tool[Any]]:
@@ -484,11 +497,11 @@ class Agent:
                 case Refusal(text=text) if text:
                     # A refusal is what the assistant said, and an empty turn is refused next time.
                     self._accumulate_text(turn.content, text)
-                case TextSignature(data=proof):
+                case TextSignature(signature=proof):
                     self._sign_text(turn.content, proof)
                 case ReasoningDelta(delta=delta):
                     self._accumulate_reasoning(turn.content, delta)
-                case ReasoningSignature(index=at, data=proof, redacted=redacted, id=block_id):
+                case ReasoningSignature(index=at, signature=proof, redacted=redacted, id=block_id):
                     self._sign_reasoning(turn.content, proof, redacted, block_id, joining=at == turn.signed_at)
                     turn.signed_at = at
                 case ImageOutput(data=data, media_type=mt):
@@ -498,9 +511,9 @@ class Agent:
                 case VideoOutput(data=data, media_type=mt):
                     turn.content.append(VideoBlock(media_type=mt, data=data))
                 case ToolUseStart(tool_use_id=tid, name=name, signature=proof):
-                    turn.pending[tid] = {"name": name, "json_parts": [], "signature": proof}
+                    turn.pending[tid] = _PendingCall(name=name, signature=proof)
                 case ToolInputDelta(tool_use_id=tid, partial_json=chunk) if tid in turn.pending:
-                    turn.pending[tid]["json_parts"].append(chunk)
+                    turn.pending[tid].json_parts.append(chunk)
                 case IterationEnd(usage=usage, stop_reason=reason):
                     blocks, turn.malformed = self._finalize_pending_tools(turn.pending, usage)
                     turn.content.extend(blocks)
@@ -608,6 +621,10 @@ class Agent:
                     async for event in self._consume(stream, turn, context):
                         yield event
                 except Exception as exc:
+                    # The turn was billed for whatever it reported before it broke, and the caller
+                    # is owed that figure. Counted only below, a failure after IterationEnd told
+                    # them the turn was free.
+                    total_usage = total_usage + turn.usage
                     logger.error("Transport error: %s", exc, exc_info=True)
                     yield Error(exception=exc)
                     yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
@@ -648,6 +665,13 @@ class Agent:
                 await self._append(context, Message(role="assistant", content=list(content)))
 
                 match stop_reason:
+                    case None:
+                        # The transport never said why it stopped, so the stream was cut. Read as
+                        # end_turn, half an answer is stored and returned as a whole one.
+                        yield Error(exception=StreamError("Transport ended without an IterationEnd"))
+                        yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
+                        session_end_emitted = True
+                        return
                     case StopReason.end_turn:
                         logger.debug("End turn: total_usage=%s", total_usage)
                         yield SessionEndEvent(stop_reason=StopReason.end_turn, total_usage=total_usage)

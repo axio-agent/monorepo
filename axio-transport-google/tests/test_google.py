@@ -988,7 +988,7 @@ class TestWhatAPartProduces:
         # call in the turn replayed with a proof that was never its own.
         events = self._events({"text": "42", "thoughtSignature": "SIG"})
         assert [type(e).__name__ for e in events] == ["TextDelta", "TextSignature"]
-        assert events[1].data == "SIG"
+        assert events[1].signature == "SIG"
 
     def test_the_proof_arrives_after_the_text_it_signs(self) -> None:
         # The agent signs the block it has just built, so a proof emitted first signs nothing, and
@@ -996,7 +996,7 @@ class TestWhatAPartProduces:
         events = self._events({"text": "42", "thoughtSignature": "SIG"})
 
         assert [type(e).__name__ for e in events] == ["TextDelta", "TextSignature"]
-        assert events[1].data == "SIG"
+        assert events[1].signature == "SIG"
 
     def test_a_signed_part_axio_has_no_type_for_still_reaches_the_caller(self) -> None:
         # The signature suppressed the event carrying the content, so the code ran and vanished.
@@ -1053,3 +1053,23 @@ class TestTheStreamContract:
 
         with pytest.raises(StreamError, match="INVENTED_LATER"):
             await _stream_one(monkeypatch, chunk)
+
+
+class TestWhichProofACallReplaysWith:
+    """The call's own proof outranks the map on the transport, which a restart empties."""
+
+    def test_the_stored_proof_wins_over_the_live_map(self) -> None:
+        # Read from the map first, a session restored into a fresh transport replayed the call
+        # with nothing and Gemini answered MISSING_THOUGHT_SIGNATURE.
+        turn = Message(role="assistant", content=[ToolUseBlock(id="c1", name="search", input={}, signature="STORED")])
+
+        parts = _build_contents_json([turn], {"c1": "FROM_THE_MAP"})[0]["parts"]
+
+        assert parts[0]["thoughtSignature"] == "STORED"
+
+    def test_the_map_still_answers_for_a_block_stored_without_one(self) -> None:
+        turn = Message(role="assistant", content=[ToolUseBlock(id="c1", name="search", input={})])
+
+        parts = _build_contents_json([turn], {"c1": "FROM_THE_MAP"})[0]["parts"]
+
+        assert parts[0]["thoughtSignature"] == "FROM_THE_MAP"

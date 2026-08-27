@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import pytest
 
@@ -209,3 +210,33 @@ def test_the_optional_case_still_takes_its_default() -> None:
 
     assert Maybe.read(Payload({"value": "x"})).value == "x"
     assert Maybe.read(Payload({"value": 7})).value is None
+
+
+def test_a_shape_cannot_claim_an_empty_name() -> None:
+    # An empty name matches every payload whose discriminator is missing, including under strict.
+    with pytest.raises(ValueError, match="empty name"):
+
+        @dataclass(slots=True)
+        class Bad(Wire, name="real", also=""):
+            x: str = ""
+
+
+class TestAnnotationsTheLadderMustCheck:
+    @dataclass(slots=True)
+    class Shape(Wire, name="shape"):
+        kind: Literal["a", "b"] = "a"
+        pair: tuple[str, ...] = ()
+        free: Any = None
+
+    def test_a_literal_field_refuses_a_value_outside_it(self) -> None:
+        # Passed through unchecked, a declared field held a value of any shape at all.
+        assert self.Shape.read(Payload({"kind": 99})).kind == "a"
+
+    def test_a_literal_field_takes_one_inside_it(self) -> None:
+        assert self.Shape.read(Payload({"kind": "b"})).kind == "b"
+
+    def test_a_tuple_field_reads_the_list_json_gives_it(self) -> None:
+        assert self.Shape.read(Payload({"pair": ["x", "y"]})).pair == ("x", "y")
+
+    def test_a_field_declared_any_still_takes_anything(self) -> None:
+        assert self.Shape.read(Payload({"free": {"whatever": 1}})).free == {"whatever": 1}

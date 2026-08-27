@@ -1,12 +1,15 @@
 """Payload shapes: one class per wire name, read into declared fields."""
 
+import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import fields, is_dataclass
 from functools import cache
 from types import UnionType
-from typing import Any, ClassVar, Self, Union, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Literal, Self, Union, get_args, get_origin, get_type_hints
 
 from .event import Payload
+
+logger = logging.getLogger(__name__)
 
 
 class Wire:
@@ -42,6 +45,8 @@ class Wire:
         if name:
             # Replaces rather than extends: a renamed subclass must not keep its parent's names.
             cls.names = (name, *((also,) if isinstance(also, str) else also))
+            if not all(cls.names):
+                raise ValueError(f"{cls.__name__} claims an empty name, which would capture every payload")
 
     @classmethod
     def read(cls, payload: Payload) -> Self:
@@ -111,4 +116,17 @@ def _as(kind: Any, raw: Any) -> Any:
             return None
     if kind is Payload or kind is dict or origin is dict:
         return Payload(raw) if isinstance(raw, dict) else None
-    return raw
+    if origin is Literal:
+        return raw if raw in get_args(kind) else None
+    if origin is tuple:
+        if not isinstance(raw, list):
+            return None
+        inner = [a for a in get_args(kind) if a is not Ellipsis]
+        items: list[Any] = [_as(inner[0], one) for one in raw] if inner else list(raw)
+        return tuple(one for one in items if one is not None)
+    if kind is Any:
+        return raw
+    # An annotation the ladder cannot read takes its default rather than whatever arrived. Passed
+    # through, a declared field held a value of any shape and the class's own rule said otherwise.
+    logger.debug("No rule for %r, so the field takes its default", kind)
+    return None

@@ -252,9 +252,13 @@ def test_a_reset_leaves_no_buffer_and_no_offset_into_it() -> None:
     assert decoder.decode(b"data: second\n\n", final=True) == [Event(data="second")]
 
 
-def _ordinary(size: int, events: int = 4_000) -> float:
-    """The best of three runs over many small events, cut into chunks of ``size``."""
-    stream = ("data: {}\n\n" * events).encode()
+def _ordinary(size: int, events: int = 8_000) -> float:
+    """The CPU cost of the best of three runs over many small events, cut into chunks of ``size``.
+
+    The stream is far larger than the largest chunk size measured, or the biggest chunk holds the
+    whole stream and the per-line rescan this guards against never happens.
+    """
+    stream = (('data: {"i":"' + "x" * 40 + '"}\n\n') * events).encode()
     parts = [stream[at : at + size] for at in range(0, len(stream), size)]
     best = float("inf")
     for _ in range(3):
@@ -272,7 +276,7 @@ def test_many_small_events_cost_the_same_however_they_are_chunked() -> None:
     # same stream: 64 KB chunks were 26 times 1 KB chunks. 64 KB is aiohttp's default.
     _ordinary(8192)  # warm the paths, so the first measured size does not pay for them
     small, large = _ordinary(1024), _ordinary(65536)
-    assert large / small < 4, f"a 64x larger read buffer cost {large / small:.1f} times the time"
+    assert large / small < 2, f"a 64x larger read buffer cost {large / small:.1f} times the time"
 
 
 def test_a_finished_event_is_not_held_a_second_time() -> None:
@@ -310,3 +314,14 @@ def test_a_mark_in_a_byte_chunk_after_a_text_chunk_is_data() -> None:
     made = decoder.decode(b"\xef\xbb\xbfdata: second\n\n")
 
     assert made == [], "the field name is ﻿data, which no format defines"
+
+
+@pytest.mark.parametrize("as_bytes", [True, False])
+def test_only_the_first_mark_is_stripped(as_bytes: bool) -> None:
+    # The second is data, so the field name is ﻿data and the event is dropped. Stripped as well,
+    # the same stream read one way as bytes and another as text.
+    stream = "﻿﻿data: x\n\n"
+
+    made = Decoder().decode(stream.encode() if as_bytes else stream, final=True)
+
+    assert made == []

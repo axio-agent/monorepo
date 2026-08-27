@@ -22,6 +22,7 @@ from axio.events import (
 )
 from axio.exceptions import StreamError
 from axio.messages import Message
+from axio.testing import assert_stream_contract
 from axio.tool import Tool
 from axio.types import StopReason, Usage
 
@@ -229,7 +230,10 @@ async def transport(fake_server: tuple[FakeCodexServer, str]) -> AsyncIterator[C
 
 
 async def _collect(stream: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
-    return [event async for event in stream]
+    """Every event the stream produced, checked against what any transport must produce."""
+    made = [event async for event in stream]
+    assert_stream_contract(made)
+    return made
 
 
 # ---------------------------------------------------------------------------

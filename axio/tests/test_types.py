@@ -69,11 +69,19 @@ class TestUsageDetail:
         # The one rule every transport converts into. A slice that escaped its total would make
         # uncached_input_tokens negative, and any cost computed from it nonsense.
         usage = Usage(100, 50, cache_read_tokens=70, cache_write_tokens=10, reasoning_tokens=40)
-        assert usage.cache_read_tokens + usage.cache_write_tokens <= usage.input_tokens
-        assert usage.reasoning_tokens <= usage.output_tokens
+
+        # The derived figures, which are what a cost is computed from. Asserting the slices against
+        # the totals instead was arithmetic on this test's own literals and could never fail.
         assert usage.uncached_input_tokens == 20
         assert usage.answer_tokens == 10
         assert usage.total_tokens == 150
+
+    def test_a_slice_that_escaped_its_total_shows_up_in_what_is_derived(self) -> None:
+        # A transport that reads a provider's cache as outside the input when it is inside reports
+        # a hundred-thousand-token prompt as a handful, and this is where that surfaces.
+        wrong = Usage(100, 50, cache_read_tokens=900)
+
+        assert wrong.uncached_input_tokens < 0, "a negative remainder is how the mistake is visible"
 
     def test_addition_carries_every_slice(self) -> None:
         first = Usage(10, 5, cache_read_tokens=4, cache_write_tokens=2, reasoning_tokens=3)

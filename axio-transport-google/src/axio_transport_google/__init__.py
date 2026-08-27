@@ -531,6 +531,8 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
     models: ModelRegistry = field(default_factory=lambda: ModelRegistry(GENAI_MODELS.values()))
     session: aiohttp.ClientSession | None = field(default=None, repr=False, compare=False)
     max_retries: int = 5
+    #: Seconds before the first retry, doubling after that. The other transports name it too.
+    retry_base_delay: float = 5.0
     temperature: float | None = field(default=None, repr=False)
     top_p: float | None = field(default=None, repr=False)
     top_k: float | None = field(default=None, repr=False)
@@ -748,7 +750,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 self.max_retries,
                                 error_text,
                             )
-                            await asyncio.sleep(retry_delay(resp, attempt))
+                            await asyncio.sleep(retry_delay(resp, attempt, base=self.retry_base_delay))
                             continue
                         raise StreamError(f"{resp.status} {resp.reason}: {error_text[:1000]}")
 
@@ -791,14 +793,17 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             except Exception as exc:
                 last_exc = exc
                 status = getattr(exc, "status", getattr(exc, "status_code", None))
-                if not sent and (
-                    (isinstance(status, int) and is_retryable(status)) or "ResourceExhausted" in str(exc)
-                ):
+                # A connection error carries no status, and every other transport retries one.
+                # Tested on status alone, a disconnect before the first byte failed the turn here.
+                worth_retrying = isinstance(exc, aiohttp.ClientError) or (
+                    isinstance(status, int) and is_retryable(status)
+                )
+                if not sent and (worth_retrying or "ResourceExhausted" in str(exc)):
                     # Not once the caller has seen events: going round again re-POSTs and replays
                     # them, so a tool runs twice and its text is stored twice.
                     logger.warning("Gemini retryable error (attempt %d/%d): %s", attempt, self.max_retries, exc)
                     if attempt < self.max_retries:
-                        await asyncio.sleep(retry_delay(None, attempt))
+                        await asyncio.sleep(retry_delay(None, attempt, base=self.retry_base_delay))
                         continue
                 logger.error("Gemini stream error: %s", exc, exc_info=True)
                 raise StreamError(str(exc)) from exc
@@ -876,11 +881,11 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
         if part.thought or not carried:
             # It signs reasoning, or it is the bare proof of a call that follows. Emitted after
             # the reasoning, never before: the agent signs the block it has just built.
-            yield ReasoningSignature(index=at, data=part.thoughtSignature)
+            yield ReasoningSignature(index=at, signature=part.thoughtSignature)
         elif part.text:
             # The proof signs answer text, so it rides on that text block. Emitted after the text,
             # never before, for the same reason as reasoning.
-            yield TextSignature(index=at, data=part.thoughtSignature)
+            yield TextSignature(index=at, signature=part.thoughtSignature)
         else:
             # Media, executableCode and the rest: axio has no block that can hold this proof, so it
             # travels raw rather than attaching to a block the provider did not sign.

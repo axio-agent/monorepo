@@ -272,7 +272,7 @@ class Responses(Reader[StreamEvent]):
         Without it a turn that reasoned and then called a tool starts the next round blind.
         """
         if wire.item.type == "reasoning" and wire.item.encrypted_content:
-            yield ReasoningSignature(index=wire.output_index, data=wire.item.encrypted_content, id=wire.item.id)
+            yield ReasoningSignature(index=wire.output_index, signature=wire.item.encrypted_content, id=wire.item.id)
         yield BlockEnd(index=wire.output_index)
 
     @on(ItemAdded)
@@ -303,9 +303,10 @@ class Responses(Reader[StreamEvent]):
             # The status enum has no refusal member, so a declined response still completes.
             pass
         elif status not in STOP_REASONS:
-            # An unknown status is not a finished answer, whatever else it might be.
-            logger.warning("Unknown response status %r, read as an error", status)
-            self.stop_reason = StopReason.error
+            # Not a finished answer, whatever else it is. Returned as IterationEnd(error) the
+            # caller is told only `Transport stopped with: error`, and the status is what they can
+            # act on.
+            raise StreamError(f"Responses completed with an unknown status: {status!r}")
         else:
             self.stop_reason = STOP_REASONS[status]
             # A finished response still holding a call is a turn that wants the tool run first.
@@ -423,4 +424,6 @@ class Responses(Reader[StreamEvent]):
             self.usage.input_tokens,
             self.usage.output_tokens,
         )
+        if stop is StopReason.error:
+            raise StreamError("Responses stopped with an error the reader did not name")
         return IterationEnd(iteration=0, stop_reason=stop, usage=self.usage)

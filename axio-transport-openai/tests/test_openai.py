@@ -26,6 +26,7 @@ from axio.events import (
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
+from axio.testing import assert_stream_contract
 from axio.tool import Tool
 from axio.types import StopReason, Usage
 
@@ -266,7 +267,10 @@ async def transport(fake_server: tuple[FakeOpenAIServer, str]) -> AsyncIterator[
 
 
 async def _collect(stream: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
-    return [event async for event in stream]
+    """Every event the stream produced, checked against what any transport must produce."""
+    made = [event async for event in stream]
+    assert_stream_contract(made)
+    return made
 
 
 # ---------------------------------------------------------------------------
@@ -1916,3 +1920,63 @@ class TestWhoTakesNoReasoning:
             return "sunny"
 
         return Tool(name="get_weather", description="w", handler=get_weather)
+
+
+class TestTheTokenSlices:
+    """The slices inside the totals, which decide what the caller is billed."""
+
+    async def test_the_chat_path_reports_every_slice(self, fake_server: tuple[FakeOpenAIServer, str]) -> None:
+        # Zeroing all three passed every test in this package: no chat fixture carried the details
+        # objects at all, so an entire billing dimension went unchecked.
+        server, base_url = fake_server
+        sse = _sse_chunk({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}]})
+        sse += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        sse += _sse_chunk(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 300,
+                    "prompt_tokens_details": {"cached_tokens": 800, "cache_write_tokens": 50},
+                    "completion_tokens_details": {"reasoning_tokens": 120},
+                },
+            }
+        )
+        server.responses.append(sse)
+
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(base_url=base_url, api_key="k", api="chat", session=session)
+            events = await _collect(transport.stream([], [], ""))
+
+        usage = [e for e in events if isinstance(e, IterationEnd)][0].usage
+        assert (usage.input_tokens, usage.output_tokens) == (1000, 300)
+        assert (usage.cache_read_tokens, usage.cache_write_tokens) == (800, 50)
+        assert usage.reasoning_tokens == 120
+
+    async def test_the_slices_are_inside_the_totals_this_provider_reports(
+        self, fake_server: tuple[FakeOpenAIServer, str]
+    ) -> None:
+        # OpenAI counts the cache inside prompt_tokens, unlike Anthropic. Read as outside, an
+        # uncached prompt is reported at a fraction of what it cost.
+        server, base_url = fake_server
+        sse = _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        sse += _sse_chunk(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 300,
+                    "prompt_tokens_details": {"cached_tokens": 800},
+                    "completion_tokens_details": {"reasoning_tokens": 120},
+                },
+            }
+        )
+        server.responses.append(sse)
+
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(base_url=base_url, api_key="k", api="chat", session=session)
+            events = await _collect(transport.stream([], [], ""))
+
+        usage = [e for e in events if isinstance(e, IterationEnd)][0].usage
+        assert usage.uncached_input_tokens == 200
+        assert usage.answer_tokens == 180

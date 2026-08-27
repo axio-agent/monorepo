@@ -53,56 +53,32 @@ class Decoder:
 
     def reset(self) -> None:
         """Forget the half-read event and the half-read character, ready for another stream."""
-        # ``utf-8-sig`` strips a leading byte order mark, which the format requires.
+        # What has arrived. ``utf-8-sig`` strips a leading byte order mark, which the format
+        # requires. ``_parts`` holds chunks apart until a terminator arrives, because joining each
+        # one into the buffer copies the whole held event again.
         self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
-        self._held = ""
-        # Held apart until a terminator arrives: joining each chunk copies the whole event again.
         self._parts: list[str] = []
+        self._held = ""
         self._start = 0
         self._scan = 0
         self._opened = False
         self._trailing_cr = False
+
+        # What the lines read so far have collected, for the next dispatch.
         self._data: list[str] = []
         self._event = ""
         self._id = ""
         self._retry: int | None = None
 
     def decode(self, chunk: bytes | str = b"", final: bool = False) -> list[Event]:
-        """Every event this chunk completed. ``final=True`` also dispatches what is left over.
+        """Every event this chunk completed.
 
-        Without that last call a stream that stops before its final blank line loses its last
-        event. A stream cut mid-character loses the character instead of replacing it.
+        ``final=True`` closes the stream: what is still pending is discarded, which the format
+        requires of an event that never reached its blank line. Without that last call a stream
+        cut mid-character keeps the half character instead of replacing it.
         """
-        if isinstance(chunk, bytes):
-            text = self._text.decode(chunk)
-        else:
-            # Bytes left half a character behind. A final flush keeps a partial mark, so the
-            # state is cleared as well as replaced.
-            if pending := self._text.getstate()[0]:
-                self._text.setstate((b"", 0))
-            text = pending.decode("utf-8", "replace") + chunk
-        if not self._opened:
-            text = text.removeprefix("\ufeff")
-            if text or final:
-                self._opened = True
-                # Flag 0 means no mark is expected. The byte decoder tracks the start itself,
-                # and would eat a mark that is data by then.
-                self._text.setstate((b"", 0))
-        if final:
-            text += self._text.decode(b"", True)
-        if self._trailing_cr:
-            text = "\r" + text
-            self._trailing_cr = False
-        if text.endswith("\r") and not final:
-            # A chunk can end mid-terminator. Hold the ``\r`` until the next chunk says whether a
-            # ``\n`` follows, or it invents a blank line and dispatches half an event.
-            text, self._trailing_cr = text[:-1], True
-        if text:
-            # Every piece costs a string header, so a byte at a time held forty times its size.
-            if self._parts and len(self._parts[-1]) < _MIN_PIECE:
-                self._parts[-1] += text
-            else:
-                self._parts.append(text)
+        text = self._text_of(chunk, final)
+        self._hold(text)
         if not final and "\n" not in text and "\r" not in text:
             return []
         self._join()
@@ -111,18 +87,65 @@ class Decoder:
         while (line := self._take()) is not None:
             if (event := self._read(line)) is not None:
                 made.append(event)
-        if self._start * 2 >= len(self._held) and self._start:
-            # Or the buffer pins a second copy of the event it just handed back.
-            self._held = self._held[self._start :]
-            self._scan -= self._start
-            self._start = 0
         if final:
-            # The format discards what is pending at end of file, so a connection cut before the
-            # blank line cannot read as a finished turn.
-            self._held, self._start, self._scan = "", 0, 0
-            self._data.clear()
-            self._event = ""
+            self._forget()
+        elif self._start and self._start * 2 >= len(self._held):
+            self._compact()
         return made
+
+    def _text_of(self, chunk: bytes | str, final: bool) -> str:
+        """This chunk as text, with the byte order mark and a split terminator dealt with."""
+        if isinstance(chunk, bytes):
+            text = self._text.decode(chunk)
+        else:
+            # Bytes left half a character behind. A final flush keeps a partial mark, so the state
+            # is cleared as well as replaced.
+            if pending := self._text.getstate()[0]:
+                self._text.setstate((b"", 0))
+            text = pending.decode("utf-8", "replace") + chunk
+        if not self._opened:
+            # The byte decoder took one mark already, and a second is data. Stripped here as well,
+            # two marks would read differently as bytes than as text.
+            if not isinstance(chunk, bytes):
+                text = text.removeprefix("\ufeff")
+            if text or final:
+                self._opened = True
+                # Flag 0 means no mark is expected, which the byte decoder cannot know on its own.
+                self._text.setstate((b"", 0))
+        if final:
+            text += self._text.decode(b"", True)
+        if self._trailing_cr:
+            text, self._trailing_cr = "\r" + text, False
+        if text.endswith("\r") and not final:
+            # A chunk can end mid-terminator. Hold the ``\r`` until the next chunk says whether a
+            # ``\n`` follows, or it invents a blank line and dispatches half an event.
+            text, self._trailing_cr = text[:-1], True
+        return text
+
+    def _hold(self, text: str) -> None:
+        """Keep this text until a terminator arrives."""
+        if not text:
+            return
+        # Every piece costs a string header, so a byte at a time held forty times its size.
+        if self._parts and len(self._parts[-1]) < _MIN_PIECE:
+            self._parts[-1] += text
+        else:
+            self._parts.append(text)
+
+    def _compact(self) -> None:
+        """Drop the lines already read, once they outweigh what is left."""
+        self._held = self._held[self._start :]
+        self._scan -= self._start
+        self._start = 0
+
+    def _forget(self) -> None:
+        """Discard what never completed, which is what end of file means for this format.
+
+        Dispatched instead, a connection cut between a frame and the blank line after it makes a
+        truncated turn read as a finished one.
+        """
+        self._held, self._start, self._scan = "", 0, 0
+        self._data, self._event, self._retry = [], "", None
 
     def _join(self) -> None:
         """Make the held text one string again, and drop the lines already read."""

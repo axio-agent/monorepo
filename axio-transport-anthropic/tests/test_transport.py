@@ -28,6 +28,7 @@ from axio.events import (
 )
 from axio.exceptions import StreamError
 from axio.messages import Message
+from axio.testing import assert_stream_contract
 from axio.tool import Tool
 from axio.types import StopReason
 from axio_sse import Event, UnknownEvent
@@ -160,7 +161,13 @@ async def transport(fake_server: tuple[FakeAnthropicServer, str]) -> AsyncIterat
 
 
 async def _collect(it: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
-    return [e async for e in it]
+    """Every event the stream produced, checked against what any transport must produce.
+
+    Asserted here rather than in one test, so every stream this package drives is held to it.
+    """
+    made = [e async for e in it]
+    assert_stream_contract(made)
+    return made
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +627,7 @@ class TestTheWholeVocabulary:
                 event="content_block_delta",
             )
         )
-        assert made == [ReasoningSignature(index=0, data="ErUBCkYIBRgC")]
+        assert made == [ReasoningSignature(index=0, signature="ErUBCkYIBRgC")]
 
     def test_a_redacted_thinking_block_carries_its_proof_and_no_text(self) -> None:
         made = Messages().read(
@@ -629,7 +636,7 @@ class TestTheWholeVocabulary:
                 event="content_block_start",
             )
         )
-        assert made == [ReasoningSignature(index=1, data="EroBCkYI", redacted=True)]
+        assert made == [ReasoningSignature(index=1, signature="EroBCkYI", redacted=True)]
 
     def test_a_citation_carries_the_unit_its_span_is_counted_in(self) -> None:
         # Only char_location counts characters; page_location counts pages. Compared across units

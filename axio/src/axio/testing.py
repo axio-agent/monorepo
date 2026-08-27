@@ -23,12 +23,16 @@ class StubTransport:
     Each call to stream() pops the next sequence from the list.
     """
 
-    def __init__(self, responses: list[list[StreamEvent]] | None = None) -> None:
-        self._responses: list[list[StreamEvent]] = list(responses or [])
+    def __init__(self, responses: Sequence[Sequence[StreamEvent | BaseException]] | None = None) -> None:
+        #: An exception among the events is raised where it sits, which is how a real transport
+        #: reports a failure. ``IterationEnd`` cannot carry ``StopReason.error``.
+        self._responses: list[Sequence[StreamEvent | BaseException]] = list(responses or [])
         self._call_count = 0
 
-    async def _generate(self, events: list[StreamEvent]) -> AsyncIterator[StreamEvent]:
+    async def _generate(self, events: Sequence[StreamEvent | BaseException]) -> AsyncIterator[StreamEvent]:
         for event in events:
+            if isinstance(event, BaseException):
+                raise event
             yield event
 
     def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:

@@ -199,12 +199,12 @@ Seven `ContentBlock` subclasses represent all content in messages. All are `data
 
 | Block | Fields | Purpose |
 |---|---|---|
-| `TextBlock` | `text: str` | Plain text content |
+| `TextBlock` | `text: str`, `signature: str = ""` | Plain text, with the provider's proof where it signs the text |
 | `ImageBlock` | `media_type: ImageMediaType`, `data: bytes` | Image attachment (base64 in serialization) |
 | `AudioBlock` | `media_type: AudioMediaType`, `data: bytes` | Audio attachment |
 | `VideoBlock` | `media_type: VideoMediaType`, `data: bytes` | Video attachment |
 | `ReasoningBlock` | `text: str = ""`, `signature: str = ""`, `redacted: bool = False`, `id: str = ""` | The model's own reasoning, kept so the turn can be replayed |
-| `ToolUseBlock` | `id: ToolCallID`, `name: ToolName`, `input: dict[str, Any]` | A tool call request |
+| `ToolUseBlock` | `id: ToolCallID`, `name: ToolName`, `input: dict[str, Any]`, `signature: str = ""` | A tool call, with the provider's proof where it signs the call |
 | `ToolResultBlock` | `tool_use_id: ToolCallID`, `content: str \| list[TextBlock \| ImageBlock \| AudioBlock \| VideoBlock]`, `is_error: bool = False` | Result of tool execution |
 
 ```python

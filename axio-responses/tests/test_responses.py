@@ -321,7 +321,7 @@ def test_a_finished_reasoning_item_yields_its_proof() -> None:
         output_index=0,
         item={"type": "reasoning", "id": "rs_1", "encrypted_content": "gAAAAAB..."},
     )
-    assert made[0] == ReasoningSignature(index=0, data="gAAAAAB...", id="rs_1")
+    assert made[0] == ReasoningSignature(index=0, signature="gAAAAAB...", id="rs_1")
     assert made[1] == BlockEnd(index=0)
 
 
@@ -497,30 +497,27 @@ def test_an_incomplete_stream_still_finishes() -> None:
     assert reader.finished().stop_reason == StopReason.max_tokens
 
 
-def test_a_completed_status_nobody_knows_is_not_a_finished_answer() -> None:
-    # Read as end_turn, a response the API failed or cut short is stored and returned as the
-    # model's whole answer.
-    reader = Responses()
-    _reads(reader, type="response.completed", response={"status": "some_new_state", "usage": {}})
-    assert reader.finished().stop_reason == StopReason.error
+def test_a_completed_status_nobody_knows_is_raised_with_its_name() -> None:
+    # Returned as IterationEnd(error) the caller is told only `Transport stopped with: error`, and
+    # the status the API sent is what they can act on.
+    with pytest.raises(StreamError, match="some_new_state"):
+        _reads(Responses(), type="response.completed", response={"status": "some_new_state", "usage": {}})
 
 
-def test_a_failed_status_on_a_completed_event_is_an_error() -> None:
-    reader = Responses()
-    _reads(reader, type="response.completed", response={"status": "failed", "usage": {}})
-    assert reader.finished().stop_reason == StopReason.error
+def test_a_failed_status_is_raised_and_not_returned() -> None:
+    with pytest.raises(StreamError, match="failed"):
+        _reads(Responses(), type="response.completed", response={"status": "failed", "usage": {}})
 
 
-def test_an_unknown_status_is_not_overridden_by_a_pending_tool_call() -> None:
+def test_an_unknown_status_is_not_rescued_by_a_pending_tool_call() -> None:
     # The calls are real output, but an unrecognised status says the turn is not known to have
     # succeeded, so running the tool on it would act on a response nobody vouched for.
-    reader = Responses()
-    _reads(
-        reader,
-        type="response.completed",
-        response={"status": "some_new_state", "usage": {}, "output": [{"type": "function_call"}]},
-    )
-    assert reader.finished().stop_reason == StopReason.error
+    with pytest.raises(StreamError, match="some_new_state"):
+        _reads(
+            Responses(),
+            type="response.completed",
+            response={"status": "some_new_state", "usage": {}, "output": [{"type": "function_call"}]},
+        )
 
 
 def test_a_completed_turn_holding_a_call_still_asks_for_the_tool() -> None:
@@ -677,3 +674,33 @@ def test_tool_arguments_are_not_logged_at_info(caplog: pytest.LogCaptureFixture)
         _reads(reader, type="response.function_call_arguments.done", item_id="fc_1", name="pay", arguments=secret)
 
     assert "sk-live-do-not-log-me" in caplog.text, "debug still has to be able to show them"
+
+
+def test_one_placeholder_per_orphan_call_however_often_the_id_repeats() -> None:
+    # A compacted or forked context stores the same call twice. Computed once before the loop, each
+    # copy took its own placeholder, and the API refuses two outputs for one call.
+    turn = Message(
+        role="assistant",
+        content=[
+            ToolUseBlock(id="c1", name="search", input={}),
+            ToolUseBlock(id="c1", name="search", input={}),
+        ],
+    )
+
+    _, items = convert_messages([turn], "")
+
+    outputs = [i for i in items if i.get("type") == "function_call_output"]
+    assert [o["call_id"] for o in outputs] == ["c1"]
+
+
+def test_a_dropped_reasoning_block_does_not_split_the_text_around_it() -> None:
+    # The flush sits inside the branch that emits the block. Hoisted above the test that drops an
+    # unreplayable one, a single run of assistant text left as two messages.
+    turn = Message(
+        role="assistant",
+        content=[TextBlock(text="a"), ReasoningBlock(text="", signature="", id=""), TextBlock(text="b")],
+    )
+
+    _, items = convert_messages([turn], "")
+
+    assert items == [{"role": "assistant", "content": "ab"}]

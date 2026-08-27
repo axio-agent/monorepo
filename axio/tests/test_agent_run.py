@@ -28,6 +28,7 @@ from axio.events import (
     ToolResult,
     ToolUseStart,
 )
+from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.testing import StubTransport, make_echo_tool, make_text_response, make_tool_use_response
 from axio.tool import Tool
@@ -606,7 +607,7 @@ class TestToolsAreNotRunForAFailedTurn:
     async def test_a_failed_turn_does_not_run_its_calls(self) -> None:
         # The run ends immediately afterwards regardless, so running them buys nothing and acts on
         # output the transport has just reported as failed.
-        agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.error))
+        agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.refusal))
         events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
         assert not [e for e in events if isinstance(e, ToolResult)]
 
@@ -639,7 +640,7 @@ class TestAnUnrunCallIsNotPersisted:
                 [
                     ToolUseStart(index=0, tool_use_id="call_1", name="echo"),
                     ToolInputDelta(index=0, tool_use_id="call_1", partial_json='{"msg":"x"}'),
-                    IterationEnd(1, StopReason.error, Usage(1, 1)),
+                    IterationEnd(1, StopReason.refusal, Usage(1, 1)),
                 ]
             ]
         )
@@ -713,8 +714,15 @@ class TestTerminalReasonsThatAreNotFailures:
         ]
 
     async def test_a_genuine_failure_still_reports_one(self) -> None:
-        events = await self._end(StopReason.error)
-        assert [e for e in events if isinstance(e, Error)]
+        # A transport reports a failure by raising. IterationEnd cannot carry StopReason.error,
+        # because the agent can only pass that on as a bare RuntimeError naming nothing.
+        transport = StubTransport([[TextDelta(0, "half"), StreamError("the provider failed")]])
+        agent = Agent(system="", tools=[], transport=transport, max_iterations=3)
+
+        events = [event async for event in agent.run_stream("hi", MemoryContextStore())]
+
+        assert [str(e.exception) for e in events if isinstance(e, Error)] == ["the provider failed"]
+        assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [StopReason.error]
 
 
 class TestATruncatedTurnDoesNotAct:
@@ -790,7 +798,7 @@ class TestWhereOneTextBlockEnds:
         stored = await self._stored(
             [
                 TextDelta(0, "signed"),
-                TextSignature(index=0, data="S1"),
+                TextSignature(index=0, signature="S1"),
                 TextDelta(0, "after"),
                 IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
             ]
@@ -897,3 +905,81 @@ async def test_audio_the_turn_produced_is_stored_with_it() -> None:
 
     stored = (await context.get_history())[-1].content
     assert [type(block).__name__ for block in stored] == ["ImageBlock", "AudioBlock"]
+
+
+class TestATransportThatSaysNothing:
+    """The turn is over only when the transport says why it stopped."""
+
+    async def test_a_stream_that_just_ends_is_not_a_finished_answer(self) -> None:
+        # Defaulted to end_turn, half an answer was stored and returned as a whole one. Three
+        # transports guard this themselves; this is the backstop for the one that forgets.
+        transport = StubTransport([[TextDelta(0, "half an ans")]])
+        context = MemoryContextStore()
+
+        events = [e async for e in Agent(system="", tools=[], transport=transport).run_stream("hi", context)]
+
+        assert [str(e.exception) for e in events if isinstance(e, Error)] == [
+            "Transport ended without an IterationEnd"
+        ]
+        assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [StopReason.error]
+
+    async def test_an_iteration_end_cannot_carry_the_reason_it_cannot_explain(self) -> None:
+        # The agent can only pass StopReason.error on as a bare RuntimeError naming nothing, so a
+        # transport must raise with the provider's own message instead.
+        with pytest.raises(StreamError, match="cannot carry"):
+            IterationEnd(1, StopReason.error, Usage(1, 1))
+
+
+class TestAProofNeverInventsABlock:
+    """A signature attaches to content the provider produced, or it is dropped."""
+
+    @staticmethod
+    async def _stored(events: list[StreamEvent]) -> list[tuple[str, str, str]]:
+        context = MemoryContextStore()
+        await Agent(system="", tools=[], transport=StubTransport([events])).run("hi", context)
+        turn = (await context.get_history())[-1]
+        return [(type(b).__name__, getattr(b, "text", ""), getattr(b, "signature", "")) for b in turn.content]
+
+    async def test_a_second_proof_does_not_make_an_empty_block(self) -> None:
+        # The empty block it used to append is replayed to the provider as a signed empty part.
+        stored = await self._stored(
+            [
+                TextDelta(0, "42"),
+                TextSignature(index=0, signature="A"),
+                TextSignature(index=0, signature="B"),
+                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+            ]
+        )
+
+        assert stored == [("TextBlock", "42", "A")]
+
+    async def test_a_proof_reaches_its_text_past_a_block_of_another_kind(self) -> None:
+        stored = await self._stored(
+            [
+                TextDelta(0, "answer"),
+                ReasoningDelta(1, "after"),
+                TextSignature(index=0, signature="SIG"),
+                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+            ]
+        )
+
+        assert stored == [("TextBlock", "answer", "SIG"), ("ReasoningBlock", "after", "")]
+
+
+async def test_a_turn_that_broke_after_reporting_its_cost_still_bills_for_it() -> None:
+    # Counted after the consume loop only, a failure between IterationEnd and the end of the stream
+    # told the caller the turn was free. The provider had already charged for it.
+    transport = StubTransport(
+        [
+            [
+                TextDelta(0, "hi"),
+                IterationEnd(1, StopReason.end_turn, Usage(1000, 500)),
+                StreamError("died after reporting usage"),
+            ]
+        ]
+    )
+
+    events = [e async for e in Agent(system="", tools=[], transport=transport).run_stream("hi", MemoryContextStore())]
+
+    ends = [e for e in events if isinstance(e, SessionEndEvent)]
+    assert ends[0].total_usage == Usage(1000, 500)

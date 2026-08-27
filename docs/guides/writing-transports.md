@@ -98,6 +98,21 @@ Here `stream` is an `async def` with `yield`, which makes it an async generator.
 transports instead declare `stream` as a plain `def` returning a call to a separate
 `async def _do_stream(...)`. Both satisfy the protocol: both return an `AsyncIterator[StreamEvent]`.
 
+## What you do not write yourself
+
+Four helpers in `axio` already say what every transport needs, and a fifth checks the result:
+
+| | |
+|---|---|
+| `axio.retry.is_retryable(status)` | Which HTTP statuses are worth another attempt |
+| `axio.retry.retry_delay(resp, attempt, base=...)` | How long to wait, honouring `Retry-After` as seconds or as a date |
+| `axio.types.stop_reason_from(raw, table, provider=...)` | A provider's stop value, raising `StreamError` on one the table does not name |
+| `axio.schema.strip_title(schema)` | A tool schema without its `title` keywords |
+| `axio.testing.assert_stream_contract(events)` | What every `stream()` must produce, for your tests |
+
+Written by hand instead, these drifted. One transport retried three statuses where the others
+retried any server fault, and ignored `Retry-After` entirely.
+
 ## The event contract
 
 One `IterationStart` first, content in the order the provider sent it, exactly one `IterationEnd`
@@ -530,7 +545,7 @@ async def main() -> None:
         [
             ReasoningDelta(index=0, delta="The user asked for the time."),
             # After the reasoning it signs, never before.
-            ReasoningSignature(index=0, data="opaque-proof"),
+            ReasoningSignature(index=0, signature="opaque-proof"),
             ToolUseStart(index=0, tool_use_id="call_1", name="clock"),
             ToolInputDelta(index=0, tool_use_id="call_1", partial_json='{"msg": "now"}'),
             IterationEnd(iteration=0, stop_reason=StopReason.tool_use, usage=Usage(10, 8, reasoning_tokens=6)),

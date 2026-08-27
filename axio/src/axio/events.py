@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .blocks import AudioMediaType, ImageMediaType, VideoMediaType
+from .exceptions import StreamError
 from .types import StopReason, ToolCallID, ToolName, Usage
 
 
@@ -111,6 +112,15 @@ class IterationEnd:
     iteration: int
     stop_reason: StopReason
     usage: Usage
+
+    def __post_init__(self) -> None:
+        """Refuse ``StopReason.error``, which the agent can only report as a bare RuntimeError.
+
+        The rule was a habit each transport had to acquire, and the shared reader every OpenAI
+        turn goes through never acquired it. Raise ``StreamError`` with the provider's own message.
+        """
+        if self.stop_reason is StopReason.error:
+            raise StreamError("IterationEnd cannot carry StopReason.error; raise StreamError instead")
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,7 +285,7 @@ class ReasoningSignature:
     """
 
     index: int
-    data: str
+    signature: str
 
     redacted: bool = False
     """True where the payload replaces the reasoning text instead of accompanying it."""
@@ -298,7 +308,7 @@ class TextSignature:
     """
 
     index: int
-    data: str
+    signature: str
 
 
 # ── Iteration lifecycle ─────────────────────────────────────────────────────
