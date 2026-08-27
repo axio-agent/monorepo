@@ -51,7 +51,9 @@ assert delta.delta == "Hello"
 [forwarded] = read(type="response.web_search_call.searching", output_index=0)
 assert (forwarded.provider, forwarded.kind) == ("openai", "response.web_search_call.searching")
 
-# The API sends no event meaning "the turn is over"; the reader adds one up.
+# The API sends no event meaning "the turn is over". The reader adds one up from the terminal
+# event, and refuses a stream that ended without one.
+read(type="response.completed", response={"status": "completed", "usage": {"output_tokens": 3}})
 assert reader.finished().stop_reason.value == "end_turn"
 ```
 

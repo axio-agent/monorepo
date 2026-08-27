@@ -468,3 +468,32 @@ def test_a_result_with_no_readable_part_is_not_reported_as_nothing() -> None:
     result = ToolResultBlock(tool_use_id="call_1", content=[])
     _, items = convert_messages([Message(role="user", content=[result])], "")
     assert items[0]["output"] == ""
+
+
+def test_a_stream_that_ended_without_a_terminal_event_raises() -> None:
+    """A cut connection is not a finished answer.
+
+    Reported as end_turn a truncated response was stored and returned to the caller as the model's
+    whole answer.
+    """
+    reader = Responses()
+    _reads(reader, type="response.output_text.delta", delta="half an ans", output_index=0)
+    with pytest.raises(StreamError, match="without response.completed"):
+        reader.finished()
+
+
+def test_a_completed_stream_still_finishes() -> None:
+    reader = Responses()
+    _reads(reader, type="response.completed", response={"status": "completed", "usage": {}})
+    assert reader.finished().stop_reason == StopReason.end_turn
+
+
+def test_an_incomplete_stream_still_finishes() -> None:
+    # It reached a terminal event; it just did not complete.
+    reader = Responses()
+    _reads(
+        reader,
+        type="response.incomplete",
+        response={"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "usage": {}},
+    )
+    assert reader.finished().stop_reason == StopReason.max_tokens

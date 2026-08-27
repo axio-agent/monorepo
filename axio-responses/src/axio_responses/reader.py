@@ -401,8 +401,15 @@ class Responses(Reader[StreamEvent]):
         )
 
     def finished(self) -> IterationEnd:
-        """What the turn added up to. The API sends no event that means this."""
-        stop = self.stop_reason or StopReason.end_turn
+        """What the turn added up to. The API sends no event that means this.
+
+        A stream that ended without one of its terminal events did not finish. The connection was
+        cut. Reported as ``end_turn``, a truncated answer is stored and returned as a whole one.
+        So it is raised, the way a transport reports any other broken stream.
+        """
+        if self.stop_reason is None:
+            raise StreamError("Responses stream ended without response.completed, response.incomplete or an error")
+        stop = self.stop_reason
         logger.debug(
             "Stream complete: stop_reason=%s, input_tokens=%d, output_tokens=%d",
             stop,

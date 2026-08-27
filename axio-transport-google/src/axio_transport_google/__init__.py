@@ -690,6 +690,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
 
         usage = Usage(0, 0)
         stop_reason = StopReason.end_turn
+        finished = False
         has_tool_calls = False
         served_by: str | None = None
 
@@ -734,6 +735,9 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                             # Payload is a dict. Gating on truthiness therefore called every one of
                             # those healthy answers a blocked prompt. Only blockReason means
                             # nothing was generated.
+                            # A blocked prompt is a finished turn. Nothing was generated, so no
+                            # candidate and no finishReason ever arrive.
+                            finished = True
                             stop_reason = StopReason.refusal
                             yield Refusal(
                                 index=0,
@@ -747,6 +751,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                         candidate = chunk.candidates[0]
 
                         if candidate.finishReason:
+                            finished = True
                             stop_reason = _FINISH_REASON_MAP.get(candidate.finishReason, StopReason.error)
                             if candidate.finishReason not in _FINISH_REASON_MAP:
                                 logger.warning("Unknown finishReason %r", candidate.finishReason)
@@ -815,6 +820,11 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 # signature means which block it proves. Fixed at zero, two
                                 # parallel signed calls looked like two halves of one proof.
                                 yield ReasoningSignature(index=at, data=part.thoughtSignature)
+
+                if not finished:
+                    # Every Gemini stream ends on a finishReason. Without one the connection was
+                    # cut. Reported as end_turn, a truncated answer is stored as a whole one.
+                    raise StreamError("Gemini stream ended without a finishReason")
 
                 if has_tool_calls:
                     stop_reason = StopReason.tool_use

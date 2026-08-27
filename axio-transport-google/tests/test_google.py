@@ -19,6 +19,7 @@ from axio.blocks import (
     VideoBlock,
 )
 from axio.events import Refusal, TextDelta
+from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry
 from axio.tool import Tool
@@ -786,3 +787,20 @@ def test_each_signed_part_is_indexed_by_its_own_position() -> None:
     )
     positions = [at for at, part in enumerate(chunk.candidates[0].content.parts) if part.thoughtSignature]
     assert positions == [0, 1], "the two parts must not share an index"
+
+
+class TestACutStreamIsNotAFinishedAnswer:
+    async def test_a_stream_that_ends_without_a_finish_reason_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Every Gemini stream ends on a finishReason.
+
+        Without one the connection was cut, and reporting end_turn stored a truncated answer as a
+        whole one and returned it to the caller as the model's answer.
+        """
+        chunk = {"candidates": [{"content": {"parts": [{"text": "half an ans"}]}}]}
+        with pytest.raises(StreamError, match="without a finishReason"):
+            await _stream_one(monkeypatch, chunk)
+
+    async def test_a_blocked_prompt_is_a_finished_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Nothing was generated, so no candidate and no finishReason ever arrive. That is not a cut.
+        events = await _stream_one(monkeypatch, {"promptFeedback": {"blockReason": "SAFETY"}})
+        assert [e for e in events if isinstance(e, Refusal)]
