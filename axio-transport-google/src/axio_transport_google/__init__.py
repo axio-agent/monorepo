@@ -178,6 +178,10 @@ def _get_anthropic_models() -> ModelRegistry:
     )
 
 
+#: Reasons that say the turn failed. A call streamed inside one of them does not turn it into a
+#: request for that tool.
+_BLOCKED = frozenset({StopReason.refusal, StopReason.error, StopReason.cancelled})
+
 #: The union of every ``finishReason`` either surface publishes. The developer API publishes 21 and Vertex
 #: publishes 17. One left out is read as an error. That tells the caller the transport broke when the model
 #: was in fact blocked, or asked to be prompted again.
@@ -291,7 +295,7 @@ class GenerateContentChunk(Wire):
     responseId: str = ""
 
 
-def _usage(um: UsageMetadata) -> Usage:
+def _usage(um: UsageMetadata, *, final: bool = False) -> Usage:
     """Gemini's token counts, converted to inclusive totals.
 
     Two of these stand outside the headline number and have to be added. Tool-use prompt tokens are
@@ -307,7 +311,10 @@ def _usage(um: UsageMetadata) -> Usage:
         cache_write_tokens=0,
         reasoning_tokens=um.thoughtsTokenCount,
     )
-    if um.totalTokenCount is not None and um.totalTokenCount != usage.total_tokens:
+    # Only where the counts are final. Gemini attaches usageMetadata to every chunk. A mid-stream
+    # one reports a total against parts that have not all arrived. Checking each would warn
+    # hundreds of times for a mismatch that is only meaningful at the end.
+    if final and um.totalTokenCount is not None and um.totalTokenCount != usage.total_tokens:
         # The provider publishes the sum it expects, so this catches the day it changes the rule.
         logger.warning("usageMetadata total is %d, the parts add to %d", um.totalTokenCount, usage.total_tokens)
     return usage
@@ -441,7 +448,11 @@ def _build_contents_json(
                     # The stored signature comes first, taken in arrival order. The map is this
                     # instance's, so it is empty in a session restored into a new transport, which
                     # is the case that fails.
-                    stored_signature = unplaced_signatures.popleft() if unplaced_signatures else ""
+                    # The call's own proof first: it survives a restart, which neither the deque
+                    # nor the map on the transport does.
+                    stored_signature = assistant_block.signature
+                    if not stored_signature and unplaced_signatures:
+                        stored_signature = unplaced_signatures.popleft()
                     signature = stored_signature or (thought_signatures or {}).get(assistant_block.id, "")
                     if signature:
                         part["thoughtSignature"] = signature
@@ -688,14 +699,22 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             for i, c in enumerate(contents):
                 logger.debug("  content[%d] role=%s parts=%d", i, c.get("role"), len(c.get("parts", [])))
 
-        usage = Usage(0, 0)
-        stop_reason = StopReason.end_turn
-        finished = False
-        has_tool_calls = False
-        served_by: str | None = None
+        # Counts parts across the whole turn. enumerate() restarts at zero every chunk. Two parts
+        # sharing a number read downstream as one block. Two unrelated thought signatures were
+        # joined into a proof matching neither.
+        at = -1
 
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
+            # Reset per attempt. Carried in from a failed attempt, a retry inherited its stop reason
+            # and its "already reported the model" flag. A truncated second try was then reported
+            # as the finished turn of the first.
+            usage = Usage(0, 0)
+            stop_reason = StopReason.end_turn
+            finished = False
+            has_tool_calls = False
+            served_by: str | None = None
+            last_counts: UsageMetadata | None = None
             try:
                 async with self.session.post(url, json=body, headers=headers) as resp:
                     if resp.status != 200:
@@ -721,6 +740,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                         chunk = GenerateContentChunk.read(payload)
 
                         if chunk.usageMetadata.promptTokenCount:
+                            last_counts = chunk.usageMetadata
                             usage = _usage(chunk.usageMetadata)
                             self.last_usage = usage
 
@@ -774,10 +794,11 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 index=0,
                             )
 
-                        # Every event of a part carries that part's position. Fixed at zero,
-                        # the reasoning of one part and the signature of another shared an
-                        # index, and nothing downstream could group a part's events together.
-                        for at, part in enumerate(candidate.content.parts):
+                        # Every event of a part carries that part's number. Fixed at zero, the
+                        # reasoning of one part and the signature of another shared an index, and
+                        # nothing downstream could group a part's events together.
+                        for part in candidate.content.parts:
+                            at += 1
                             if part.text and part.thought:
                                 yield ReasoningDelta(index=at, delta=part.text)
                             elif part.text:
@@ -804,7 +825,16 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 call_id = call.id or f"genai_{call.name}_{id(part)}"
                                 if part.thoughtSignature:
                                     self._thought_signatures[call_id] = part.thoughtSignature
-                                yield ToolUseStart(index=at, tool_use_id=call_id, name=call.name)
+                                yield ToolUseStart(
+                                    index=at,
+                                    tool_use_id=call_id,
+                                    name=call.name,
+                                    # On the call, not beside it. Sent as a bare
+                                    # signature it attached to whatever reasoning block was still
+                                    # unsigned. The thought took the call's proof, and the call
+                                    # had none.
+                                    signature=part.thoughtSignature,
+                                )
                                 args_json = json.dumps(dict(call.args)) if call.args else "{}"
                                 yield ToolInputDelta(index=at, tool_use_id=call_id, partial_json=args_json)
                                 has_tool_calls = True
@@ -813,7 +843,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 # adds next: content of the turn that axio has no type for.
                                 yield ProviderEvent(provider="google", kind="part", data=dict(part.raw), index=at)
 
-                            if part.thoughtSignature:
+                            if part.thoughtSignature and not part.functionCall.name:
                                 # Emit after the reasoning it signs, never before. The agent
                                 # attaches a signature to the block it just built, and refuses to
                                 # extend a block already signed. Emitted first, one part became two
@@ -824,12 +854,19 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 # parallel signed calls looked like two halves of one proof.
                                 yield ReasoningSignature(index=at, data=part.thoughtSignature)
 
+                if last_counts is not None:
+                    # Checked once, on the counts the turn ended with.
+                    usage = _usage(last_counts, final=True)
+
                 if not finished:
                     # Every Gemini stream ends on a finishReason. Without one the connection was
                     # cut. Reported as end_turn, a truncated answer is stored as a whole one.
                     raise StreamError("Gemini stream ended without a finishReason")
 
-                if has_tool_calls:
+                if has_tool_calls and stop_reason not in _BLOCKED:
+                    # Never over a blocked or failed turn. Read as tool_use, a turn the provider
+                    # had just refused was dispatched by the agent, which is what its no-dispatch
+                    # guard exists to prevent.
                     stop_reason = StopReason.tool_use
 
                 logger.info(

@@ -91,6 +91,9 @@ class ToolUseBlock(ContentBlock):
     id: ToolCallID
     name: ToolName
     input: dict[str, Any]
+    #: Opaque proof for this call, where the provider issues one. Replayed with the call, and
+    #: stored rather than held in the transport, which is empty in a restored session.
+    signature: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +143,13 @@ def _reasoning_to_dict(block: ReasoningBlock) -> dict[str, Any]:
 
 @to_dict.register(ToolUseBlock)
 def _tool_use_to_dict(block: ToolUseBlock) -> dict[str, Any]:
-    return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    return {
+        "type": "tool_use",
+        "id": block.id,
+        "name": block.name,
+        "input": block.input,
+        "signature": block.signature,
+    }
 
 
 @to_dict.register(ToolResultBlock)
@@ -176,7 +185,12 @@ def from_dict(data: dict[str, Any]) -> ContentBlock:
                 id=data.get("id", ""),
             )
         case "tool_use":
-            return ToolUseBlock(id=data["id"], name=data["name"], input=data["input"])
+            return ToolUseBlock(
+                id=data["id"],
+                name=data["name"],
+                input=data["input"],
+                signature=data.get("signature", ""),
+            )
         case "tool_result":
             raw = data["content"]
             if isinstance(raw, str):

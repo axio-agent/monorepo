@@ -1,9 +1,15 @@
 """What ``events()`` and ``payloads()`` add over the decoder."""
 
-from conftest import Read, Stream
+from collections.abc import AsyncIterator, Callable, Coroutine
+from typing import Any
 
 import axio_sse
 from axio_sse import Event, payloads
+
+#: The fixtures, typed where they are used. Importing these from conftest only resolves
+#: when this package is pytest's rootdir, which breaks collection from the repository root.
+type Read = Callable[..., Coroutine[Any, Any, list[Event]]]
+type Stream = Callable[..., AsyncIterator[bytes | str]]
 
 
 async def test_the_sentinel_closes_the_stream_and_is_not_an_event(read: Read) -> None:

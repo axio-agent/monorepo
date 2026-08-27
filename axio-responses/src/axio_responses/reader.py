@@ -1,7 +1,7 @@
 """Reading a Responses stream: the payload shapes, and what each event becomes.
 
-The vocabulary is the published ``ResponseStreamEvent`` union, so an event missing from ``Responses``
-is one the API added after this was written rather than one nobody named. A test reading with
+The vocabulary is the published ``ResponseStreamEvent`` union. An event missing from ``Responses``
+is one the API added after this was written, not one nobody named. A test reading with
 ``strict=True`` holds that against the schema.
 """
 
@@ -171,8 +171,9 @@ class AnnotationAdded(Wire, name="response.output_text.annotation.added"):
 
 
 @dataclass(frozen=True, slots=True)
-class BlockDone(Wire, name="response.content_part.done"):
+class ContentPartDone(Wire, name="response.content_part.done"):
     output_index: int = 0
+    content_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,8 +205,8 @@ class ArgumentsDone(Wire, name="response.function_call_arguments.done"):
 class Responses(Reader[StreamEvent]):
     """Every event the Responses API sends, and what each one becomes.
 
-    The vocabulary is the published ``ResponseStreamEvent`` union, so an event missing from this
-    body is one the API added after it was written rather than one nobody named. A test reading
+    The vocabulary is the published ``ResponseStreamEvent`` union. An event missing from this body
+    is one the API added after it was written, not one nobody named. A test reading
     with ``strict=True`` holds that against the schema.
 
     One instance reads one response. Its state is the usage, the stop reason and the id map.
@@ -253,10 +254,14 @@ class Responses(Reader[StreamEvent]):
         """Which model actually served the turn, which need not be the one asked for."""
         yield IterationStart(iteration=0, id=wire.response.id or None, model=wire.response.model or None)
 
-    @on(BlockDone)
-    def _block_done(self, wire: BlockDone) -> Iterator[StreamEvent]:
-        """The block is complete, so anything accumulated for it now parses."""
-        yield BlockEnd(index=wire.output_index)
+    @on(ContentPartDone)
+    def _content_part_done(self, wire: ContentPartDone) -> None:
+        """One content part inside an item is complete.
+
+        Not a BlockEnd: axio indexes a block by output item, and the item's own done event closes
+        it. Emitting both closed every block twice, so a consumer that finalises on BlockEnd
+        finalised a block it had already finished.
+        """
 
     @on(ItemDone)
     def _item_done(self, wire: ItemDone) -> Iterator[StreamEvent]:
@@ -343,14 +348,14 @@ class Responses(Reader[StreamEvent]):
     def _failed(self, wire: Failed) -> None:
         message = wire.response.error.message or "Unknown error"
         logger.error("Response failed: %s", message)
-        raise StreamError(f"Codex API error: {message}")
+        raise StreamError(f"Responses API error: {message}")
 
     @on(StreamFailure)
     def _errored(self, wire: StreamFailure) -> None:
         """Left unread the turn simply stopped and reported a normal finish."""
         message = wire.message or "Unknown error"
         logger.error("Stream error: %s (code=%s)", message, wire.code or "none")
-        raise StreamError(f"Codex API error: {message}")
+        raise StreamError(f"Responses API error: {message}")
 
     # ── named, and deliberately not read ─────────────────────────────────────────────────────
 

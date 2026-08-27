@@ -8,17 +8,17 @@ from .event import Event
 #: The only line endings the format allows. ``str.splitlines`` breaks on more than these.
 ENDINGS: Final = ("\r\n", "\n", "\r")
 
-#: How long a ``retry:`` value may be. ``str.isdigit`` is true for 128 characters ``int()`` refuses,
-#: and CPython refuses to parse past 4300 digits, so an unbounded guard raises out of ``decode`` and
-#: takes the rest of the turn with it.
+#: How long a ``retry:`` value may be. ``str.isdigit`` is true for 128 characters ``int()`` refuses.
+#: CPython refuses to parse past 4300 digits. An unbounded guard raises out of ``decode``, and takes
+#: the rest of the turn with it.
 _RETRY_DIGITS: Final = 18
 
 
 class Decoder:
     """The format as a state machine: feed it chunks, take the events they completed.
 
-    Same shape as ``codecs.IncrementalDecoder`` — ``decode(chunk, final)`` and ``reset()`` —
-    because the problem is the same: input cut at arbitrary points, output that only sometimes
+    Same shape as ``codecs.IncrementalDecoder``: ``decode(chunk, final)`` and ``reset()``. The
+    problem is the same one. Input is cut at arbitrary points, and output only sometimes
     completes. It takes chunks and never lines. ``aiohttp``'s ``readuntil`` raises ``LineTooLong``
     past 131072 bytes, and ``LineTooLong`` is not a ``ClientError``. A large reasoning event killed
     a turn with no answer.
@@ -48,7 +48,7 @@ class Decoder:
         """Every event this chunk completed. ``final=True`` also dispatches what is left over.
 
         Without that last call a stream that stops before its final blank line loses its last
-        event, and a stream cut mid-character loses the character instead of replacing it.
+        event. A stream cut mid-character loses the character instead of replacing it.
         """
         text = self._text.decode(chunk) if isinstance(chunk, bytes) else chunk
         if not self._opened:
@@ -126,7 +126,10 @@ def _split(held: str) -> tuple[str, str] | None:
     At the same position take the longest ending: splitting ``\\r`` out of ``\\r\\n`` leaves a
     ``\\n`` that reads as a blank line, which dispatches.
     """
-    found = [(held.find(ending), -len(ending), ending) for ending in ENDINGS if ending in held]
+    # One scan per ending, not two. The `in` test repeated the scan that find() already does.
+    # The buffer holds a whole event. A five-megabyte inline image arrives over hundreds of
+    # chunks, and each one re-scanned all of it six times over.
+    found = [(at, -len(ending), ending) for ending in ENDINGS if (at := held.find(ending)) != -1]
     if not found:
         return None
     at, _, ending = min(found)

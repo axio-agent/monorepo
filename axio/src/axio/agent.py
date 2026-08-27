@@ -257,8 +257,9 @@ class Agent:
     ) -> None:
         """Append a reasoning delta, merging into the block still being built.
 
-        A signed block is finished. The provider computed the signature over the text it had, so a
-        later delta starts a new block rather than making the stored signature disagree with it.
+        A signed block is finished. The provider computed the signature over the text it had. A
+        later delta therefore starts a new block, rather than leaving a signature that disagrees
+        with the text beside it.
         """
         last = content[-1] if content else None
         if isinstance(last, ReasoningBlock) and not last.signature:
@@ -328,7 +329,7 @@ class Agent:
                     )
                     malformed.add(tid)
                     inp = {}
-            blocks.append(ToolUseBlock(id=tid, name=info["name"], input=inp))
+            blocks.append(ToolUseBlock(id=tid, name=info["name"], input=inp, signature=info.get("signature", "")))
         return blocks, malformed
 
     async def _select_tools(self, history: list[Message], tools: list[Tool[Any]]) -> Iterable[Tool[Any]]:
@@ -396,8 +397,8 @@ class Agent:
                                 content.append(ImageBlock(media_type=mt, data=data))
                             case VideoOutput(data=data, media_type=mt):
                                 content.append(VideoBlock(media_type=mt, data=data))
-                            case ToolUseStart(tool_use_id=tid, name=name):
-                                pending[tid] = {"name": name, "json_parts": []}
+                            case ToolUseStart(tool_use_id=tid, name=name, signature=proof):
+                                pending[tid] = {"name": name, "json_parts": [], "signature": proof}
                             case ToolInputDelta(tool_use_id=tid, partial_json=pj):
                                 if tid in pending:
                                     pending[tid]["json_parts"].append(pj)
@@ -594,6 +595,11 @@ class Agent:
                         yield SessionEndEvent(stop_reason=StopReason.refusal, total_usage=total_usage)
                         session_end_emitted = True
                         return
+                    case StopReason.tool_use:
+                        # The turn asked for a tool. Any call it produced has already been run
+                        # above, so going round again is the answer to it. Where the provider asked
+                        # without producing a usable call, re-prompting is the recovery.
+                        continue
                     case StopReason.pause_turn:
                         # The provider stopped its own tool loop and expects the assistant content
                         # back to finish the turn. The content was just appended, so going round

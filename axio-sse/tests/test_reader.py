@@ -1,13 +1,16 @@
 """One endpoint's vocabulary, as one method per event."""
 
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import FrozenInstanceError, dataclass
 
 import pytest
-from conftest import Stream
 
 from axio_sse import EVENT_NAME, Event, Payload, Reader, UnknownEvent, on
+
+#: The `stream` fixture, typed where it is used. Importing this from conftest only resolves
+#: when this package is pytest's rootdir, which breaks collection from the repository root.
+type Stream = Callable[..., AsyncIterator[bytes | str]]
 
 
 class Watch(Reader[tuple[str, str]]):

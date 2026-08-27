@@ -850,3 +850,38 @@ class TestPartIndexes:
         deltas = [e for e in events if isinstance(e, ToolInputDelta)]
         assert [s.index for s in starts] == [1]
         assert [d.index for d in deltas] == [1]
+
+
+class TestACallCarriesItsOwnProof:
+    async def test_the_signature_of_a_call_part_goes_on_the_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Sent as a bare signature it attached to whatever reasoning block was still unsigned.
+
+        The thought took the call's proof and the call had none, so the replay was refused.
+        """
+        chunk = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "thinking", "thought": True},
+                            {"functionCall": {"id": "call_1", "name": "t", "args": {}}, "thoughtSignature": "SIG"},
+                        ]
+                    },
+                    "finishReason": "STOP",
+                }
+            ]
+        }
+        events = await _stream_one(monkeypatch, chunk)
+        starts = [e for e in events if isinstance(e, ToolUseStart)]
+        assert [s.signature for s in starts] == ["SIG"]
+        assert not [e for e in events if type(e).__name__ == "ReasoningSignature"]
+
+    def test_a_stored_call_replays_its_own_proof_with_no_transport_state(self) -> None:
+        messages = [
+            Message(
+                role="assistant",
+                content=[ToolUseBlock(id="call_1", name="t", input={}, signature="SIG")],
+            )
+        ]
+        parts = _build_contents_json(messages, thought_signatures=None)[0]["parts"]
+        assert parts[0]["thoughtSignature"] == "SIG"

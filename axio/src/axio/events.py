@@ -27,6 +27,11 @@ class ToolUseStart:
     tool_use_id: ToolCallID
     name: ToolName
 
+    signature: str = ""
+    """Opaque proof that this call is the model's own, where the provider issues one for the call
+    rather than for the reasoning beside it. Replayed on the call itself: attached to a reasoning
+    block instead, the call comes back unsigned and the provider refuses the turn."""
+
 
 @dataclass(frozen=True, slots=True)
 class ToolInputDelta:

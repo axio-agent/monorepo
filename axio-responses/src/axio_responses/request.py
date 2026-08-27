@@ -62,13 +62,13 @@ def convert_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
 def tool_output(content: str | list[TextBlock | ImageBlock | AudioBlock | VideoBlock]) -> str | list[dict[str, Any]]:
     """A tool result as the output this API takes.
 
-    ``json.dumps`` on the blocks raises: they are slotted dataclasses and not JSON, so a tool that
+    ``json.dumps`` on the blocks raises. They are slotted dataclasses, not JSON. A tool that
     returned anything but a string crashed the request before it was sent.
 
     The API takes a string, or a list of ``input_text``, ``input_image`` and ``input_file`` parts.
-    Text and images travel as themselves. Audio and video have no part of their own here, so they
-    are named in text: the model is told what the tool produced instead of being handed a turn with
-    a gap in it.
+    Text and images travel as themselves. Audio and video have no part of their own here. They
+    are named in text instead. The model is told what the tool produced, rather than handed a turn
+    with a gap in it.
     """
     if isinstance(content, str):
         return content
@@ -171,6 +171,10 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
     for item in list(items):
         if item.get("type") == "function_call" and item.get("call_id") not in output_ids:
             call_id = item.get("call_id", "")
+            # Recorded as we go. Computed once before the loop, a call_id appearing twice got a
+            # placeholder each time. A compacted or forked context produces exactly that. The API
+            # refuses two outputs for one call.
+            output_ids.add(call_id)
             logger.warning("Synthesizing placeholder output for orphan function_call: call_id=%s", call_id)
             items.append(
                 {

@@ -657,6 +657,11 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
 
             if data.error is not None:
                 error_message = data.error.message or str(dict(data.error.raw))
+            elif isinstance(payload.get("error"), str) and payload["error"]:
+                # Some compatible servers send the error as a bare string, which reads into no
+                # object at all. Left unread, the only diagnostic the provider gave was discarded
+                # and the turn failed with nothing to show for it.
+                error_message = payload["error"]
 
             if data.usage is not None:
                 # The slices are reported inside their totals here, so nothing is added.
@@ -709,7 +714,9 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             for other in data.choices[1:]:
                 yield ProviderEvent(provider="openai", kind="choice", data=dict(other.raw), index=other.index)
 
-            if choice.finish_reason is not None:
+            if choice.finish_reason is not None and finish_reason != "content_filter":
+                # A refusal already decided this turn. Compatible gateways close a declined choice
+                # with "stop", and reading it over the top reported a decline as an answer.
                 finish_reason = choice.finish_reason
 
         for kind, text in think_parser.flush():
@@ -881,8 +888,8 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         chosen: dict[str, Any] = {}
         if data.get("api"):
             # Passed only when it was saved. Absent from an older config the dataclass default
-            # applies, which is the class's own answer; reading it off `cls` would not work,
-            # because with slots the class attribute is a descriptor and not the default.
+            # applies, which is the class's own answer. Reading it off `cls` would not work: with
+            # slots the class attribute is a descriptor, not the default.
             chosen["api"] = data["api"]
         return cls(
             name=str(data.get("name", "")),

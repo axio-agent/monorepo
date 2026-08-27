@@ -119,6 +119,11 @@ _STOP_REASON_MAP: dict[str, StopReason] = {
     "tool_use": StopReason.tool_use,
     "max_tokens": StopReason.max_tokens,
     "refusal": StopReason.refusal,
+    # Resumable, and the agent re-sends the turn to resume it. The blocks that make it resumable
+    # are server-tool content. That content reaches the caller as ProviderEvent and is not stored.
+    # A resume would repeat the turn without them. This transport declares no server
+    # tool — _convert_tools writes no "type" — so the reason cannot arrive from a request it
+    # builds. Storing that content has to come before it can.
     "pause_turn": StopReason.pause_turn,
     "model_context_window_exceeded": StopReason.context_window_exceeded,
 }
@@ -200,8 +205,8 @@ def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
                     content_parts.append({"type": "text", "text": b.text})
                 elif isinstance(b, ReasoningBlock):
                     # Sent back unaltered, or not at all. With extended thinking on, a turn that
-                    # thought and then called a tool is refused unless its thinking comes back with
-                    # the signature the API issued for it.
+                    # thought and then called a tool is refused. It is accepted only when its
+                    # thinking comes back with the signature the API issued.
                     if b.redacted:
                         content_parts.append({"type": "redacted_thinking", "data": b.signature})
                     elif b.signature:
@@ -498,8 +503,8 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         self.reasoning_tokens = wire.usage.output_tokens_details.thinking_tokens or self.reasoning_tokens
 
         if wire.delta.stop_reason == "refusal":
-            # A decline arrives as a successful response with no content at all, so with nothing
-            # emitted here the turn reached the caller as an empty answer.
+            # A decline arrives as a successful response with no content at all. With nothing emitted
+            # here the turn reached the caller as an empty answer.
             details = wire.delta.stop_details
             yield Refusal(
                 index=0,

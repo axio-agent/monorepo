@@ -1,9 +1,15 @@
 """The format, case by case, and the state machine that reads it."""
 
+from collections.abc import Callable, Coroutine
+from typing import Any
+
 import pytest
-from conftest import Read
 
 from axio_sse import Decoder, Event
+
+#: The `read` fixture, typed where it is used. Importing this from conftest only resolves
+#: when this package is pytest's rootdir, which breaks collection from the repository root.
+type Read = Callable[..., Coroutine[Any, Any, list[Event]]]
 
 
 async def test_the_ordinary_case(read: Read) -> None:

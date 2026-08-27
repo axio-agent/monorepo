@@ -127,7 +127,7 @@ class TestToDict:
 
     def test_tool_use(self) -> None:
         d = to_dict(ToolUseBlock(id="c1", name="echo", input={"x": 1}))
-        assert d == {"type": "tool_use", "id": "c1", "name": "echo", "input": {"x": 1}}
+        assert d == {"type": "tool_use", "id": "c1", "name": "echo", "input": {"x": 1}, "signature": ""}
 
     def test_tool_result_str(self) -> None:
         d = to_dict(ToolResultBlock(tool_use_id="c1", content="ok"))
