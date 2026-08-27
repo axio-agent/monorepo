@@ -133,21 +133,19 @@ class _RepetitionDetector:
         return False
 
 
-#: Reasons that say the turn failed or was cut off rather than finished. A call streamed inside
-#: one is output nobody vouched for, and its arguments may be half-written.
-_NO_DISPATCH = frozenset(
+#: The only reasons that vouch for the calls a turn produced. Named as the reasons to refuse
+#: instead, a reason added later would let a failed turn's half-written arguments run.
+_DISPATCH = frozenset(
     {
-        StopReason.error,
-        StopReason.refusal,
-        StopReason.cancelled,
-        StopReason.max_tokens,
-        StopReason.context_window_exceeded,
+        StopReason.end_turn,
+        StopReason.tool_use,
+        #: A paused server-side tool loop. The turn did not fail, so its calls stand.
+        StopReason.pause_turn,
     }
 )
 
 
-#: Sent after a tool returns media. Gemini stops generating after receiving media as sibling
-#: inlineData parts, so without it the turn ends in about twenty tokens having read nothing.
+#: Sent after a tool returns media. Gemini otherwise ends the turn in about twenty tokens.
 _MEDIA_NUDGE = "You now have the media file above in your context. Proceed."
 
 
@@ -212,18 +210,14 @@ class _Turn:
     """What one iteration accumulates from the transport's stream."""
 
     content: list[TurnBlock] = field(default_factory=list)
-    #: Calls still arriving, by id. Emptied into ``content`` when the turn ends.
     pending: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Calls whose arguments would not parse, so nothing may be dispatched from them.
     malformed: set[str] = field(default_factory=set)
     usage: Usage = Usage(0, 0)
     stop_reason: StopReason = StopReason.end_turn
-    #: The model repeated itself and the turn was cut short here rather than by the provider.
     repeated: bool = False
     #: Which block the last proof was for. A repeated index continues that proof.
     signed_at: int | None = None
-    #: Which block the last text delta was for. A transport that numbers by part keeps them apart.
-    text_at: int | None = None
 
 
 @dataclass(slots=True)
@@ -333,19 +327,14 @@ class Agent:
     def _accumulate_text(
         content: list[TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock],
         delta: str,
-        *,
-        joining: bool,
     ) -> None:
         """Append a text delta, merging into the block still being built.
-
-        ``joining`` says the delta belongs to the block the last one built. Merged across two of a
-        provider's parts, one part's proof ends up signing the other part's text as well.
 
         A signed block is finished. The provider computed the signature over the text it had, so a
         later delta starts a new block rather than leaving a proof that disagrees with its text.
         """
         last = content[-1] if content else None
-        if joining and isinstance(last, TextBlock) and not last.signature:
+        if isinstance(last, TextBlock) and not last.signature:
             content[-1] = replace(last, text=last.text + delta)
         else:
             content.append(TextBlock(text=delta))
@@ -484,19 +473,17 @@ class Agent:
         async for event in stream:
             yield event
             match event:
-                case TextDelta(index=at, delta=delta):
-                    self._accumulate_text(turn.content, delta, joining=at == turn.text_at)
-                    turn.text_at = at
+                case TextDelta(delta=delta):
+                    self._accumulate_text(turn.content, delta)
                     if detector.feed(delta):
                         note = "\n\n[Output truncated: repetitive content detected]"
-                        self._accumulate_text(turn.content, note, joining=True)
+                        self._accumulate_text(turn.content, note)
                         yield TextDelta(index=0, delta=note)
                         turn.repeated = True
                         return
                 case Refusal(text=text) if text:
-                    # Kept as the turn's text: a refusal is what the assistant said. Left out, the
-                    # stored turn is empty and the next request carries a blank assistant message.
-                    self._accumulate_text(turn.content, text, joining=True)
+                    # A refusal is what the assistant said, and an empty turn is refused next time.
+                    self._accumulate_text(turn.content, text)
                 case TextSignature(data=proof):
                     self._sign_text(turn.content, proof)
                 case ReasoningDelta(delta=delta):
@@ -506,6 +493,8 @@ class Agent:
                     turn.signed_at = at
                 case ImageOutput(data=data, media_type=mt):
                     turn.content.append(ImageBlock(media_type=mt, data=data))
+                case AudioOutput(data=data, media_type=mt):
+                    turn.content.append(AudioBlock(media_type=mt, data=data))
                 case VideoOutput(data=data, media_type=mt):
                     turn.content.append(VideoBlock(media_type=mt, data=data))
                 case ToolUseStart(tool_use_id=tid, name=name, signature=proof):
@@ -527,8 +516,7 @@ class Agent:
         if turn.stop_reason != StopReason.tool_use:
             logger.warning("Dispatching %d tool(s) despite stop_reason=%s", len(blocks), turn.stop_reason)
 
-        # Run before the turn is stored. A cancellation between here and the two appends below
-        # would otherwise leave calls in the store with no result beside them.
+        # Before the turn is stored, or a cancellation leaves calls with no result beside them.
         runnable = [b for b in blocks if b.id not in turn.malformed]
         partial: dict[str, list[tuple[float, str, str]]] = {}
         results: list[ToolResultBlock] = []
@@ -542,7 +530,6 @@ class Agent:
             raise
         results += _malformed_results(blocks, turn.malformed)
 
-        # Both messages together: the turn, and the results that answer its calls.
         await self._append(context, Message(role="assistant", content=list(turn.content)))
         await self._append(context, Message(role="user", content=list(results)))
         if getattr(self.transport, "nudge_on_media_tool_result", False) and _carries_media(results):
@@ -585,12 +572,13 @@ class Agent:
                 partial.setdefault(delta.tool_use_id, []).append((time.monotonic() - at, delta.key, delta.delta))
                 yield delta
             into += await task
-        except asyncio.CancelledError:
+        finally:
+            # However this generator ends, the task stops with it. Closing a stream throws
+            # GeneratorExit, which is not a CancelledError.
             if not task.done():
                 task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await task
-            raise
 
     async def _run_loop(self, user_message: str, context: ContextStore) -> AsyncGenerator[StreamEvent, None]:
         total_usage = Usage(0, 0)
@@ -641,16 +629,14 @@ class Agent:
 
                 tool_blocks = [b for b in content if isinstance(b, ToolUseBlock)]
 
-                if tool_blocks and stop_reason in _NO_DISPATCH:
-                    # The turn did not end in a way that vouches for what it produced, and the run ends
-                    # immediately after this regardless.
+                if tool_blocks and stop_reason not in _DISPATCH:
+                    # The run ends immediately after this regardless.
                     logger.warning(
                         "Not dispatching %d tool(s): the turn ended with stop_reason=%s",
                         len(tool_blocks),
                         stop_reason,
                     )
-                    # Removed from the turn as well, not only from this list. Left in, they are persisted
-                    # with no result beside them, which Anthropic and Google refuse on the next request.
+                    # From the turn as well: a stored call with no result beside it is refused next.
                     content[:] = [b for b in content if not isinstance(b, ToolUseBlock)]
                     tool_blocks = []
 
@@ -673,32 +659,29 @@ class Agent:
                         | StopReason.max_tokens
                         | StopReason.context_window_exceeded
                     ):
-                        # Terminal, and none of them the transport breaking. Reported as an error a caller
-                        # cannot tell them from a broken connection, and retries what can never work.
+                        # Terminal, and none of them the transport breaking. Reported as an error, a
+                        # caller retries what can never work.
                         logger.info("Ending on %s: total_usage=%s", stop_reason, total_usage)
                         yield SessionEndEvent(stop_reason=stop_reason, total_usage=total_usage)
                         session_end_emitted = True
                         return
                     case StopReason.tool_use if content:
-                        # No call survived, but the turn did add something. The next request differs from
-                        # the last, so asking again is the recovery.
+                        # The turn added something, so the next request differs and may parse.
                         logger.warning("Asked for a tool and produced no call; re-prompting")
                         continue
                     case StopReason.tool_use:
-                        # The turn added nothing at all, so the next request is byte-identical to the last.
-                        # It ran to max_iterations: fifty paid requests for one malformed call.
+                        # Nothing was added, so the next request is byte-identical to the last.
                         yield Error(exception=RuntimeError("Transport asked for a tool but produced no call"))
                         yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
                         session_end_emitted = True
                         return
                     case StopReason.pause_turn:
-                        # The provider stopped its own tool loop and expects the assistant content back. It was
-                        # just appended, so going round again is the resume.
+                        # The provider expects the assistant content back, which was just appended.
                         logger.debug("Paused turn, resuming: total_usage=%s", total_usage)
                         continue
                     case _:
-                        # Wildcard on purpose. Named one by one, a reason added later falls out of the
-                        # match and the loop simply runs again until max_iterations.
+                        # Wildcard on purpose: a reason added later would otherwise fall through and
+                        # the loop would run again until max_iterations.
                         yield Error(exception=RuntimeError(f"Transport stopped with: {stop_reason}"))
                         yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
                         session_end_emitted = True

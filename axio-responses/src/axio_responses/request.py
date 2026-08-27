@@ -76,11 +76,15 @@ def tool_output(content: str | list[TextBlock | ImageBlock | AudioBlock | VideoB
 def _flush_text(items: list[dict[str, Any]], parts: list[dict[str, Any]]) -> None:
     """Emit the assistant text collected so far, keeping it in the order the turn stored it.
 
+    The text goes back as a plain string. An ``output_text`` part belongs to an output message,
+    which the API requires to carry ``id``, ``type`` and ``status`` as well; sent without them it
+    matches no input item the API defines.
+
     Inserted at an index counted back from the tail instead, the text moved behind a call it
     introduced whenever reasoning was stored after that call.
     """
     if parts:
-        items.append({"role": "assistant", "content": list(parts)})
+        items.append({"role": "assistant", "content": "".join(part["text"] for part in parts)})
         parts.clear()
 
 
@@ -93,8 +97,7 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
 
     for msg in messages:
         if msg.role == "user":
-            # Every tool result in the turn, whatever else the turn carries. Read only where the turn
-            # was nothing but results, a message holding a result and a question dropped the result.
+            # Every result in the turn, whatever else it carries beside them.
             tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
             if tool_results:
                 for tr in tool_results:
@@ -119,8 +122,7 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                     items.append({"role": "user", "content": content_parts})
 
         elif msg.role == "system":
-            # A system message inside the history, which is not the system prompt this request carries
-            # in ``instructions``.
+            # A system message inside the history, not the prompt carried in ``instructions``.
             text = "".join(b.text for b in msg.content if isinstance(b, TextBlock))
             if text:
                 items.append({"role": "system", "content": [{"type": "input_text", "text": text}]})
@@ -130,8 +132,8 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
             turn_start = len(items)
             for b in msg.content:
                 if isinstance(b, ReasoningBlock):
-                    # `id` and `summary` are required beside the proof, so a block without one is left out. The
-                    # flush comes after that test, or a dropped block splits one run of text in two.
+                    # `id` and `summary` are required beside the proof. The flush follows that test,
+                    # or a dropped block splits one run of text in two.
                     if b.id and b.signature:
                         _flush_text(items, content_parts_a)
                         items.append(
@@ -158,9 +160,8 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                         }
                     )
             _flush_text(items, content_parts_a)
-            if len(items) > turn_start and items[-1].get("type") == "reasoning":
-                # The API refuses a reasoning item with nothing after it: "provided without its required
-                # following item". Dropped rather than made to 400 every later request.
+            while len(items) > turn_start and items[-1].get("type") == "reasoning":
+                # The API refuses a reasoning item with nothing after it.
                 logger.debug("Dropping a trailing reasoning item, which has no following item")
                 items.pop()
 
@@ -169,8 +170,7 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
     for item in list(items):
         if item.get("type") == "function_call" and item.get("call_id") not in output_ids:
             call_id = item.get("call_id", "")
-            # Recorded as we go. Computed once before the loop, a call_id appearing twice — which a
-            # compacted or forked context produces — got a placeholder each time.
+            # As we go: a call_id appearing twice took a placeholder each time.
             output_ids.add(call_id)
             logger.warning("Synthesizing placeholder output for orphan function_call: call_id=%s", call_id)
             items.append(

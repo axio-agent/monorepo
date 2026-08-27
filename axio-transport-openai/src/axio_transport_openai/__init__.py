@@ -8,6 +8,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -95,7 +96,7 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
             id="gpt-5.4",
             context_window=1_050_000,
             max_output_tokens=128_000,
-            capabilities=_VT,
+            capabilities=_VRT,
             input_cost=10.0,
             output_cost=40.0,
         ),
@@ -103,7 +104,7 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
             id="gpt-5.4-mini",
             context_window=400_000,
             max_output_tokens=128_000,
-            capabilities=_VT,
+            capabilities=_VRT,
             input_cost=1.5,
             output_cost=6.0,
         ),
@@ -111,7 +112,7 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
             id="gpt-5.4-nano",
             context_window=400_000,
             max_output_tokens=128_000,
-            capabilities=_TT,
+            capabilities=_RT,
             input_cost=0.30,
             output_cost=1.20,
         ),
@@ -120,7 +121,7 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
             id="gpt-5.1",
             context_window=400_000,
             max_output_tokens=128_000,
-            capabilities=_VT,
+            capabilities=_VRT,
             input_cost=5.0,
             output_cost=20.0,
         ),
@@ -128,7 +129,7 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
             id="gpt-5",
             context_window=400_000,
             max_output_tokens=128_000,
-            capabilities=_VT,
+            capabilities=_VRT,
             input_cost=5.0,
             output_cost=20.0,
         ),
@@ -136,7 +137,7 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
             id="gpt-5-mini",
             context_window=400_000,
             max_output_tokens=128_000,
-            capabilities=_VT,
+            capabilities=_VRT,
             input_cost=1.25,
             output_cost=5.0,
         ),
@@ -144,7 +145,7 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
             id="gpt-5-nano",
             context_window=400_000,
             max_output_tokens=128_000,
-            capabilities=_TT,
+            capabilities=_RT,
             input_cost=0.25,
             output_cost=1.0,
         ),
@@ -220,6 +221,14 @@ OPENAI_MODELS: ModelRegistry = ModelRegistry(
 
 #: Every ``finish_reason`` the API publishes, plus the ones compatible servers add. A reason
 #: left out of this map ends the run as an error.
+#: The host that publishes /v1/responses. A compatible server answering on another host is assumed
+#: to speak chat completions, which every one of them implements.
+#: The models that accept ``reasoning_effort="none"``. The o-series takes only low, medium and
+#: high, so sending "none" there is the 400 this override exists to prevent.
+_TAKES_NO_REASONING = re.compile(r"gpt-5\.(?!0)")
+
+_IS_OPENAI = re.compile(r"https://api\.openai\.com(/|$)")
+
 _STOP_REASON_MAP: dict[str, StopReason] = {
     "stop": StopReason.end_turn,
     "tool_calls": StopReason.tool_use,
@@ -498,9 +507,9 @@ class ThinkTagParser:
 class OpenAITransport(CompletionTransport, EmbeddingTransport):
     name: str = "OpenAI"
     #: Which endpoint this server speaks. ``"responses"`` is the one that takes function tools and
-    #: reasoning together, and OpenAI recommends it for new work. Compatible servers rarely
-    #: implement it, so the subclasses that point at them say ``"chat"``.
-    api: Literal["responses", "chat"] = field(default="responses", kw_only=True)
+    #: reasoning together, and OpenAI recommends it for new work. Left unset it follows
+    #: ``base_url``: only OpenAI's own host is assumed to implement it.
+    api: Literal["responses", "chat"] | None = field(default=None, kw_only=True)
     base_url: str = field(default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
     model: ModelSpec = field(default_factory=lambda: OPENAI_MODELS["gpt-4.1-mini"])
@@ -513,6 +522,11 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
     def __post_init__(self) -> None:
         if not isinstance(self.extra_params, MappingProxyType):
             self.extra_params = MappingProxyType(self.extra_params)
+        if self.api is None:
+            # A base_url pointing anywhere else is a compatible server, and those rarely implement
+            # /v1/responses. Defaulted to it regardless, a transport aimed at a local vLLM asked
+            # for an endpoint that answers 404.
+            self.api = "responses" if _IS_OPENAI.match(self.base_url) else "chat"
 
     def build_chat_payload(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -525,7 +539,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
 
         if tools:
             payload["tools"] = _convert_tools(tools)
-            if Capability.reasoning in self.model.capabilities and "reasoning_effort" not in self.extra_params:
+            if _TAKES_NO_REASONING.match(self.model.id) and "reasoning_effort" not in self.extra_params:
                 # This endpoint refuses function tools beside any reasoning effort other than "none", so a
                 # request carrying both fails with a 400 naming a parameter the caller never sent. The model
                 # is paid for as a reasoning model and asked not to reason. /v1/responses takes both.
@@ -734,12 +748,14 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             logger.debug("Request payload:\n%s", dumped)
 
         last_exc: Exception | None = None
+        sent = False
         for attempt in range(1, self.max_retries + 1):
             retry_resp: aiohttp.ClientResponse | None = None
             try:
                 async with self.session.post(url, json=payload, headers=headers) as resp:
                     if resp.status == 200:
                         async for event in self._parse_sse(resp):
+                            sent = True
                             yield event
                         return
 
@@ -761,6 +777,10 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
                 last_exc = StreamError(str(exc))
                 logger.warning("Connection error (attempt %d/%d): %s", attempt, self.max_retries, exc)
 
+            if sent:
+                # The caller has already seen events from this attempt. Going round again re-POSTs
+                # and replays them: a tool ran twice, and its text was stored twice.
+                raise last_exc or StreamError("Stream failed after events reached the caller")
             if attempt < self.max_retries:
                 delay = retry_delay(retry_resp, attempt, base=self.retry_base_delay)
                 logger.info("Retrying in %.1fs...", delay)

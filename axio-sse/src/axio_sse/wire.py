@@ -40,8 +40,7 @@ class Wire:
         if also and not name:
             raise ValueError(f"{cls.__name__} gives also= without name=; a shape names itself whole")
         if name:
-            # ``names`` replaces rather than extends, or a subclass that renames itself goes on
-            # claiming its parent's other names.
+            # Replaces rather than extends: a renamed subclass must not keep its parent's names.
             cls.names = (name, *((also,) if isinstance(also, str) else also))
 
     @classmethod
@@ -79,7 +78,6 @@ def _as(kind: Any, raw: Any) -> Any:
     origin = get_origin(kind)
     if origin is UnionType or origin is Union:
         rest = [arg for arg in get_args(kind) if arg is not type(None)]
-        # Every member is tried, not just the first: a field declared `str | int` must read both.
         for member in rest:
             if (read := _as(member, raw)) is not None:
                 return read
@@ -93,8 +91,6 @@ def _as(kind: Any, raw: Any) -> Any:
         args = get_args(kind)
         if not args:
             return list(raw)
-        # Each item goes through the same rules as a field, so a list of a declared type holds
-        # that type or nothing.
         read = [_as(args[0], one) for one in raw]
         return [one for one in read if one is not None]
     if kind is str:

@@ -275,3 +275,58 @@ async def test_an_override_without_the_decorator_still_keeps_the_name() -> None:
 
     assert Quiet.names() == {"alpha"}
     assert Quiet().read(Event(data='{"type":"alpha"}')) == ["child"]
+
+
+class TestTheDefaultEventType:
+    """An event with no ``event:`` field is of type ``message``, which the format defines."""
+
+    class Plain(Reader[str], by=EVENT_NAME):
+        @on("message")
+        def plain(self, payload: Payload) -> str:
+            return payload.string("a")
+
+    def test_an_unnamed_event_reaches_the_message_handler(self) -> None:
+        # Dispatched on the raw field, the ordinary unnamed event of every plain SSE stream
+        # reached no handler at all.
+        assert self.Plain().read(Event(data='{"a":"x"}')) == ["x"]
+
+    def test_an_explicitly_named_message_reaches_it_too(self) -> None:
+        assert self.Plain().read(Event(data='{"a":"x"}', event="message")) == ["x"]
+
+    def test_a_strict_read_does_not_reject_it(self) -> None:
+        assert self.Plain().read(Event(data='{"a":"x"}'), strict=True) == ["x"]
+
+    def test_a_name_nobody_reads_is_still_refused(self) -> None:
+        with pytest.raises(UnknownEvent, match="other"):
+            self.Plain().read(Event(data="{}", event="other"), strict=True)
+
+    def test_the_wire_field_still_says_what_arrived(self) -> None:
+        # `event` is what the stream sent; `name` is the type the format gives it.
+        assert (Event(data="x").event, Event(data="x").name) == ("", "message")
+
+
+class TestWhatOneHandlerReturned:
+    """One result, many results, or none — and a word is one result."""
+
+    class Words(Reader[str], by=EVENT_NAME):
+        @on("one")
+        def one(self, payload: Payload) -> str:
+            return payload.string("a")
+
+        @on("many")
+        def many(self, payload: Payload) -> list[str]:
+            return [payload.string("a"), payload.string("b")]
+
+        @on("none")
+        def none(self, payload: Payload) -> None:
+            return None
+
+    def test_a_word_is_one_result_and_not_its_letters(self) -> None:
+        # A str satisfies Iterable[str], so list() split it and the caller got five events.
+        assert self.Words().read(Event(data='{"a":"hello"}', event="one")) == ["hello"]
+
+    def test_several_results_still_arrive_as_several(self) -> None:
+        assert self.Words().read(Event(data='{"a":"hi","b":"there"}', event="many")) == ["hi", "there"]
+
+    def test_nothing_is_nothing(self) -> None:
+        assert self.Words().read(Event(data="{}", event="none")) == []

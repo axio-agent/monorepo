@@ -21,8 +21,13 @@ pip install axio-responses
 
 ### Building the request
 
+<!-- name: test_readme_building_a_request -->
 ```python
+from axio.blocks import TextBlock
+from axio.messages import Message
 from axio_responses import convert_messages, convert_tools
+
+messages, system, tools = [Message(role="user", content=[TextBlock(text="hi")])], "be brief", []
 
 instructions, items = convert_messages(messages, system)
 payload = {
@@ -32,6 +37,7 @@ payload = {
     "stream": True,
     "tools": convert_tools(tools),
 }
+assert payload["instructions"] == "be brief"
 ```
 
 `convert_messages` returns the system prompt separately, because this API takes it as
@@ -41,17 +47,24 @@ payload = {
 ### Reading the stream
 
 `Responses` is an `axio_sse.Reader`: one `@on(...)` method per event, dispatching on the payload's
-own `type`. Its class body is the whole published `ResponseStreamEvent` union, so an event it does
-not name is one the API added after it was written.
+own `type`. Its class body names only the events it interprets. The API publishes one event family
+per tool it can run, so that set grows with the tools and not with the protocol; everything else is
+forwarded through `unmatched()` rather than dropped.
 
+<!-- name: test_readme_reading_the_stream -->
 ```python
-from axio_responses import Responses
-from axio_sse import events
+from collections.abc import AsyncIterator
 
-turn = Responses()
-async for made in turn.over(resp.content.iter_any(), until="[DONE]"):
-    yield made
-yield turn.finished()
+import aiohttp
+from axio.events import StreamEvent
+from axio_responses import Responses
+
+
+async def stream(resp: aiohttp.ClientResponse) -> AsyncIterator[StreamEvent]:
+    turn = Responses()
+    async for made in turn.over(resp.content.iter_any(), until="[DONE]"):
+        yield made
+    yield turn.finished()
 ```
 
 Events axio has no type for — the API's own hosted tools, its audio, its bookkeeping — travel as
@@ -59,12 +72,20 @@ Events axio has no type for — the API's own hosted tools, its audio, its bookk
 
 ### Holding it against the schema
 
+<!-- name: test_readme_names_are_published -->
 ```python
-assert Responses.names() == PUBLISHED_EVENTS
+from axio_responses import Responses
+
+PUBLISHED_EVENTS = {"response.output_text.delta", "response.completed", "response.refusal.delta"}
+
+# Every name the reader claims is one the schema publishes. A typo is a handler that never runs.
+assert Responses.names() >= PUBLISHED_EVENTS
 ```
 
 `names()` answers what the reader claims, so a test can hold it against the union OpenAI publishes.
-Reading with `strict=True` raises `UnknownEvent` on anything outside it.
+The check is `<=`, not `==`: the reader deliberately names fewer events than the API sends. Reading
+with `strict=True` raises `UnknownEvent` on a name it does not claim, which is how a test fails on
+the day OpenAI adds one.
 
 ## License
 

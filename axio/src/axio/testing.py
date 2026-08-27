@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from .context import MemoryContextStore
@@ -82,3 +82,23 @@ def make_ephemeral_context() -> MemoryContextStore:
 
 def make_echo_tool() -> Tool[Any]:
     return Tool(name="echo", description="Returns input as JSON", handler=_msg_input)
+
+
+def assert_stream_contract(events: Sequence[StreamEvent]) -> None:
+    """Check what every ``CompletionTransport.stream()`` must produce.
+
+    A transport that breaks one of these still passes its own tests, because the agent papers over
+    the difference. Call this from each transport's tests on whatever its fake server produced.
+    """
+    ends = [e for e in events if isinstance(e, IterationEnd)]
+    assert len(ends) == 1, f"a stream ends with exactly one IterationEnd, got {len(ends)}"
+    assert events[-1] is ends[0], "IterationEnd is the last event"
+    assert ends[0].stop_reason is not StopReason.error, (
+        "raise StreamError instead: an IterationEnd(error) reaches the agent's wildcard, "
+        "and the caller is told only 'Transport stopped with: error'"
+    )
+    usage = ends[0].usage
+    assert usage.cache_read_tokens + usage.cache_write_tokens <= usage.input_tokens, (
+        f"the cache slices are inside input_tokens, got {usage}"
+    )
+    assert usage.reasoning_tokens <= usage.output_tokens, f"reasoning is inside output_tokens, got {usage}"

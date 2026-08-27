@@ -1,6 +1,7 @@
 """The Responses API: the vocabulary it publishes, and the request it takes."""
 
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -367,19 +368,18 @@ def test_splitting_the_done_events_kept_both_names() -> None:
     assert {"response.output_item.done", "response.content_part.done"} <= Responses.names()
 
 
-def test_an_incomplete_reason_nobody_knows_is_not_a_finished_answer() -> None:
-    """The event says the response did not complete.
+def test_an_incomplete_reason_nobody_knows_is_raised_and_not_returned() -> None:
+    """The event says the response did not complete, and the reason names why.
 
-    Defaulting an unknown reason to end_turn stored and reported a truncated answer as a whole one,
-    and a truncation reason the API adds tomorrow is exactly the case that would hit it.
+    Returned as `IterationEnd(error)` it reaches the agent's wildcard, and the caller is told only
+    `Transport stopped with: error` with the API's own reason gone.
     """
-    reader = Responses()
-    _reads(
-        reader,
-        type="response.incomplete",
-        response={"status": "incomplete", "incomplete_details": {"reason": "some_new_limit"}, "usage": {}},
-    )
-    assert reader.finished().stop_reason == StopReason.error
+    with pytest.raises(StreamError, match="some_new_limit"):
+        _reads(
+            Responses(),
+            type="response.incomplete",
+            response={"status": "incomplete", "incomplete_details": {"reason": "some_new_limit"}, "usage": {}},
+        )
 
 
 def test_the_incomplete_reasons_the_schema_publishes_still_map() -> None:
@@ -638,8 +638,17 @@ class TestAssistantTurnOrder:
         turn = Message(role="assistant", content=[TextBlock(text="a"), TextBlock(text="b")])
         _, items = convert_messages([turn], "")
 
-        assert [item["role"] for item in items] == ["assistant"]
-        assert [part["text"] for part in items[0]["content"]] == ["a", "b"]
+        assert items == [{"role": "assistant", "content": "ab"}]
+
+    def test_the_text_goes_back_as_a_shape_the_api_defines(self) -> None:
+        # An `output_text` part belongs to an output message, which also requires `id`, `type` and
+        # `status`. Sent without them it matched no input item the API defines.
+        turn = Message(role="assistant", content=[TextBlock(text="hello")])
+
+        _, items = convert_messages([turn], "")
+
+        assert items == [{"role": "assistant", "content": "hello"}]
+        assert "output_text" not in json.dumps(items)
 
 
 def test_a_turn_that_ends_on_reasoning_does_not_replay_it() -> None:
@@ -650,3 +659,21 @@ def test_a_turn_that_ends_on_reasoning_does_not_replay_it() -> None:
     _, items = convert_messages([turn], "")
 
     assert [item.get("type") or item.get("role") for item in items] == ["assistant"]
+
+
+def test_tool_arguments_are_not_logged_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    # Arguments are the model's input to a tool, so they carry whatever the user typed. INFO is on
+    # in most deployments, which put an API key in a shipped log.
+    secret = '{"token": "sk-live-do-not-log-me"}'
+    reader = Responses()
+    with caplog.at_level(logging.INFO, logger="axio.responses"):
+        _reads(reader, type="response.function_call_arguments.done", item_id="fc_1", name="pay", arguments=secret)
+
+    assert "Tool args complete" in caplog.text, "the operational line still has to be logged"
+    assert "sk-live-do-not-log-me" not in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="axio.responses"):
+        _reads(reader, type="response.function_call_arguments.done", item_id="fc_1", name="pay", arguments=secret)
+
+    assert "sk-live-do-not-log-me" in caplog.text, "debug still has to be able to show them"

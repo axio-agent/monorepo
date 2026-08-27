@@ -11,6 +11,10 @@ from .event import Event
 #: ``_take`` hard-codes them; changing this tuple alone changes nothing.
 ENDINGS: Final = ("\r\n", "\n", "\r")
 
+#: How large a held piece grows before the next chunk starts a new one. Bounds the number of
+#: string headers a fragmented event costs, at no measurable cost to an ordinary read buffer.
+_MIN_PIECE = 4096
+
 #: How long a ``retry:`` value may be. ``str.isdigit`` is true for 128 characters ``int()``
 #: refuses, and CPython refuses to parse past 4300 digits.
 _RETRY_DIGITS: Final = 18
@@ -49,15 +53,11 @@ class Decoder:
 
     def reset(self) -> None:
         """Forget the half-read event and the half-read character, ready for another stream."""
-        # Incremental: a chunk can end in the middle of a character. ``utf-8-sig`` because the
-        # format is read as "UTF-8 decode", which strips a leading byte order mark. Left in, the
-        # mark makes the first field name ``\ufeffdata``.
+        # ``utf-8-sig`` strips a leading byte order mark, which the format requires.
         self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
         self._held = ""
-        # Chunks that carry no terminator, held apart until one arrives. Joining each chunk into
-        # the buffer copies the whole held event again, once per chunk.
+        # Held apart until a terminator arrives: joining each chunk copies the whole event again.
         self._parts: list[str] = []
-        # How much of ``_held`` is read, and how far it is known to carry no terminator.
         self._start = 0
         self._scan = 0
         self._opened = False
@@ -76,16 +76,18 @@ class Decoder:
         if isinstance(chunk, bytes):
             text = self._text.decode(chunk)
         else:
-            # A caller that switches from bytes to str leaves the byte decoder holding half a character
-            # that can never complete. The state is cleared as well as replaced: a final flush leaves a
-            # partial BOM in place, and it then corrupts the next byte chunk.
+            # Bytes left half a character behind. A final flush keeps a partial mark, so the
+            # state is cleared as well as replaced.
             if pending := self._text.getstate()[0]:
                 self._text.setstate((b"", 0))
             text = pending.decode("utf-8", "replace") + chunk
         if not self._opened:
-            # The byte decoder strips the mark for us. A caller feeding str has to be met here.
             text = text.removeprefix("\ufeff")
-            self._opened = bool(text) or final
+            if text or final:
+                self._opened = True
+                # Flag 0 means no mark is expected. The byte decoder tracks the start itself,
+                # and would eat a mark that is data by then.
+                self._text.setstate((b"", 0))
         if final:
             text += self._text.decode(b"", True)
         if self._trailing_cr:
@@ -96,9 +98,12 @@ class Decoder:
             # ``\n`` follows, or it invents a blank line and dispatches half an event.
             text, self._trailing_cr = text[:-1], True
         if text:
-            self._parts.append(text)
+            # Every piece costs a string header, so a byte at a time held forty times its size.
+            if self._parts and len(self._parts[-1]) < _MIN_PIECE:
+                self._parts[-1] += text
+            else:
+                self._parts.append(text)
         if not final and "\n" not in text and "\r" not in text:
-            # No terminator arrived, so no line can complete. What is held stays in pieces.
             return []
         self._join()
 
@@ -107,17 +112,16 @@ class Decoder:
             if (event := self._read(line)) is not None:
                 made.append(event)
         if self._start * 2 >= len(self._held) and self._start:
-            # Drop what is read once it outweighs what is not. Left until the next terminator
-            # arrives, the buffer pins a second copy of the event just handed back.
+            # Or the buffer pins a second copy of the event it just handed back.
             self._held = self._held[self._start :]
             self._scan -= self._start
             self._start = 0
         if final:
-            if rest := self._held[self._start :]:
-                self._read(rest)
+            # The format discards what is pending at end of file, so a connection cut before the
+            # blank line cannot read as a finished turn.
             self._held, self._start, self._scan = "", 0, 0
-            if self._collected():
-                made.append(self._dispatch())
+            self._data.clear()
+            self._event = ""
         return made
 
     def _join(self) -> None:
@@ -144,8 +148,7 @@ class Decoder:
         elif nl != -1:
             at, after = nl, nl + 1
         else:
-            # The tail carries no terminator, so no later chunk scans it again. A trailing ``\r``
-            # is held out of the buffer, so it cannot pair with a ``\n`` that arrives next.
+            # The tail carries no terminator, so no later chunk scans it again.
             self._scan = len(held)
             return None
         line = held[self._start : at]
@@ -155,11 +158,11 @@ class Decoder:
     def _collected(self) -> bool:
         """Whether a blank line here fires anything.
 
-        The format dispatches on the data buffer and never on the name: an event with a name and no
-        data fires nothing. ``retry`` is kept because ``Event.retry`` is public surface and arrives
-        with no data by definition.
+        The format dispatches on the data buffer, and on nothing else. A name alone fires nothing,
+        and so does a ``retry:``, which sets the stream's reconnection time rather than sending
+        anything. ``Event.retry`` still reports the value where data arrived beside it.
         """
-        return bool(self._data) or self._retry is not None
+        return bool(self._data)
 
     def _dispatch(self) -> Event:
         made = Event(data="\n".join(self._data), event=self._event, id=self._id, retry=self._retry)
@@ -173,7 +176,6 @@ class Decoder:
             # must not become a stream of empty events.
             if self._collected():
                 return self._dispatch()
-            # Nothing fires, and the name is cleared so it cannot leak onto the next event.
             self._data, self._event = [], ""
             return None
         if line.startswith(":"):
@@ -186,7 +188,7 @@ class Decoder:
             self._event = value
         elif name == "id" and "\0" not in value:
             self._id = value
-        elif name == "retry" and value.isdecimal() and len(value) <= _RETRY_DIGITS:
+        elif name == "retry" and value.isascii() and value.isdigit() and len(value) <= _RETRY_DIGITS:
             self._retry = int(value)
         # Any other field is ignored, which the format requires: it is how it is extended.
         return None

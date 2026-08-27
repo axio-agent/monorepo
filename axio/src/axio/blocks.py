@@ -45,8 +45,7 @@ class ContentBlock:
 @dataclass(frozen=True, slots=True)
 class TextBlock(ContentBlock):
     text: str
-    #: Opaque proof that this text is the provider's own, where the provider signs the text part.
-    #: Replayed with the text: Google reports ``MISSING_THOUGHT_SIGNATURE`` for a turn that lost it.
+    #: Opaque proof for this text, where the provider signs a text part. Replayed with it.
     signature: str = ""
 
 
@@ -84,8 +83,7 @@ class ReasoningBlock(ContentBlock):
     text: str = ""
     signature: str = ""
     redacted: bool = False
-    #: How the provider names this block, where it names them. Opaque, like the signature, and
-    #: required beside it by a provider that identifies reasoning by id rather than by position.
+    #: How the provider names this block, where it names them. Required beside the signature.
     id: str = ""
 
 
@@ -94,8 +92,7 @@ class ToolUseBlock(ContentBlock):
     id: ToolCallID
     name: ToolName
     input: dict[str, Any]
-    #: Opaque proof for this call, where the provider issues one. Replayed with the call, and
-    #: stored rather than held in the transport, which is empty in a restored session.
+    #: Opaque proof for this call. Stored rather than held in the transport, which a restart empties.
     signature: str = ""
 
 
@@ -115,8 +112,7 @@ def to_dict(block: ContentBlock) -> dict[str, Any]:
 
 @to_dict.register(TextBlock)
 def _text_to_dict(block: TextBlock) -> dict[str, Any]:
-    # The key is written only when a provider signed the text. Text is the commonest block, so an
-    # empty key on every one of them grows every stored session for nothing.
+    # Only when signed: text is the commonest block, and an empty key on each grows every session.
     out: dict[str, Any] = {"type": "text", "text": block.text}
     if block.signature:
         out["signature"] = block.signature
@@ -178,7 +174,6 @@ def from_dict(data: dict[str, Any]) -> ContentBlock:
     """Deserialize a plain dict to a ContentBlock."""
     match data["type"]:
         case "text":
-            # A session stored before text carried a proof has no "signature" key.
             return TextBlock(text=data["text"], signature=data.get("signature", ""))
         case "image":
             return ImageBlock(media_type=data["media_type"], data=base64.b64decode(data["data"]))

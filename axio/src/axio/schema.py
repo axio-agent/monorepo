@@ -149,6 +149,25 @@ def build_tool_schema(
 #: ``title`` there is a tool argument rather than the JSON Schema keyword.
 _NAMED_SCHEMAS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
 
+#: Keys whose value is one schema, or a list of them.
+_NESTED_SCHEMAS = frozenset(
+    {
+        "items",
+        "prefixItems",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+        "allOf",
+        "anyOf",
+        "oneOf",
+    }
+)
+
 
 def strip_title(schema: dict[str, Any]) -> dict[str, Any]:
     """The schema without its ``title`` keywords, at every depth.
@@ -157,9 +176,9 @@ def strip_title(schema: dict[str, Any]) -> dict[str, Any]:
     pydantic model names every model and field, no provider reads those names, and a large tool set
     pays for them on every request.
 
-    An argument that happens to be called ``title`` is kept. Stripped as a keyword, a tool declaring
-    ``create_issue(title, body)`` reached the provider with ``title`` still in ``required`` and no
-    property of that name.
+    Only the keywords that hold schemas are walked. ``const``, ``default``, ``enum`` and
+    ``examples`` hold values the caller declared, so a value with a ``title`` field of its own
+    survives: walked as schemas, an ``enum`` of objects came out as a list of empty ones.
     """
     out: dict[str, Any] = {}
     for key, value in schema.items():
@@ -167,9 +186,9 @@ def strip_title(schema: dict[str, Any]) -> dict[str, Any]:
             continue
         if key in _NAMED_SCHEMAS and isinstance(value, dict):
             out[key] = {name: strip_title(sub) if isinstance(sub, dict) else sub for name, sub in value.items()}
-        elif isinstance(value, dict):
+        elif key in _NESTED_SCHEMAS and isinstance(value, dict):
             out[key] = strip_title(value)
-        elif isinstance(value, list):
+        elif key in _NESTED_SCHEMAS and isinstance(value, list):
             out[key] = [strip_title(item) if isinstance(item, dict) else item for item in value]
         else:
             out[key] = value

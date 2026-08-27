@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from .exceptions import StreamError
+
 type ToolName = str
 type ToolCallID = str
 
@@ -38,15 +40,15 @@ class StopReason(StrEnum):
 
 
 def stop_reason_from(raw: str, table: Mapping[str, StopReason], *, provider: str) -> StopReason:
-    """What a provider's own stop value means here, or ``error`` when the table does not name it.
+    """What a provider's own stop value means here.
 
-    Never ``end_turn`` by default. Read as a finished answer, a value the API added yesterday
-    stores a turn it failed or cut short as the model's whole answer.
+    Raises ``StreamError`` naming the value where the table does not. That is the transport
+    contract: an ``IterationEnd(error)`` instead reaches the agent's wildcard, and the caller is
+    told only ``Transport stopped with: error``.
     """
     if (known := table.get(raw)) is not None:
         return known
-    logger.warning("Unknown %s stop reason %r", provider, raw)
-    return StopReason.error
+    raise StreamError(f"{provider} stopped with an unknown reason: {raw!r}")
 
 
 @dataclass(frozen=True, slots=True)

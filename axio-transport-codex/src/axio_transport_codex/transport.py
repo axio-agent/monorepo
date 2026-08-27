@@ -195,6 +195,7 @@ class CodexTransport(CompletionTransport):
             logger.debug("Request payload:\n%s", dumped)
 
         last_exc: Exception | None = None
+        sent = False
         for attempt in range(1, self.max_retries + 1):
             retry_resp: aiohttp.ClientResponse | None = None
             try:
@@ -204,6 +205,7 @@ class CodexTransport(CompletionTransport):
                     if resp.status == 200:
                         logger.debug("SSE parsing started")
                         async for event in self._parse_sse(resp):
+                            sent = True
                             yield event
                         logger.debug("SSE parsing finished")
                         return
@@ -226,6 +228,10 @@ class CodexTransport(CompletionTransport):
                 last_exc = StreamError(str(exc))
                 logger.warning("Connection error (attempt %d/%d): %s", attempt, self.max_retries, exc)
 
+            if sent:
+                # The caller has already seen events from this attempt. Going round again re-POSTs
+                # and replays them: a tool ran twice, and its text was stored twice.
+                raise last_exc or StreamError("Stream failed after events reached the caller")
             if attempt < self.max_retries:
                 delay = retry_delay(retry_resp, attempt, base=self.retry_base_delay)
                 logger.info("Retrying in %.1fs...", delay)

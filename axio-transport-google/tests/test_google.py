@@ -25,6 +25,7 @@ from axio.events import Refusal, TextDelta, ToolInputDelta, ToolUseStart
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry
+from axio.testing import assert_stream_contract
 from axio.tool import Tool
 from axio.types import StopReason
 from axio_sse import Payload
@@ -1023,3 +1024,32 @@ def test_a_retry_does_not_reuse_the_part_indices_of_the_attempt_that_failed() ->
 
     assert turn.at == 2
     assert (turn.stop_reason, turn.finished, turn.has_tool_calls) == (StopReason.end_turn, False, False)
+
+
+class TestTheStreamContract:
+    """What every transport must produce, checked here rather than left to the next review."""
+
+    async def test_an_ordinary_turn_obeys_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        chunk = {
+            "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2, "totalTokenCount": 5},
+        }
+
+        assert_stream_contract(await _stream_one(monkeypatch, chunk))
+
+    @pytest.mark.parametrize("reason", ["MISSING_THOUGHT_SIGNATURE", "MALFORMED_RESPONSE", "TOO_MANY_TOOL_CALLS"])
+    async def test_a_reason_the_caller_can_act_on_is_raised(
+        self, monkeypatch: pytest.MonkeyPatch, reason: str
+    ) -> None:
+        # Yielded as IterationEnd(error) the agent reports `Transport stopped with: error`, and the
+        # provider's own word for what went wrong never reaches the caller.
+        chunk = {"candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": reason}]}
+
+        with pytest.raises(StreamError, match=reason):
+            await _stream_one(monkeypatch, chunk)
+
+    async def test_a_reason_nobody_maps_is_raised_with_its_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        chunk = {"candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "INVENTED_LATER"}]}
+
+        with pytest.raises(StreamError, match="INVENTED_LATER"):
+            await _stream_one(monkeypatch, chunk)

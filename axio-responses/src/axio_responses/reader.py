@@ -300,12 +300,10 @@ class Responses(Reader[StreamEvent]):
         self._count(response.usage)
         status = response.status or "completed"
         if self.stop_reason == StopReason.refusal:
-            # A refusal already decided this turn. The status enum has no refusal member, so the
-            # response carrying one still completes.
+            # The status enum has no refusal member, so a declined response still completes.
             pass
         elif status not in STOP_REASONS:
-            # A status nobody here knows is not a finished answer. Read as end_turn, a response the
-            # API failed or cut short is stored as the model's whole answer.
+            # An unknown status is not a finished answer, whatever else it might be.
             logger.warning("Unknown response status %r, read as an error", status)
             self.stop_reason = StopReason.error
         else:
@@ -332,12 +330,10 @@ class Responses(Reader[StreamEvent]):
 
     @on(ArgumentsDone)
     def _arguments_done(self, wire: ArgumentsDone) -> None:
-        logger.info(
-            "Tool args complete: %s call_id=%s, args=%.200s",
-            wire.name or "?",
-            self._call_id(wire.item_id),
-            wire.arguments,
-        )
+        # Arguments carry whatever the user typed, and INFO is on in most deployments.
+        call_id = self._call_id(wire.item_id)
+        logger.info("Tool args complete: %s call_id=%s, %d chars", wire.name or "?", call_id, len(wire.arguments))
+        logger.debug("Tool args for call_id=%s: %.200s", call_id, wire.arguments)
 
     # ── what ends the turn ───────────────────────────────────────────────────────────────────
 

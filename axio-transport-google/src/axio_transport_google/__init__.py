@@ -376,9 +376,7 @@ def _tool_result_parts(results: list[ToolResultBlock], messages: list[Message]) 
 def _user_parts(msg: Message, messages: list[Message]) -> list[Part]:
     """What one user turn sends, which is either its tool results or its own content."""
     results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-    if results and len(results) == len(msg.content):
-        return _tool_result_parts(results, messages)
-    parts: list[Part] = []
+    parts: list[Part] = _tool_result_parts(results, messages) if results else []
     for block in msg.content:
         if isinstance(block, TextBlock):
             parts.append({"text": block.text})
@@ -490,6 +488,8 @@ class _Turn:
     finished: bool = False
     has_tool_calls: bool = False
     served_by: str | None = None
+    #: The provider's own word for why it stopped, kept for the message when it means an error.
+    reason: str = ""
 
     def restart(self) -> None:
         """Forget the attempt that failed, but not the part counter it advanced."""
@@ -732,6 +732,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
         self._streams += 1
         turn = _Turn(seq=self._streams)
 
+        sent = False
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             turn.restart()
@@ -739,7 +740,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                 async with self.session.post(url, json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
-                        if is_retryable(resp.status) and attempt < self.max_retries:
+                        if is_retryable(resp.status) and attempt < self.max_retries and not sent:
                             logger.warning(
                                 "Gemini HTTP %d (attempt %d/%d): %.200s",
                                 resp.status,
@@ -758,10 +759,11 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                                 json.dumps(_redact_body(dict(payload)), indent=2, ensure_ascii=False),
                             )
                         for event in self._chunk_events(GenerateContentChunk.read(payload), turn):
+                            sent = True
                             yield event
 
                 usage = _usage(turn.counts, final=True) if turn.counts is not None else turn.usage
-                stop_reason = turn.stop_reason
+                stop_reason, candidate_reason = turn.stop_reason, turn.reason
 
                 if not turn.finished:
                     # Every Gemini stream ends on a finishReason. Without one the connection was cut.
@@ -777,6 +779,10 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                     usage.input_tokens,
                     usage.output_tokens,
                 )
+                if stop_reason is StopReason.error:
+                    # The caller is told only `Transport stopped with: error` if this is yielded,
+                    # and MISSING_THOUGHT_SIGNATURE is a reason they can act on.
+                    raise StreamError(f"Gemini stopped with {candidate_reason or 'an error'}")
                 yield IterationEnd(iteration=0, stop_reason=stop_reason, usage=usage)
                 return
 
@@ -785,7 +791,11 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             except Exception as exc:
                 last_exc = exc
                 status = getattr(exc, "status", getattr(exc, "status_code", None))
-                if (isinstance(status, int) and is_retryable(status)) or "ResourceExhausted" in str(exc):
+                if not sent and (
+                    (isinstance(status, int) and is_retryable(status)) or "ResourceExhausted" in str(exc)
+                ):
+                    # Not once the caller has seen events: going round again re-POSTs and replays
+                    # them, so a tool runs twice and its text is stored twice.
                     logger.warning("Gemini retryable error (attempt %d/%d): %s", attempt, self.max_retries, exc)
                     if attempt < self.max_retries:
                         await asyncio.sleep(retry_delay(None, attempt))
@@ -822,6 +832,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
 
         if candidate.finishReason:
             turn.finished = True
+            turn.reason = candidate.finishReason
             turn.stop_reason = stop_reason_from(candidate.finishReason, _FINISH_REASON_MAP, provider="Gemini")
 
         # Grounding travels whole. Four providers shape it four incompatible ways.

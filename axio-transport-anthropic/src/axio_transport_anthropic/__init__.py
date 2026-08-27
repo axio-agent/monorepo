@@ -113,6 +113,14 @@ ANTHROPIC_MODELS: ModelRegistry = ModelRegistry(
     }
 )
 
+#: The smallest ``budget_tokens`` the API accepts. It also refuses a budget at or above
+#: ``max_tokens``, which this transport always sets to the model's ceiling.
+_MIN_THINKING = 1024
+
+#: What stands in for an assistant turn whose blocks were all stripped. The API refuses two user
+#: turns in a row, so the turn has to say something.
+_EMPTY_TURN = "(no content)"
+
 #: Every ``stop_reason`` the API publishes. One left out ends the run as an error.
 _STOP_REASON_MAP: dict[str, StopReason] = {
     "end_turn": StopReason.end_turn,
@@ -120,9 +128,8 @@ _STOP_REASON_MAP: dict[str, StopReason] = {
     "tool_use": StopReason.tool_use,
     "max_tokens": StopReason.max_tokens,
     "refusal": StopReason.refusal,
-    # Resumable only if the server-tool content that makes it resumable is stored, and that
-    # content reaches the caller as ProviderEvent. This transport declares no server tool, so
-    # the reason cannot arrive from a request it builds.
+    # Resumable only if the server-tool content is stored, and it reaches the caller as
+    # ProviderEvent. This transport declares no server tool, so the reason cannot arrive.
     "pause_turn": StopReason.pause_turn,
     "model_context_window_exceeded": StopReason.context_window_exceeded,
 }
@@ -187,8 +194,7 @@ def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
                 if isinstance(b, TextBlock):
                     content_parts.append({"type": "text", "text": b.text})
                 elif isinstance(b, ReasoningBlock):
-                    # Sent back unaltered, or not at all. With extended thinking on, the API accepts a turn
-                    # that thought and then called a tool only with the signature it issued.
+                    # Unaltered, or not at all: the API checks the signature it issued.
                     if b.redacted:
                         content_parts.append({"type": "redacted_thinking", "data": b.signature})
                     elif b.signature:
@@ -199,6 +205,10 @@ def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
                 elif isinstance(b, ToolUseBlock):
                     content_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
 
+        if not content_parts and msg.role == "assistant":
+            # Every block was stripped. Skipped, two user turns end up adjacent, which the API
+            # refuses for the rest of the session.
+            content_parts = [{"type": "text", "text": _EMPTY_TURN}]
         if content_parts:
             result.append({"role": msg.role, "content": content_parts})
 
@@ -402,8 +412,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         self.cache_write = 0
         self.reasoning_tokens = 0
         self.stop_reason = ""
-        # content_block_delta carries the index and never the tool id. Only the block's start
-        # carries that, so the pairing has to be kept here.
+        # content_block_delta carries the index and never the tool id.
         self.tool_use_ids: dict[int, str] = {}
 
     # ── what reaches the caller ──────────────────────────────────────────────────────────────
@@ -413,8 +422,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         usage = wire.message.usage
         self.cache_read = usage.cache_read_input_tokens
         self.cache_write = usage.cache_creation_input_tokens
-        # Added back, because input_tokens counts only what follows the last cache breakpoint.
-        # This transport sets cache_control itself.
+        # input_tokens counts only what follows the last cache breakpoint, which this sets.
         self.input_tokens = usage.input_tokens + self.cache_read + self.cache_write
         yield IterationStart(iteration=0, id=wire.message.id or None, model=wire.message.model or None)
 
@@ -425,12 +433,10 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             self.tool_use_ids[wire.index] = block.id
             yield ToolUseStart(index=wire.index, tool_use_id=block.id, name=block.name)
         elif block.type == "redacted_thinking":
-            # The reasoning is withheld and only the proof travels. Dropped, the turn cannot be sent
-            # back: the API refuses a thinking block with no signature.
+            # Only the proof travels. The API refuses a thinking block without one.
             yield ReasoningSignature(index=wire.index, data=block.data, redacted=True)
         elif block.type not in ("text", "thinking"):
-            # server_tool_use, web_search_tool_result, code execution, mcp: the API runs these on its
-            # own side, so axio has nothing to dispatch. They are still content of the turn.
+            # server_tool_use, web_search_tool_result, code execution, mcp: run on the API's side.
             yield ProviderEvent(provider="anthropic", kind=block.type, data=dict(block.raw), index=wire.index)
 
     @on(BlockDeltaEvent)
@@ -452,8 +458,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             case "citations_delta":
                 yield self._citation(index, delta.citation)
             case other:
-                # The block names the delta, so the delta type is a second vocabulary inside one event.
-                # One policy covers both.
+                # The delta type is a second vocabulary inside one event, under one policy.
                 self.unknown(other)
 
     @on(BlockStop)
@@ -659,7 +664,8 @@ class AnthropicTransport(CompletionTransport):
         if self.top_k is not None:
             payload["top_k"] = self.top_k
         if self.thinking_budget is not None:
-            payload["thinking"] = {"type": "enabled", "budget_tokens": self.thinking_budget}
+            budget = max(_MIN_THINKING, min(self.thinking_budget, self.model.max_output_tokens - 1))
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         return payload
 
@@ -696,12 +702,14 @@ class AnthropicTransport(CompletionTransport):
             logger.debug("Request payload:\n%s", dumped)
 
         last_exc: Exception | None = None
+        sent = False
         for attempt in range(1, self.max_retries + 1):
             retry_resp: aiohttp.ClientResponse | None = None
             try:
                 async with self.session.post(url, json=payload, headers=headers) as resp:
                     if resp.status == 200:
                         async for event in self._parse_sse(resp):
+                            sent = True
                             yield event
                         return
 
@@ -723,6 +731,10 @@ class AnthropicTransport(CompletionTransport):
                 last_exc = StreamError(str(exc))
                 logger.warning("Connection error (attempt %d/%d): %s", attempt, self.max_retries, exc)
 
+            if sent:
+                # The caller has already seen events from this attempt. Going round again re-POSTs
+                # and replays them: a tool ran twice, and its text was stored twice.
+                raise last_exc or StreamError("Stream failed after events reached the caller")
             if attempt < self.max_retries:
                 delay = retry_delay(retry_resp, attempt, base=self.retry_base_delay)
                 logger.info("Retrying in %.1fs...", delay)

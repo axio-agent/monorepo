@@ -52,9 +52,11 @@ async def test_an_id_with_a_null_is_refused(read: Read) -> None:
     assert await read("id: a\0b\ndata: x\n\n") == [Event(data="x", id="")]
 
 
-async def test_a_stream_that_stops_without_its_last_blank_line_still_says_what_it_had(read: Read) -> None:
-    assert await read(b"data: cut short\n") == [Event(data="cut short")]
-    assert await read(b"data: cut short") == [Event(data="cut short")]
+async def test_a_stream_that_stops_before_its_blank_line_says_nothing(read: Read) -> None:
+    # The format discards what is pending at end of file. Dispatched anyway, a connection cut
+    # between a frame and the blank line after it made a truncated turn read as a finished one.
+    assert await read(b"data: cut short\n") == []
+    assert await read(b"data: cut short") == []
 
 
 async def test_nothing_at_all_yields_nothing(read: Read) -> None:
@@ -82,16 +84,18 @@ async def test_an_event_far_larger_than_any_line_limit(read: Read) -> None:
     assert await read(f"data: {huge}\n\n".encode(), size=8192) == [Event(data=huge)]
 
 
-async def test_a_stream_that_ends_on_a_bare_cr_dispatches_on_it(read: Read) -> None:
-    # The held \r is a terminator, not data. Appended back into the value it made data == "x\r".
-    assert await read(b"data: x\r") == [Event(data="x")]
+async def test_a_bare_cr_ends_the_line_and_not_the_event(read: Read) -> None:
+    # The held \r is a terminator, not data: appended back into the value it made data == "x\r".
+    # The line is complete, the event is not, so end of file discards it.
+    assert await read(b"data: x\r") == []
+    assert await read(b"data: x\r\r") == [Event(data="x")]
 
 
 def test_the_decoder_is_the_format_and_needs_no_loop() -> None:
     decoder = Decoder()
     assert decoder.decode(b"data: hel") == []
     assert decoder.decode(b"lo\n\ndata: wor") == [Event(data="hello")]
-    assert decoder.decode(b"ld", final=True) == [Event(data="world")]
+    assert decoder.decode(b"ld\n\n", final=True) == [Event(data="world")]
 
 
 def test_a_decoder_forgets_a_half_read_event_when_it_is_reset() -> None:
@@ -148,8 +152,20 @@ def test_a_name_that_fired_nothing_does_not_leak_onto_the_next_event() -> None:
     assert Decoder().decode(b"event: ping\n\ndata: x\n\n", final=True) == [Event(data="x")]
 
 
-def test_a_retry_on_its_own_still_arrives_because_it_carries_no_data_by_definition() -> None:
-    assert Decoder().decode(b"retry: 500\n\n", final=True) == [Event(retry=500)]
+def test_a_retry_on_its_own_sends_nothing() -> None:
+    # It sets the stream's reconnection time. The format dispatches on the data buffer alone, so a
+    # caller of the public events() was handed an empty event for a directive.
+    assert Decoder().decode(b"retry: 500\n\n", final=True) == []
+
+
+def test_a_retry_beside_data_still_reports_the_value() -> None:
+    assert Decoder().decode(b"retry: 500\ndata: x\n\n", final=True) == [Event(data="x", retry=500)]
+
+
+@pytest.mark.parametrize("value", ["١٠٠", "٩", "１２３"])
+def test_a_retry_in_digits_that_are_not_ascii_is_ignored(value: str) -> None:
+    # str.isdecimal() is true for these and int() reads them, but the format allows ASCII 0-9 only.
+    assert Decoder().decode(f"retry: {value}\ndata: x\n\n", final=True) == [Event(data="x")]
 
 
 def test_a_switch_from_bytes_to_text_does_not_swallow_a_half_read_character() -> None:
@@ -189,17 +205,21 @@ def test_a_partial_bom_does_not_outlive_the_line_it_broke() -> None:
 
 
 def _cost(payload: int, size: int = 8192) -> float:
-    """The best of three runs over one ``data:`` line of ``payload`` characters, cut into chunks."""
+    """The CPU cost of the best of three runs over one ``data:`` line, cut into chunks.
+
+    CPU time, not wall clock: a machine busy with other work inflates the clock and fails the test
+    for a reason that has nothing to do with the decoder.
+    """
     stream = ("data: " + "x" * payload + "\n\n").encode()
     parts = [stream[at : at + size] for at in range(0, len(stream), size)]
     best = float("inf")
     for _ in range(3):
         decoder = Decoder()
-        started = time.perf_counter()
+        started = time.process_time()
         for part in parts:
             decoder.decode(part)
         decoder.decode(b"", final=True)
-        best = min(best, time.perf_counter() - started)
+        best = min(best, time.process_time() - started)
     return best
 
 
@@ -239,11 +259,11 @@ def _ordinary(size: int, events: int = 4_000) -> float:
     best = float("inf")
     for _ in range(3):
         decoder = Decoder()
-        started = time.perf_counter()
+        started = time.process_time()
         for part in parts:
             decoder.decode(part)
         decoder.decode(b"", final=True)
-        best = min(best, time.perf_counter() - started)
+        best = min(best, time.process_time() - started)
     return best
 
 
@@ -264,3 +284,29 @@ def test_a_finished_event_is_not_held_a_second_time() -> None:
 
     assert len(made) == 1
     assert len(decoder._held) < len(made[0].data) // 100
+
+
+def test_a_turn_cut_before_its_blank_line_is_not_a_finished_turn() -> None:
+    # The frame that says the response completed arrived whole, but the event did not. Dispatched,
+    # the reader above read a cut connection as a finished answer, which is what the transports'
+    # cut-stream check exists to catch.
+    cut = b'data: {"type":"response.completed","response":{"status":"completed"}}\n'
+
+    assert Decoder().decode(cut, final=True) == []
+
+
+def test_the_same_frame_with_its_blank_line_does_arrive() -> None:
+    whole = b'data: {"type":"response.completed"}\n\n'
+
+    assert [event.data for event in Decoder().decode(whole, final=True)] == ['{"type":"response.completed"}']
+
+
+def test_a_mark_in_a_byte_chunk_after_a_text_chunk_is_data() -> None:
+    # Only a mark at the very start of the stream is stripped. The byte decoder kept expecting one
+    # of its own, so it ate the mark from the first byte chunk that followed a text chunk.
+    decoder = Decoder()
+    decoder.decode("data: first\n\n")
+
+    made = decoder.decode(b"\xef\xbb\xbfdata: second\n\n")
+
+    assert made == [], "the field name is ﻿data, which no format defines"

@@ -1368,25 +1368,26 @@ async def test_sse_buffer_flush(
     fake_server: tuple[FakeOpenAIServer, str],
     transport: OpenAITransport,
 ) -> None:
-    """When the last SSE data line has no trailing newline, data must not be lost."""
+    """A final usage chunk arrives when the stream ends it properly, and not when it is cut."""
     server, _ = fake_server
+    usage = json.dumps({"choices": [], "usage": {"prompt_tokens": 42, "completion_tokens": 7}})
+    head = _sse_chunk({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}]})
+    head += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
 
-    # Build SSE where the final usage chunk has no trailing \n
-    sse = _sse_chunk({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}]})
-    sse += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
-    # Usage chunk without trailing \n\n - just "data: {...}" with no newline
-    usage_data = json.dumps({"choices": [], "usage": {"prompt_tokens": 42, "completion_tokens": 7}})
-    sse += f"data: {usage_data}"  # no trailing \n
-
-    server.responses.append(sse)
+    server.responses.append(head + f"data: {usage}\n\n")
     events = await _collect(transport.stream([], [], ""))
 
-    text_deltas = [e for e in events if isinstance(e, TextDelta)]
-    assert "".join(e.delta for e in text_deltas) == "hi"
-
+    assert "".join(e.delta for e in events if isinstance(e, TextDelta)) == "hi"
     ends = [e for e in events if isinstance(e, IterationEnd)]
     assert len(ends) == 1
     assert ends[0].usage == Usage(42, 7)
+
+    # The same chunk with nothing terminating it is a frame the connection was cut inside. The
+    # format discards it: trusted, a truncated turn reads as a finished one.
+    server.responses.append(head + f"data: {usage}")
+    cut = await _collect(transport.stream([], [], ""))
+
+    assert [e.usage for e in cut if isinstance(e, IterationEnd)] == [Usage(0, 0)]
     assert ends[0].stop_reason == StopReason.end_turn
 
 
@@ -1640,7 +1641,7 @@ class TestResponsesEndpoint:
         )
         async with aiohttp.ClientSession() as session:
             transport = OpenAITransport(
-                base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6-sol"], session=session
+                api="responses", base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6-sol"], session=session
             )
             events = await _collect(
                 transport.stream([Message(role="user", content=[TextBlock(text="hello")])], [], "be brief")
@@ -1663,7 +1664,7 @@ class TestResponsesEndpoint:
         )
         async with aiohttp.ClientSession() as session:
             transport = OpenAITransport(
-                base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6-luna"], session=session
+                api="responses", base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6-luna"], session=session
             )
             await _collect(transport.stream([], [Tool(name="get_weather", description="", handler=get_weather)], ""))
 
@@ -1692,7 +1693,7 @@ class TestResponsesEndpoint:
         )
         async with aiohttp.ClientSession() as session:
             transport = OpenAITransport(
-                base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6"], session=session
+                api="responses", base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6"], session=session
             )
             events = await _collect(transport.stream([], [], ""))
 
@@ -1821,4 +1822,97 @@ class TestEndpointSurvivesSaving:
             "http://localhost:8000/v1",
             "sk-x",
         )
-        assert transport.api == cls.__dataclass_fields__["api"].default
+        # Unset, the endpoint follows base_url: a local server is not OpenAI's own host.
+        assert transport.api == "chat"
+
+
+class TestWhichEndpointIsAssumed:
+    """Unset, the endpoint follows base_url. Only OpenAI's own host publishes /v1/responses."""
+
+    @pytest.mark.parametrize(
+        ("base_url", "expected"),
+        [
+            ("https://api.openai.com/v1", "responses"),
+            ("http://localhost:8000/v1", "chat"),
+            ("https://openrouter.ai/api/v1", "chat"),
+            ("https://api.openai.com.evil.test/v1", "chat"),
+        ],
+    )
+    def test_a_compatible_server_is_not_assumed_to_publish_responses(self, base_url: str, expected: str) -> None:
+        # Defaulted to /v1/responses regardless, a transport aimed at a local vLLM asked for an
+        # endpoint that answers 404.
+        assert OpenAITransport(base_url=base_url, api_key="k").api == expected
+
+    def test_the_caller_still_decides(self) -> None:
+        assert OpenAITransport(base_url="http://localhost:8000/v1", api="responses").api == "responses"
+        assert OpenAITransport(base_url="https://api.openai.com/v1", api="chat").api == "chat"
+
+    def test_a_saved_endpoint_outranks_the_url(self) -> None:
+        built = OpenAITransport.from_dict({"name": "x", "base_url": "https://api.openai.com/v1", "api": "chat"})
+        assert built.api == "chat"
+
+
+async def test_a_stream_cut_after_it_delivered_events_is_not_retried(
+    fake_server: tuple[FakeOpenAIServer, str],
+) -> None:
+    # Retried, the transport re-POSTs and replays what the caller already consumed: the same tool
+    # call was dispatched twice and its text was stored twice.
+    server, base_url = fake_server
+    call = {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "w", "arguments": "{}"}}]},
+            }
+        ]
+    }
+    server.responses.append(f"data: {json.dumps(call)}\n\n")  # no finish_reason: the stream is cut
+
+    async with aiohttp.ClientSession() as session:
+        transport = OpenAITransport(
+            base_url=base_url, api_key="k", api="chat", session=session, max_retries=3, retry_base_delay=0.01
+        )
+        seen: list[str] = []
+        with pytest.raises(StreamError):
+            async for event in transport.stream([], [], ""):
+                if isinstance(event, ToolUseStart):
+                    seen.append(event.tool_use_id)
+
+    assert seen == ["c1"], "the call reached the caller once"
+    assert len(server.received_payloads) == 1, "the request was not sent again"
+
+
+class TestWhoTakesNoReasoning:
+    """`reasoning_effort="none"` is not a value every reasoning model accepts."""
+
+    @pytest.mark.parametrize("model_id", ["gpt-5.1", "gpt-5.4", "gpt-5.6-sol"])
+    def test_a_model_that_takes_it_gets_it_beside_tools(self, model_id: str) -> None:
+        transport = OpenAITransport(model=OPENAI_MODELS[model_id], api="chat")
+
+        payload = transport.build_payload([], [self._tool()], "")
+
+        assert payload["reasoning_effort"] == "none"
+
+    @pytest.mark.parametrize("model_id", ["o3", "o4-mini", "gpt-5"])
+    def test_a_model_that_refuses_it_is_not_sent_it(self, model_id: str) -> None:
+        # The o-series takes low, medium and high only, so "none" is the 400 the override exists
+        # to prevent. gpt-5 predates the value.
+        transport = OpenAITransport(model=OPENAI_MODELS[model_id], api="chat")
+
+        payload = transport.build_payload([], [self._tool()], "")
+
+        assert "reasoning_effort" not in payload
+
+    def test_the_caller_still_decides(self) -> None:
+        transport = OpenAITransport(
+            model=OPENAI_MODELS["gpt-5.6"], api="chat", extra_params={"reasoning_effort": "high"}
+        )
+
+        assert transport.build_payload([], [self._tool()], "")["reasoning_effort"] == "high"
+
+    @staticmethod
+    def _tool() -> Tool[Any]:
+        async def get_weather(location: str) -> str:
+            return "sunny"
+
+        return Tool(name="get_weather", description="w", handler=get_weather)

@@ -423,3 +423,26 @@ class TestStripTitle:
         strip_title(schema)
 
         assert schema["title"] == "Root"
+
+    def test_a_value_the_caller_declared_keeps_its_own_title(self) -> None:
+        # const, default, enum and examples hold values, not schemas. Walked as schemas, an enum of
+        # objects came out as a list of empty ones.
+        schema = {
+            "properties": {
+                "who": {
+                    "title": "Who",
+                    "enum": [{"title": "Mr"}],
+                    "default": {"title": "Mr"},
+                    "const": {"title": "Mr"},
+                }
+            }
+        }
+
+        who = strip_title(schema)["properties"]["who"]
+
+        assert who == {"enum": [{"title": "Mr"}], "default": {"title": "Mr"}, "const": {"title": "Mr"}}
+
+    def test_a_keyword_that_holds_a_schema_is_still_walked(self) -> None:
+        schema = {"anyOf": [{"title": "A", "type": "string"}], "items": {"title": "I", "type": "integer"}}
+
+        assert strip_title(schema) == {"anyOf": [{"type": "string"}], "items": {"type": "integer"}}

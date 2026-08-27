@@ -22,7 +22,21 @@ class UnknownEvent(LookupError):
     """A name no method of this reader claims, met while the reader reads strictly."""
 
 
-#: What a handler returns: what it made, or nothing. One rule for none, one, and many.
+def _made[T](result: Handled[T]) -> list[T]:
+    """What a handler returned, as a list.
+
+    A ``str`` is one result, never its letters. It satisfies ``Iterable[str]``, so a ``Reader[str]``
+    handler returning "hello" gave the caller five events.
+    """
+    if result is None:
+        return []
+    if isinstance(result, (str, bytes)):
+        return [cast(T, result)]
+    return list(result)
+
+
+#: What a handler returns: what it made, or nothing. A ``str`` or ``bytes`` counts as one result,
+#: never as a sequence of its parts.
 type Handled[T] = Iterable[T] | None
 
 type _Handler[R, P, T] = Callable[[R, P], Handled[T]]
@@ -104,20 +118,17 @@ class Reader[T]:
         if by is not None:
             cls._by = by
         found: dict[str, tuple[str, type[Wire] | None]] = {}
-        # The whole MRO, base first: a subclass keeps what its parent reads and replaces only the
-        # names it claims again.
+        # Base first, so a subclass replaces only the names it claims again.
         for klass in reversed(cls.__mro__):
             here: dict[str, tuple[str, type[Wire] | None]] = {}
-            # A method this class decorates again is this class's method, whatever its parent said it
-            # read. Kept, the parent's name would still point at the attribute.
+            # Redecorating an inherited name replaces what the parent read, not just how.
             for stale in [n for n, (attribute, _) in found.items() if _redecorated(klass, attribute)]:
                 del found[stale]
             for attribute, method in vars(klass).items():
                 shape = cast("type[Wire] | None", getattr(method, "_sse_shape", None))
                 for name in cast(tuple[str, ...], getattr(method, "_sse_names", ())):
                     if name in here:
-                        # Refused rather than settled by definition order, which silently leaves one of
-                        # the two methods never called.
+                        # Definition order would silently leave one of the two never called.
                         taken = here[name][0]
                         raise ValueError(f"{klass.__qualname__} reads {name!r} twice: {taken} and {attribute}")
                     here[name] = (attribute, shape)
@@ -162,20 +173,18 @@ class Reader[T]:
         payload = event.payload()
         if payload is None:
             return []
-        # ``strict`` stays latched for the length of this read, so a nested unknown obeys the same
-        # policy as a top-level one.
+        # Latched for the read, so a nested unknown obeys the same policy as a top-level one.
         self._strict = strict
-        name = event.event if self._by == EVENT_NAME else payload.string(self._by)
+        name = event.name if self._by == EVENT_NAME else payload.string(self._by)
         claimed = self._handlers.get(name)
         if claimed is None:
             # unknown() first: under strict it raises, so a reader that forwards still fails a replay.
             self.unknown(name)
-            made = self.unmatched(name, payload)
-            return [] if made is None else list(made)
+            return _made(self.unmatched(name, payload))
         attribute, shape = claimed
         handler = cast(Callable[[Any], Handled[T]], getattr(self, attribute))
         made = handler(payload if shape is None else shape.read(payload))
-        return [] if made is None else list(made)
+        return _made(made)
 
     async def over(
         self, chunks: AsyncIterable[bytes | str], *, strict: bool = False, until: str = ""

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any, cast
+
+import pytest
 
 from axio.agent import Agent
 from axio.blocks import ReasoningBlock, TextBlock, ToolUseBlock
 from axio.context import MemoryContextStore
 from axio.events import (
+    AudioOutput,
     Error,
+    ImageOutput,
     IterationEnd,
     ReasoningDelta,
     ReasoningSignature,
@@ -19,6 +24,7 @@ from axio.events import (
     TextDelta,
     TextSignature,
     ToolInputDelta,
+    ToolOutputDelta,
     ToolResult,
     ToolUseStart,
 )
@@ -753,43 +759,141 @@ class TestATruncatedTurnDoesNotAct:
         assert await self._dispatched(StopReason.tool_use) == ["1000"]
 
 
-class TestTextFromDifferentParts:
-    """A provider that numbers its text by part must not have those parts merged."""
+class TestWhereOneTextBlockEnds:
+    """Text merges into the block being built. A proof finishes that block."""
 
     @staticmethod
     async def _stored(events: list[StreamEvent]) -> list[tuple[str, str]]:
         context = MemoryContextStore()
-        agent = Agent(system="", tools=[], transport=StubTransport([events]))
-        await agent.run("hi", context)
+        await Agent(system="", tools=[], transport=StubTransport([events])).run("hi", context)
         turn = (await context.get_history())[-1]
         return [(b.text, b.signature) for b in turn.content if isinstance(b, TextBlock)]
 
-    async def test_a_proof_signs_only_the_part_it_was_issued_for(self) -> None:
-        # Merged, the unsigned part joined the part after it and took that part's proof, so the
-        # request replayed a signature over text the provider never signed.
+    async def test_an_answer_split_across_chunks_is_one_block(self) -> None:
+        # Gemini numbers the parts it has seen, not the parts of the answer, so a chunk boundary
+        # carries a fresh index. Read as a part boundary it broke every answer into one block per
+        # chunk, and the proof then covered only the last of them.
         stored = await self._stored(
             [
-                TextDelta(0, "a"),
+                TextDelta(0, "Hello "),
+                TextDelta(1, "there "),
+                TextDelta(2, "world"),
+                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+            ]
+        )
+
+        assert stored == [("Hello there world", "")]
+
+    async def test_a_proof_finishes_the_block_it_signs(self) -> None:
+        # The provider computed the signature over the text it had, so a later delta starts a new
+        # block rather than leaving a proof that disagrees with the text beside it.
+        stored = await self._stored(
+            [
+                TextDelta(0, "signed"),
                 TextSignature(index=0, data="S1"),
-                TextDelta(1, "b"),
-                TextDelta(2, "c"),
-                TextSignature(index=2, data="S3"),
+                TextDelta(0, "after"),
                 IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
             ]
         )
 
-        assert stored == [("a", "S1"), ("b", ""), ("c", "S3")]
+        assert stored == [("signed", "S1"), ("after", "")]
 
-    async def test_a_provider_that_numbers_nothing_still_gets_one_block(self) -> None:
-        # Anthropic and OpenAI send every delta under one index, so splitting on it would break
-        # every answer into one block per delta.
-        stored = await self._stored(
+
+class TestOnlyVouchedForCallsRun:
+    """The turn must say it finished before anything it produced is acted on."""
+
+    @staticmethod
+    async def _dispatched(stop: StopReason) -> list[str]:
+        ran: list[str] = []
+
+        async def wire(amount: str = "") -> str:
+            ran.append(amount)
+            return "sent"
+
+        transport = StubTransport(
             [
-                TextDelta(0, "Hello"),
-                TextDelta(0, " "),
-                TextDelta(0, "world"),
-                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+                [
+                    ToolUseStart(0, "c1", "wire"),
+                    ToolInputDelta(0, "c1", '{"amount": "1000"}'),
+                    IterationEnd(1, stop, Usage(1, 1)),
+                ],
+                make_text_response("done", 2),
             ]
         )
+        agent = Agent(
+            system="",
+            tools=[Tool(name="wire", description="send money", handler=wire)],
+            transport=transport,
+            max_iterations=3,
+        )
+        async for _ in agent.run_stream("go", MemoryContextStore()):
+            pass
+        return ran
 
-        assert stored == [("Hello world", "")]
+    async def test_a_reason_the_agent_does_not_know_runs_nothing(self) -> None:
+        # Named as the reasons to refuse instead, a reason added to StopReason later was absent
+        # from that list, so a turn nobody vouched for had its calls dispatched.
+        assert await self._dispatched(cast(StopReason, "invented_later")) == []
+
+    @pytest.mark.parametrize("stop", [StopReason.tool_use, StopReason.end_turn, StopReason.pause_turn])
+    async def test_a_turn_that_finished_still_runs_its_call(self, stop: StopReason) -> None:
+        # A gateway answers "stop" beside a tool call, and a paused server-side loop did not fail.
+        assert await self._dispatched(stop) == ["1000"]
+
+
+async def test_closing_a_stream_stops_a_tool_that_is_still_producing() -> None:
+    # Closing an async generator throws GeneratorExit, which is not a CancelledError, so the
+    # dispatch task went on running and on filling a queue nobody would read again.
+    produced: list[int] = []
+
+    async def handler(**kwargs: object) -> str:
+        return "done"
+
+    async def stream(**kwargs: object) -> AsyncIterator[tuple[str, str]]:
+        for at in range(400):
+            produced.append(at)
+            await asyncio.sleep(0.002)
+            yield "chunk", str(at)
+
+    handler.stream = stream  # type: ignore[attr-defined]
+    tool: Tool[Any] = Tool(name="slow", description="streams for a while", handler=handler)
+    transport = StubTransport(
+        [
+            [
+                ToolUseStart(0, "c1", "slow"),
+                ToolInputDelta(0, "c1", "{}"),
+                IterationEnd(1, StopReason.tool_use, Usage(1, 1)),
+            ]
+        ]
+    )
+    agent = Agent(system="", tools=[tool], transport=transport, max_iterations=2)
+
+    events = agent.run_stream("go", MemoryContextStore())
+    async for event in events:
+        if isinstance(event, ToolOutputDelta):
+            break
+    await events.aclose()
+
+    at_close = len(produced)
+    await asyncio.sleep(0.2)
+    assert len(produced) == at_close, "the tool kept running after the consumer closed the stream"
+
+
+async def test_audio_the_turn_produced_is_stored_with_it() -> None:
+    # Gemini returns audio as an inlineData part, so the transport emits AudioOutput. Yielded but
+    # never accumulated, the sound reached the caller and was missing from the replayed turn.
+    transport = StubTransport(
+        [
+            [
+                ImageOutput(index=0, data=b"png", media_type="image/png"),
+                AudioOutput(index=1, data=b"wav", media_type="audio/wav"),
+                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+            ]
+        ]
+    )
+    context = MemoryContextStore()
+
+    await Agent(system="", tools=[], transport=transport).run("hi", context)
+
+    stored = (await context.get_history())[-1].content
+    assert [type(block).__name__ for block in stored] == ["ImageBlock", "AudioBlock"]

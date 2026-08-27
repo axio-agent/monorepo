@@ -91,12 +91,12 @@ from axio_sse import Decoder, Event
 decoder = Decoder()
 assert decoder.decode(b"data: hel") == []
 assert decoder.decode(b"lo\n\ndata: wor") == [Event(data="hello")]
-assert decoder.decode(b"ld", final=True) == [Event(data="world")]
+assert decoder.decode(b"ld\n\n", final=True) == [Event(data="world")]
 ```
 
-`final=True` dispatches what is left over. Without that last call, a stream that stops before its
-final blank line loses its last event. A stream cut mid-character loses the character instead of
-replacing it.
+`final=True` closes the stream. What is still pending is discarded, which the format requires: an
+event that never reached its blank line is not dispatched. Dispatched anyway, a connection cut
+between a frame and the blank line after it makes a truncated turn read as a finished one.
 
 The package takes chunks and never lines for a reason. `aiohttp`'s `readuntil` raises `LineTooLong`
 past 131072 bytes. `LineTooLong` is not a `ClientError`. One large reasoning event kills a turn with

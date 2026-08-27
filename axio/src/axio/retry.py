@@ -11,6 +11,8 @@ This module imports no HTTP client. ``retry_delay`` takes anything with a ``head
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from typing import Protocol
 
@@ -37,12 +39,23 @@ def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> 
     """Seconds to wait before the attempt after ``attempt``, which counts from 1.
 
     The provider's ``Retry-After`` is preferred, because it is the only figure that knows when the
-    rate limit lifts. Without one the wait doubles each attempt, starting at ``base``.
+    rate limit lifts. RFC 9110 allows it to be a count of seconds or an HTTP-date, and both are
+    read: a date left unread meant retrying sooner than the server asked. Without a usable header
+    the wait doubles each attempt, starting at ``base``.
     """
     headers = getattr(resp, "headers", None)
     if isinstance(headers, Mapping):
+        raw = str(headers.get("Retry-After", "")).strip()
         try:
-            return max(0.0, float(headers["Retry-After"]))
-        except (KeyError, TypeError, ValueError):
+            return max(0.0, float(raw))
+        except ValueError:
             pass
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            when = None
+        if when is not None:
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+            return max(0.0, (when - datetime.now(UTC)).total_seconds())
     return float(base * (2 ** (attempt - 1)))

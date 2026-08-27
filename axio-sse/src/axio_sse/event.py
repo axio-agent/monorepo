@@ -58,11 +58,20 @@ class Event:
     """One dispatched event, with the four fields the format defines."""
 
     data: str = ""
-    #: Empty means unnamed, which the format reads as "message".
+    #: What the ``event:`` field carried, empty where the stream sent none.
     event: str = ""
     #: The stream position for a client that reconnects, not an id of this event.
     id: str = ""
     retry: int | None = None
+
+    @property
+    def name(self) -> str:
+        """The event's type. An unnamed event is of type ``message``, which the format defines.
+
+        Dispatched on the raw field instead, an ``@on("message")`` handler never runs for the
+        ordinary unnamed event, and a strict read rejects it as unknown.
+        """
+        return self.event or "message"
 
     def payload(self) -> Payload | None:
         """This event's JSON object, or None when it carries none.

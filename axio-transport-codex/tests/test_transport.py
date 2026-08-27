@@ -450,7 +450,9 @@ def test_convert_assistant_text() -> None:
     _, items = _convert_messages(messages, "")
     assert len(items) == 1
     assert items[0]["role"] == "assistant"
-    assert items[0]["content"] == [{"type": "output_text", "text": "Sure, I can help."}]
+    # A plain string, not an `output_text` part: that part belongs to an output message, which the
+    # API also requires to carry `id`, `type` and `status`. Both transports share this conversion.
+    assert items[0]["content"] == "Sure, I can help."
 
 
 def test_convert_assistant_tool_use() -> None:
