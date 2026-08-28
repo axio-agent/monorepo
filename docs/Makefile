@@ -1,4 +1,4 @@
-.PHONY: html clean cf-inspect cf-setup deploy svg
+.PHONY: html check-html clean cf-inspect cf-setup deploy svg
 
 SPHINXBUILD ?= uv run --group docs sphinx-build
 SOURCEDIR = .
@@ -7,6 +7,9 @@ CAST_CMD = uv run --extra examples python ../examples/stream_tool_args.py
 
 html:
 	$(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html"
+
+check-html:
+	$(SPHINXBUILD) -W --keep-going -b html "$(SOURCEDIR)" "$(BUILDDIR)/html"
 
 clean:
 	rm -rf $(BUILDDIR)

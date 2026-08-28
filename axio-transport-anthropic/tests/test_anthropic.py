@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import logging
 from typing import Any
 
 import pytest
@@ -80,40 +79,15 @@ def test_string_settings_coercion(monkeypatch: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Vertex AI env-var auto-detection requires google-auth
+# Vertex AI requires google-auth
 # ---------------------------------------------------------------------------
 
 
-def test_env_vertexai_without_google_auth_falls_back_to_direct_api(
-    monkeypatch: Any, caplog: pytest.LogCaptureFixture
-) -> None:
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
-    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: False)
-    with caplog.at_level(logging.WARNING, logger="axio_transport_anthropic"):
-        t = AnthropicTransport(api_key="sk-test")
-    assert t.vertexai is False
-    assert any("google-auth" in r.message for r in caplog.records)
+def test_vertexai_defaults_to_false() -> None:
+    assert AnthropicTransport(api_key="sk-test").vertexai is False
 
 
-def test_env_vertexai_with_google_auth_available(monkeypatch: Any) -> None:
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
-    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: True)
-    t = AnthropicTransport(api_key="sk-test")
-    assert t.vertexai is True
-
-
-def test_env_vertexai_unset_is_false(monkeypatch: Any) -> None:
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
-    t = AnthropicTransport(api_key="sk-test")
-    assert t.vertexai is False
-
-
-def test_explicit_vertexai_raises_when_google_auth_missing(monkeypatch: Any) -> None:
-    """An explicit request is intent, so it fails rather than being re-routed.
-
-    Serving it from the direct API instead would resurface, with no api_key set,
-    as an opaque 401 from api.anthropic.com.
-    """
+def test_vertexai_raises_when_google_auth_missing(monkeypatch: Any) -> None:
     monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: False)
     with pytest.raises(ImportError, match="google-auth"):
         AnthropicTransport(vertexai=True, project="proj")
@@ -126,42 +100,9 @@ def test_explicit_vertexai_as_a_string_also_raises(monkeypatch: Any) -> None:
             AnthropicTransport(vertexai=value, project="proj")  # type: ignore[arg-type]
 
 
-def test_explicit_vertexai_false_is_unaffected(monkeypatch: Any) -> None:
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+def test_vertexai_false_does_not_require_google_auth(monkeypatch: Any) -> None:
     monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: False)
     assert AnthropicTransport(vertexai=False).vertexai is False
-
-
-def test_anthropic_vertexai_takes_precedence_over_the_google_variable(monkeypatch: Any) -> None:
-    """The Google Gen AI SDK's variable must not be the only way to steer this transport.
-
-    Anything configuring that unrelated library for Vertex AI would otherwise
-    redirect Claude traffic with no way to opt out short of unsetting it.
-    """
-    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: True)
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
-
-    monkeypatch.setenv("ANTHROPIC_VERTEXAI", "false")
-    assert AnthropicTransport(api_key="sk-test").vertexai is False
-
-    monkeypatch.setenv("ANTHROPIC_VERTEXAI", "true")
-    assert AnthropicTransport(api_key="sk-test").vertexai is True
-
-
-def test_the_google_variable_is_still_honoured_when_the_anthropic_one_is_absent(
-    monkeypatch: Any,
-) -> None:
-    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: True)
-    monkeypatch.delenv("ANTHROPIC_VERTEXAI", raising=False)
-    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
-    assert AnthropicTransport(api_key="sk-test").vertexai is True
-
-
-def test_anthropic_vertexai_alone_selects_vertex(monkeypatch: Any) -> None:
-    monkeypatch.setattr(axio_transport_anthropic, "_google_auth_available", lambda: True)
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
-    monkeypatch.setenv("ANTHROPIC_VERTEXAI", "1")
-    assert AnthropicTransport(api_key="sk-test").vertexai is True
 
 
 def test_google_auth_available_requires_the_requests_extra(monkeypatch: Any) -> None:
@@ -194,8 +135,7 @@ def test_models_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_direct_api_endpoint(monkeypatch: Any) -> None:
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+def test_direct_api_endpoint() -> None:
     t = AnthropicTransport(api_key="sk-test")
     assert t._build_url() == "https://api.anthropic.com/v1/messages"
 
@@ -227,8 +167,7 @@ def test_vertex_endpoint_global(monkeypatch: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_direct_api_headers(monkeypatch: Any) -> None:
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+def test_direct_api_headers() -> None:
     t = AnthropicTransport(api_key="sk-test")
     headers = t._build_headers()
     assert headers["x-api-key"] == "sk-test"
@@ -241,8 +180,7 @@ def test_direct_api_headers(monkeypatch: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_direct_api_body_includes_model(monkeypatch: Any) -> None:
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+def test_direct_api_body_includes_model() -> None:
     t = AnthropicTransport(api_key="sk-test")
     body = t.build_payload(
         [Message(role="user", content=[TextBlock(text="Hi")])],

@@ -5,12 +5,14 @@ PACKAGES := axio axio-audio axio-context-sqlite axio-repl axio-responses axio-ss
             axio-tui axio-tui-guards examples/gas_town examples/agent_swarm \
             examples/realtime_smoke examples/realtime_chat
 
-.PHONY: $(PACKAGES) all pytest linter typing test tests test-docs
+.PHONY: $(PACKAGES) all pytest linter typing test tests test-docs test-tutorial docs-html
 
-all: linter typing pytest test-docs
+all: linter typing pytest test-docs test-tutorial docs-html
 
 linter:
 	@for pkg in $(PACKAGES); do uv run --directory $$pkg ruff check . && uv run --directory $$pkg ruff format --check . || exit 1; done
+	@uv run --directory docs ruff check ../examples/tutorial
+	@uv run --directory docs ruff format --check ../examples/tutorial
 
 typing pytest: $(PACKAGES)
 
@@ -20,6 +22,12 @@ $(PACKAGES):
 
 test-docs:
 	@uv run --directory docs pytest -q .
+
+test-tutorial:
+	@uv run --directory docs pytest -q ../examples/tutorial
+
+docs-html:
+	@$(MAKE) -C docs check-html
 
 test: pytest
 tests: pytest

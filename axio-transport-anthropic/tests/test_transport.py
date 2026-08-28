@@ -130,11 +130,6 @@ class FakeAnthropicServer:
         return resp
 
 
-@pytest.fixture(autouse=True)
-def _no_vertexai_env(monkeypatch: Any) -> None:
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
-
-
 @pytest.fixture
 async def fake_server() -> AsyncIterator[tuple[FakeAnthropicServer, str]]:
     server = FakeAnthropicServer()
