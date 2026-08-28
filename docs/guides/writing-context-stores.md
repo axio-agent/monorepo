@@ -20,7 +20,7 @@ Consider a custom context store when:
   PostgreSQL alongside other application data, or you need full-text search
   over past sessions.
 - **Existing infrastructure.** Your application already has a message store
-  (a chat service, a ticket system) and you want the agent to read and write
+  (a chat service or document index) and you want the agent to read and write
   it directly.
 - **Custom retention or compaction policies.** You need to cap history at N
   tokens, archive old messages to cold storage, or apply per-tenant data
