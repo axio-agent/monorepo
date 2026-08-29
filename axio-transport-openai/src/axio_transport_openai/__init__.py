@@ -505,6 +505,13 @@ class ThinkTagParser:
         return False
 
 
+def _saved(data: dict[str, Any], key: str, variable: str, fallback: str) -> str:
+    """What a saved config said for this field, or the environment where it said nothing at all."""
+    if (found := data.get(key)) is not None:
+        return str(found)
+    return os.environ.get(variable, fallback)
+
+
 @dataclass(slots=True)
 class OpenAITransport(CompletionTransport, EmbeddingTransport):
     name: str = "OpenAI"
@@ -851,6 +858,14 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             "api_key": self.api_key,
             # Which endpoint the server speaks is a property of the server, so it has to survive saving.
             "api": self.api,
+            # The registry alone said which models exist, never which one was chosen, so a restored
+            # session resumed on the class default beside a history another model had written: a
+            # different context window, different tools, different billing, and no model-switch
+            # event to say so. The retry policy went the same way, back to ten attempts five
+            # seconds apart however conservatively it had been set.
+            "model": self.model.id,
+            "max_retries": self.max_retries,
+            "retry_base_delay": self.retry_base_delay,
             "models": [
                 {
                     "id": m.id,
@@ -888,10 +903,25 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         # being built: /v1/responses for OpenAI, chat completions for the compatible servers whose
         # subclasses say so. Reading it off `cls` would not work: with slots it is a descriptor.
         chosen: dict[str, Any] = {"api": data["api"]} if data.get("api") else {}
+        if (saved := data.get("model")) is not None:
+            if (spec := models.get(str(saved))) is not None:
+                chosen["model"] = spec
+            else:
+                # Silently taking the default would resume on a model the saved history was not
+                # written by, which is the failure this key exists to prevent.
+                logger.warning("Saved model %r is not in the saved registry; falling back to the default", saved)
+        if (retries := data.get("max_retries")) is not None:
+            chosen["max_retries"] = int(retries)
+        if (delay := data.get("retry_base_delay")) is not None:
+            chosen["retry_base_delay"] = float(delay)
         return cls(
             name=str(data.get("name", "")),
-            base_url=str(data.get("base_url", "")) or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            api_key=str(data.get("api_key", "")) or os.environ.get("OPENAI_API_KEY", ""),
+            # Key absent, not value falsy: a partial settings dict omits what it wants the default
+            # for, while a full round-trip writes every key. Read as falsy, a credential saved
+            # empty on purpose picked up whatever the restoring process happened to export, and
+            # the session resumed against an endpoint it was never saved against.
+            base_url=_saved(data, "base_url", "OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            api_key=_saved(data, "api_key", "OPENAI_API_KEY", ""),
             models=models,
             extra_params=dict(data.get("extra_params") or {}),
             session=session,

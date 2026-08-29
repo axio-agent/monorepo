@@ -2086,3 +2086,49 @@ class TestAskingForTheReasoningSummary:
         usage = [e for e in events if isinstance(e, IterationEnd)][0].usage
         assert (usage.reasoning_tokens, usage.cache_read_tokens) == (250, 40)
         assert usage.answer_tokens == 50
+
+
+class TestASavedSessionResumesAsItWasSaved:
+    def test_the_selected_model_comes_back(self) -> None:
+        # The registry alone said which models exist, never which one was chosen, so a restored
+        # session resumed on the class default beside a history another model had written.
+        saved = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).to_dict()
+
+        assert OpenAITransport.from_dict(saved).model.id == "gpt-5.6"
+
+    def test_a_model_missing_from_the_saved_registry_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+        saved = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).to_dict()
+        saved["models"] = [m for m in saved["models"] if m["id"] != "gpt-5.6"]
+
+        with caplog.at_level(logging.WARNING):
+            restored = OpenAITransport.from_dict(saved)
+
+        assert restored.model.id == OpenAITransport().model.id
+        assert any("gpt-5.6" in record.getMessage() for record in caplog.records)
+
+    def test_the_retry_policy_comes_back(self) -> None:
+        # Dropped, a deliberately conservative policy reverted to ten attempts five seconds apart.
+        saved = OpenAITransport(max_retries=2, retry_base_delay=0.5).to_dict()
+
+        restored = OpenAITransport.from_dict(saved)
+
+        assert (restored.max_retries, restored.retry_base_delay) == (2, 0.5)
+
+    def test_an_empty_credential_saved_on_purpose_is_not_filled_in_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A local server that needs no auth saves an empty key. Read as falsy, the restored
+        # session reached whatever endpoint the restoring process happened to export.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-someone-elses")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://elsewhere.example/v1")
+        saved = OpenAITransport(api_key="", base_url="", api="chat").to_dict()
+
+        restored = OpenAITransport.from_dict(saved)
+
+        assert (restored.api_key, restored.base_url) == ("", "")
+
+    def test_a_partial_config_still_takes_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An omitted key means "use the default", which is what a settings dict written by hand is.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-mine")
+
+        assert OpenAITransport.from_dict({"name": "x", "models": []}).api_key == "sk-mine"
