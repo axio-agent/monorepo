@@ -158,7 +158,11 @@ def proof(block: TextBlock | ReasoningBlock | ToolUseBlock, provider: str) -> st
     if not block.signature:
         return ""
     if block.provider and block.provider != provider:
-        logger.debug("Not replaying a %s proof to %s", block.provider, provider)
+        # A warning, not a debug line: the turn goes out without a proof the provider may require,
+        # and the symptom is a refusal or lost reasoning continuity one request later, with
+        # nothing local to point at. A session that changed transport repeats this per block per
+        # request, which is the situation the operator needs to see.
+        logger.warning("Not replaying a %s proof to %s; the turn goes out unsigned", block.provider, provider)
         return ""
     return block.signature
 
@@ -171,7 +175,12 @@ def replayable(block: ProviderBlock, provider: str) -> bool:
     """
     if block.provider == provider:
         return True
-    logger.debug("Not replaying a %s %s item to %s", block.provider or "unattributed", block.kind, provider)
+    logger.warning(
+        "Not replaying a %s %s item to %s; the turn goes out without it",
+        block.provider or "unattributed",
+        block.kind,
+        provider,
+    )
     return False
 
 
@@ -188,8 +197,9 @@ def _text_to_dict(block: TextBlock) -> dict[str, Any]:
     out: dict[str, Any] = {"type": "text", "text": block.text}
     if block.signature:
         out["signature"] = block.signature
-        # Beside the proof and never without it: a signature restored with no provider is one
-        # nothing can judge, which is the state this field exists to end.
+    if block.provider:
+        # Written on its own too, or a text block carrying a provider and no proof came back
+        # without one, and this block alone would not survive the round trip its siblings do.
         out["provider"] = block.provider
     return out
 

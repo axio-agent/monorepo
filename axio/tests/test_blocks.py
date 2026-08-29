@@ -263,14 +263,21 @@ class TestSignedText:
         assert to_dict(TextBlock(text="hi")) == {"type": "text", "text": "hi"}
 
     def test_a_signed_block_writes_it_and_reads_it_back(self) -> None:
-        block = TextBlock(text="42", signature="SIG")
+        block = TextBlock(text="42", signature="SIG", provider="google")
 
         stored = to_dict(block)
 
         # The provider travels beside the proof: a signature restored with nothing saying which
         # protocol issued it is one no converter can judge.
-        assert stored == {"type": "text", "text": "42", "signature": "SIG", "provider": ""}
+        assert stored == {"type": "text", "text": "42", "signature": "SIG", "provider": "google"}
         assert from_dict(stored) == block
+
+    def test_an_unsigned_block_still_round_trips_the_provider_it_carries(self) -> None:
+        # Written only beside a proof, this one came back without its provider, and text alone
+        # failed the round-trip identity the other two proof-carrying blocks keep.
+        block = TextBlock(text="42", provider="google")
+
+        assert from_dict(to_dict(block)) == block
 
     def test_the_proof_is_part_of_what_makes_two_blocks_differ(self) -> None:
         assert TextBlock(text="42", signature="A") != TextBlock(text="42", signature="B")

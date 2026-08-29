@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Iterator
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Self
@@ -666,8 +666,13 @@ class Agent:
                 turn = _Turn()
                 stream = self.transport.stream(effective_history, active_tools, self.system)
                 try:
-                    async for event in self._consume(stream, turn, context):
-                        yield event
+                    # `_consume` closes the transport stream in its own `finally`, and that runs
+                    # only when `_consume` itself is closed. Left to the collector, a caller that
+                    # walked away mid-turn held the HTTP response open until the loop got round to
+                    # finalising an abandoned generator.
+                    async with aclosing(self._consume(stream, turn, context)) as consumed:
+                        async for event in consumed:
+                            yield event
                 except Exception as exc:
                     # The turn was billed for whatever it reported before it broke, and the caller
                     # is owed that figure. Counted only below, a failure after IterationEnd told
@@ -707,6 +712,7 @@ class Agent:
                 tool_blocks = [b for b in content if isinstance(b, ToolUseBlock)]
 
                 refused: list[ToolResultBlock] = []
+                by_id: dict[str, ToolUseBlock] = {}
                 if tool_blocks and stop_reason not in _DISPATCH:
                     # The run ends immediately after this regardless.
                     logger.warning(
@@ -718,6 +724,7 @@ class Agent:
                     # not run: a stored call with no result is refused by the provider next, and a
                     # call with neither leaves the model no way to know it was ever attempted.
                     refused = _refused_results(tool_blocks, stop_reason)
+                    by_id = {b.id: b for b in tool_blocks}
                     tool_blocks = []
 
                 if tool_blocks:
@@ -730,7 +737,7 @@ class Agent:
                     await self._append(context, Message(role="user", content=list(refused)))
                     # The transport already reported these calls as started, so a caller left with
                     # no result for them shows a call that never resolves.
-                    for event in _result_events(refused, {b.id: b for b in content if isinstance(b, ToolUseBlock)}):
+                    for event in _result_events(refused, by_id):
                         yield event
 
                 match stop_reason:

@@ -1088,6 +1088,38 @@ async def test_the_transport_stream_is_closed_when_the_turn_ends() -> None:
     assert closed, "the turn ended without closing the stream it stopped reading"
 
 
+async def test_the_transport_stream_is_closed_when_the_caller_walks_away() -> None:
+    """The case the deterministic close is for, and the one it first missed.
+
+    `_consume` closes the stream in its own `finally`, and that runs only when `_consume` is
+    closed. Abandoned mid-iteration it was finalised by the event loop instead, so the HTTP
+    response stayed open past the turn it belonged to.
+    """
+    closed = False
+
+    class _Watched:
+        async def _generate(self) -> AsyncIterator[StreamEvent]:
+            nonlocal closed
+            try:
+                for at in range(50):
+                    yield TextDelta(0, f"chunk {at} ")
+                yield IterationEnd(1, StopReason.end_turn, Usage(1, 1))
+            finally:
+                closed = True
+
+        def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:
+            return self._generate()
+
+    agent = Agent(system="", transport=cast(Any, _Watched()))
+    stream = agent.run_stream("hi", MemoryContextStore())
+    async for _ in stream:
+        break
+
+    await stream.aclose()
+
+    assert closed, "the caller closed the turn and the transport stream outlived it"
+
+
 class TestAProviderHostedItemBecomesContent:
     """An endpoint that runs its own tools answers with items axio has no shape for.
 

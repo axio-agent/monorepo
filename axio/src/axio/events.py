@@ -230,13 +230,16 @@ class ProviderOutput:
     same protocol replays ``data`` verbatim.
     """
 
-    index: int
     provider: str
     """Which protocol produced it, in the names :class:`ProviderEvent` uses."""
     kind: str
     """The item's own type, verbatim."""
     data: dict[str, Any]
     """The item exactly as it arrived, never interpreted here."""
+    index: int
+    """The output index this item occupied. Declared in the same position as on
+    :class:`ProviderEvent`, whose first three fields these are: with the two orders crossed, one
+    built positionally in the shape of the other assigned every field to the wrong name."""
     id: str = ""
 
 
