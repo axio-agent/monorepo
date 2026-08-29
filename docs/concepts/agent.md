@@ -124,8 +124,9 @@ finish. That content was appended a line earlier, so going round again *is* the
 resume. The resume takes the same code path as any other iteration, bounded by
 the same `max_iterations`.
 
-Everything else - `max_tokens`, `error`, `context_window_exceeded`, `cancelled`,
-and any member added to `StopReason` later - falls into a `case _` wildcard. The
+Everything else - `max_tokens`, `error`, `refusal`, `context_window_exceeded`,
+`cancelled`, `unknown`, `repetition`, and any member added to `StopReason`
+later - falls into a `case _` wildcard. The
 wildcard is there on purpose. Named one by one, a reason added later would match
 nothing and fall out of the `match`. The loop would then re-prompt the model
 with unchanged history until `max_iterations`, paying for every one of those

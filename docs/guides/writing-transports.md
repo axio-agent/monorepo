@@ -130,7 +130,8 @@ last. Everything between is optional and provider-dependent:
 | `Refusal` | The model declined, or the provider blocked the turn. | all four |
 | `Citation` | A span of text attributed to a source. | Anthropic, Responses |
 | `ImageOutput` / `AudioOutput` / `VideoOutput` | Generated media inside the turn. | Google |
-| `ProviderEvent` | Anything the provider sent that axio does not model. | all four |
+| `ProviderEvent` | Anything the provider sent that axio does not model, forwarded for a caller to watch. | all four |
+| `ProviderOutput` | Output of a tool the provider ran itself, which the next request has to carry back. | Anthropic, Google, Responses |
 | `IterationEnd` | The turn is over: stop reason and token counts. | all four |
 
 Do not emit an event a provider does not send. A consumer that needs `BlockEnd` and matches on it
@@ -453,7 +454,7 @@ assert STOP_REASONS.get("stop") is StopReason.end_turn
 assert STOP_REASONS.get("something_new", StopReason.error) is StopReason.error
 ```
 
-`StopReason` has eight members. Four are older: `end_turn`, `tool_use`, `max_tokens`, `error`. Four
+`StopReason` has ten members. Four are older: `end_turn`, `tool_use`, `max_tokens`, `error`. Six
 are not. A transport written against the old four maps a decline onto `error` or, worse, onto
 `end_turn`:
 
@@ -466,6 +467,11 @@ are not. A transport written against the old four maps a decline onto `error` or
 - `context_window_exceeded` — the conversation outgrew the window. Truncated, like `max_tokens`.
   Only Anthropic publishes a reason that maps here.
 - `cancelled` — the caller or the provider stopped the turn early. Only the Responses map has one.
+- `unknown` — the provider said something the map does not name. Terminal, and it vouches for
+  nothing. Use `stop_reason_from()`, which returns it and keeps the provider's own word in
+  `IterationEnd.raw`. Every other answer claims something the provider did not say.
+- `repetition` — Axio stopped the turn because the model was repeating itself. The agent emits it;
+  no transport maps a provider reason onto it.
 
 The agent loop matches on the stop reason with a `case _` wildcard, so a reason nothing handled ends
 the run with an `Error`. Without the wildcard the loop would simply run again, re-prompting with
@@ -475,6 +481,28 @@ Two judgement calls from the Google map are worth copying, because they are what
 `MALFORMED_FUNCTION_CALL` is read as `tool_use`, because prompting again is the recovery and the
 next answer may parse. `MISSING_THOUGHT_SIGNATURE` is read as `error`, because prompting again is
 not.
+
+## What the provider ran itself
+
+An endpoint that runs its own tools answers with items this vocabulary has no shape for: a web
+search, a file search, code it executed, and whatever it adds next. All four APIs here are
+stateless. The application holds the conversation and sends it whole on every request, so an item
+the transport does not send back is one the model answered from and can no longer see.
+
+Emit `ProviderOutput` for each such item, carrying the provider's own object unaltered. The agent
+stores it as a `ProviderBlock`. Do not model the item: a shape declared here would not hold a type
+the provider publishes next month, and the point is that the item travels unread.
+
+`ProviderEvent` is the other half and is not a substitute. It is what a caller watches; it is never
+stored, so an item forwarded only that way is gone by the next request.
+
+On the way back, replay `data` verbatim, guarded by `axio.blocks.replayable(block, PROVIDER)`. An
+item another protocol produced means nothing here and must be left out.
+
+Wait until the item is complete. Anthropic streams the arguments of a `server_tool_use` in
+`input_json_delta` after the block opens, so the object at `content_block_start` still has an empty
+`input`. The Responses API sends the finished item in `response.output_item.done`, and Gemini sends
+each part whole.
 
 ## Reasoning replay
 
@@ -497,6 +525,16 @@ What the three providers need sent back:
 
 Never inspect, decode, re-encode or truncate a signature. Anthropic refuses a changed one. Google
 answers `MISSING_THOUGHT_SIGNATURE`, which its transport maps to `StopReason.error`.
+
+Name the protocol on every proof you emit. `ReasoningSignature`, `TextSignature` and `ToolUseStart`
+all take `provider=`, and the agent stores it beside the signature. The three protocols read the
+same stored field by their own rules — a thinking signature, a `thoughtSignature`, an
+`encrypted_content` — so a session that changes transport would otherwise hand one provider's
+opaque data to another. Use the name your `ProviderEvent`s already use.
+
+Read it back through `axio.blocks.proof(block, PROVIDER)` rather than off `block.signature`. It
+returns an empty string where the block was signed by someone else, and the block's own signature
+where the provider matches or where none was recorded.
 
 Index a signature by the block it proves. That is what the agent joins on. Two signatures under one
 index are the two halves of one proof, and are concatenated. Two under different indices are two

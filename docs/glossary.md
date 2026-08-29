@@ -131,7 +131,7 @@ Terms used throughout Axio documentation.
 : Server-Sent Events, the `text/event-stream` media type. How every completion transport in Axio receives a streamed response. The format itself lives in `axio-sse`, which is a separate distribution with no dependencies at all.
 
 **StopReason**
-: Why the provider stopped generating: `end_turn`, `tool_use`, `max_tokens`, `error`, `refusal`, `pause_turn`, `context_window_exceeded`, `cancelled`. Everything except `tool_use` and `pause_turn` ends the run. `pause_turn` is the one that resumes. The provider stopped its own server-side tool loop and expects the assistant content back. The agent therefore appends the turn and goes round again.
+: Why the turn stopped: `end_turn`, `tool_use`, `max_tokens`, `error`, `refusal`, `pause_turn`, `context_window_exceeded`, `cancelled`, `unknown`, `repetition`. The provider gives all but the last: `repetition` is Axio stopping a model that repeated itself. `unknown` is a provider reason this vocabulary does not name, kept as itself rather than folded into one that claims more. Everything except `tool_use` and `pause_turn` ends the run. `pause_turn` is the one that resumes. The provider stopped its own server-side tool loop and expects the assistant content back. The agent therefore appends the turn and goes round again.
 
 **StreamEvent**
 : The union of every event a transport or the agent can yield. A type alias, not a base class. Nothing inherits from it, and `isinstance` against it raises. Match on the member types.

@@ -474,6 +474,8 @@ asyncio.run(main())
 ```
 
 `agent.run()` returns the refusal text too, so a declined turn no longer looks like an empty answer.
-`refusal`, `context_window_exceeded` and `cancelled` all end the run. `pause_turn` does not — the
-agent resumes on it. Anything the transport could not map arrives as `StopReason.error` with an
-`Error` event beside it.
+`refusal`, `context_window_exceeded` and `cancelled` all end the run, and so do `unknown` and
+`repetition`. `pause_turn` does not — the agent resumes on it. A provider reason the transport
+could not map arrives as `StopReason.unknown`, with the provider's own word in `IterationEnd.raw`;
+`StopReason.error` is kept for the transport itself failing, and carries an `Error` event beside
+it.
