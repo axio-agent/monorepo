@@ -62,7 +62,12 @@ def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> 
         if when is not None:
             if when.tzinfo is None:
                 when = when.replace(tzinfo=UTC)
-            return _bounded((when - datetime.now(UTC)).total_seconds())
+            wait = (when - datetime.now(UTC)).total_seconds()
+            # A date in the past says nothing about when the limit lifts: the server's clock is
+            # ahead of ours, or the date elapsed on the way here. Clamped to zero it removed the
+            # backoff altogether, and the loop retried a rate limit as fast as it could send.
+            if wait > 0:
+                return _bounded(wait)
     return _bounded(base * (2 ** (attempt - 1)))
 
 

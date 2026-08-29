@@ -243,7 +243,9 @@ class Decoder:
             # must not become a stream of empty events.
             if self._collected():
                 return self._dispatch()
-            self._data, self._data_size, self._event = [], 0, ""
+            # `_retry` as well: the format sets the reconnection time from the field, and a
+            # value left behind here rode out on whatever event dispatched next.
+            self._data, self._data_size, self._event, self._retry = [], 0, "", None
             return None
         if line.startswith(":"):
             return None  # comment line

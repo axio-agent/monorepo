@@ -384,3 +384,13 @@ def test_a_stream_cut_mid_character_still_gives_up_what_completed() -> None:
     made = decoder.decode(b"data: whole\n\ndata: cut \xd0", final=True)
 
     assert [event.data for event in made] == ["whole"], "the cut event never reached its blank line"
+
+
+def test_a_retry_value_does_not_ride_out_on_a_later_event() -> None:
+    # A blank line that dispatches nothing clears what was collected. `retry` was left behind, so
+    # a reconnection time set early in the stream arrived attached to an unrelated event.
+    decoder = Decoder()
+
+    made = decoder.decode(b"retry: 5000\n\ndata: later\n\n")
+
+    assert [(event.data, event.retry) for event in made] == [("later", None)]

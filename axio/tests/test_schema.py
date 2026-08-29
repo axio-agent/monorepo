@@ -453,3 +453,16 @@ class TestStripTitle:
         schema = {"$defs": {"Inner": {"title": "Inner", "properties": {"title": {"type": "string"}}}}}
 
         assert strip_title(schema) == {"$defs": {"Inner": {"properties": {"title": {"type": "string"}}}}}
+
+
+def test_a_title_under_every_keyword_that_holds_a_schema_is_stripped() -> None:
+    # pydantic names every model and field. A keyword this walk does not know keeps those names,
+    # and a large tool set pays for them on every request.
+    schema = {
+        "type": "object",
+        "dependentSchemas": {"card": {"title": "Card", "type": "object"}},
+        "contentSchema": {"title": "Payload", "type": "string"},
+        "unevaluatedItems": {"title": "Rest", "type": "string"},
+    }
+
+    assert "title" not in json.dumps(strip_title(schema))

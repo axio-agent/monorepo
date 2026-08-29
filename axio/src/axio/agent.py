@@ -582,8 +582,13 @@ class Agent:
         partial: dict[str, list[tuple[float, str, str]]] = {}
         results: list[ToolResultBlock] = []
         try:
-            async for delta in self._run_tools(runnable, iteration, partial, results):
-                yield delta
+            # `_run_tools` cancels the dispatch task in its own `finally`, and that runs only when
+            # the generator is closed. Abandoned by an exception passing through the loop below —
+            # which is what a cancellation between two deltas is — it was closed by the collector
+            # instead, and the tools went on running long after the turn was over.
+            async with aclosing(self._run_tools(runnable, iteration, partial, results)) as deltas:
+                async for delta in deltas:
+                    yield delta
         except asyncio.CancelledError:
             await self._append(context, Message(role="assistant", content=list(turn.content)))
             interrupted = self._interrupted_results(blocks, partial)
@@ -621,9 +626,14 @@ class Agent:
         queue: asyncio.Queue[ToolOutputDelta | None] = asyncio.Queue()
 
         async def run() -> list[ToolResultBlock]:
-            made = await self._dispatch_tools_streaming(runnable, iteration, queue)
-            await queue.put(None)
-            return made
+            try:
+                return await self._dispatch_tools_streaming(runnable, iteration, queue)
+            finally:
+                # The sentinel is what ends the loop below. Put only on the way out of a normal
+                # return, a dispatch that raised — a tool argument that would not serialise, a
+                # formatter that failed — left the reader waiting on a queue nothing would ever
+                # fill again, and the turn hung with no error and no timeout.
+                await queue.put(None)
 
         task = asyncio.create_task(run())
         started: dict[str, float] = {}

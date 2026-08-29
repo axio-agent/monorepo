@@ -147,13 +147,15 @@ def build_tool_schema(
 
 #: Keys whose value maps names to schemas. A key inside one of these is the caller's own name, so
 #: ``title`` there is a tool argument rather than the JSON Schema keyword.
-_NAMED_SCHEMAS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
+_NAMED_SCHEMAS = frozenset({"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"})
 
 #: Keys whose value is one schema, or a list of them.
 _NESTED_SCHEMAS = frozenset(
     {
         "items",
         "prefixItems",
+        "unevaluatedItems",
+        "contentSchema",
         "additionalProperties",
         "unevaluatedProperties",
         "contains",

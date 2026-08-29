@@ -44,8 +44,13 @@ class TestHowLongToWait:
 
         assert 25 <= retry_delay(_Response({"Retry-After": soon}), 1, base=1.0) <= 30
 
-    def test_a_date_already_past_asks_for_no_wait(self) -> None:
-        assert retry_delay(_Response({"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}), 1) == 0.0
+    def test_a_date_already_past_backs_off_instead_of_not_waiting(self) -> None:
+        # A date in the past says nothing about when the limit lifts: the server's clock is ahead
+        # of ours, or the date elapsed on the way here. Read as "now", it removed the backoff from
+        # every transport's retry loop, and a rate limit was retried as fast as the client could
+        # send. A count of zero still means now; only a stale date falls back.
+        assert retry_delay(_Response({"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}), 1, base=1.0) == 1.0
+        assert retry_delay(_Response({"Retry-After": "0"}), 1) == 0.0
 
     def test_a_header_that_is_neither_falls_back(self) -> None:
         assert retry_delay(_Response({"Retry-After": "soon-ish"}), 1, base=1.0) == 1.0

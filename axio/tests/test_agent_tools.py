@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
+
+import pytest
 
 from axio.agent import Agent
 from axio.blocks import ToolResultBlock, ToolUseBlock
@@ -391,3 +394,44 @@ class TestStreamingToolDispatch:
 
         results = [e for e in events if isinstance(e, ToolResult)]
         assert len(results) == 2
+
+
+class TestDispatchThatBreaksInsteadOfFinishing:
+    """A streaming dispatch talks to the reader through a queue, ended by one sentinel."""
+
+    async def test_a_dispatch_that_raises_does_not_hang_the_turn(self) -> None:
+        # Put only on the way out of a normal return, the sentinel never arrived when the dispatch
+        # raised, and the reader waited on a queue nothing would fill again.
+        async def _stream(msg: str) -> AsyncGenerator[tuple[str, str], None]:
+            yield ("stdout", msg)
+
+        async def streaming_handler(msg: str) -> str:
+            return msg
+
+        streaming_handler.stream = _stream  # type: ignore[attr-defined]
+        tool: Tool[object] = Tool(name="streamer", description="streams", handler=streaming_handler)
+
+        class _Broken(Agent):
+            async def _dispatch_tools_streaming(
+                self,
+                blocks: list[ToolUseBlock],
+                iteration: int,
+                output_queue: asyncio.Queue[Any],
+            ) -> list[ToolResultBlock]:
+                raise RuntimeError("the dispatch itself broke")
+
+        agent = _Broken(
+            system="",
+            tools=[tool],
+            transport=StubTransport([make_tool_use_response("streamer", "c1", {"msg": "hi"})]),
+        )
+
+        events: list[StreamEvent] = []
+        # The timeout is the assertion: the reader waited on a queue nothing would fill again, and
+        # the turn hung with no error and no timeout of its own.
+        async with asyncio.timeout(5):
+            with pytest.raises(RuntimeError, match="the dispatch itself broke"):
+                async for event in agent.run_stream("go", MemoryContextStore()):
+                    events.append(event)
+
+        assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [StopReason.error]

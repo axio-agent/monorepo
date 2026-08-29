@@ -94,13 +94,11 @@ def assert_stream_contract(events: Sequence[StreamEvent]) -> None:
     A transport that breaks one of these still passes its own tests, because the agent papers over
     the difference. Call this from each transport's tests on whatever its fake server produced.
     """
+    # StopReason.error is not checked here: `IterationEnd.__post_init__` refuses it, so no such
+    # event can reach this function. A transport that tries raises where it builds one.
     ends = [e for e in events if isinstance(e, IterationEnd)]
     assert len(ends) == 1, f"a stream ends with exactly one IterationEnd, got {len(ends)}"
     assert events[-1] is ends[0], "IterationEnd is the last event"
-    assert ends[0].stop_reason is not StopReason.error, (
-        "raise StreamError instead: an IterationEnd(error) reaches the agent's wildcard, "
-        "and the caller is told only 'Transport stopped with: error'"
-    )
     usage = ends[0].usage
     assert usage.cache_read_tokens + usage.cache_write_tokens <= usage.input_tokens, (
         f"the cache slices are inside input_tokens, got {usage}"
