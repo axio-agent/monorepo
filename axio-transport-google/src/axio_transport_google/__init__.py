@@ -510,6 +510,9 @@ class _Turn:
     served_by: str | None = None
     #: The provider's own word for why it stopped, kept for the message when it means an error.
     reason: str = ""
+    #: Whether this turn has already announced its refusal. The prompt-level block and a blocked
+    #: candidate are one refusal, and two events disagreeing about `blocked_input` is not.
+    refused: bool = False
 
     def restart(self) -> None:
         """Forget the attempt that failed, but not the part counter it advanced."""
@@ -519,6 +522,7 @@ class _Turn:
         # The provider's own word for why the failed attempt stopped. Left behind, it was reported
         # as the reason for the attempt that replaced it.
         self.reason = ""
+        self.refused = False
         self.finished = False
         self.has_tool_calls = False
         self.served_by = None
@@ -725,6 +729,10 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             thinking_budget=self.thinking_budget,
             session=self.session,
         )
+        # This transport is the one the agent asks, and the proxy reports nothing here. Left at
+        # the last Gemini turn's figure, a Claude turn cut short reported the numbers of a response
+        # served by another provider entirely; left at None, the agent says the figure is missing.
+        self.last_usage = None
         async for event in proxy.stream(messages, tools, system):
             yield event
 
@@ -759,15 +767,14 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
 
         self._streams += 1
         turn = _Turn(seq=self._streams)
-        # This turn has reported nothing yet. Left at the previous turn's figure, a turn cut short
-        # before its first usage chunk had the last one's tokens counted a second time, into the
-        # session total and into the store's idea of the context size.
-        self.last_usage = None
 
         sent = False
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             turn.restart()
+            # Per attempt, not per turn: read when a turn ends with no IterationEnd, a figure the
+            # failed attempt reported was handed to the caller and the store as this one's.
+            self.last_usage = None
             wait: float | None = None
             try:
                 async with self.session.post(url, json=body, headers=headers) as resp:
@@ -865,9 +872,17 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             # A blocked prompt is a finished turn, so no candidate and no finishReason follow.
             turn.finished = True
             turn.stop_reason = StopReason.refusal
-            # No text and nothing spoken: this API rejects the prompt and generates nothing.
+            turn.refused = True
+            # Nothing spoken: this API rejects the prompt and generates nothing. The text is this
+            # transport's own account, and the agent stores it — a turn kept with no content at
+            # all leaves the conversation no record that the block happened.
             yield Refusal(
-                index=0, spoken=False, category=block_reason, blocked_input=True, raw=dict(chunk.promptFeedback)
+                index=0,
+                spoken=False,
+                text=f"The provider blocked this prompt: {block_reason}.",
+                category=block_reason,
+                blocked_input=True,
+                raw=dict(chunk.promptFeedback),
             )
 
         if not chunk.candidates:
@@ -878,11 +893,6 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             turn.finished = True
             turn.reason = candidate.finishReason
             turn.stop_reason = stop_reason_from(candidate.finishReason, _FINISH_REASON_MAP, provider="Gemini")
-            if turn.stop_reason is StopReason.refusal:
-                # Eleven finish reasons map to a refusal, and only a blocked *prompt* emitted the
-                # event. Read as a stop reason alone, a blocked answer reached the caller as an
-                # empty turn that succeeded, which is what this event exists to prevent.
-                yield Refusal(index=0, spoken=False, category=candidate.finishReason, raw=dict(candidate.raw))
 
         # Grounding travels whole. Four providers shape it four incompatible ways.
         for kind, metadata in (
@@ -897,6 +907,23 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             if part.functionCall.name:
                 turn.has_tool_calls = True
             yield from self._part_events(part, turn)
+
+        if turn.stop_reason is StopReason.refusal and not turn.refused:
+            # Eleven finish reasons map to a refusal, and only a blocked *prompt* announced it.
+            # Read as a stop reason alone, a blocked answer reached the caller as an empty turn
+            # that succeeded, which is what this event exists to prevent.
+            #
+            # After the parts, because whatever the chunk carried came before the block; once per
+            # turn, because the prompt-level event says the same thing about the same response and
+            # the two disagree about `blocked_input`.
+            turn.refused = True
+            yield Refusal(
+                index=0,
+                spoken=False,
+                text=f"The provider stopped this answer: {turn.reason}.",
+                category=turn.reason,
+                raw=dict(candidate.raw),
+            )
 
     def _part_events(self, part: ContentPart, turn: _Turn) -> Iterator[StreamEvent]:
         """Every event one part of a candidate produces."""

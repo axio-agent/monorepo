@@ -88,10 +88,10 @@ All events are frozen dataclasses with `slots=True`:
   The shape differs by provider. `text` is not always populated. Anthropic
   sends one event with the explanation and the category. The OpenAI chat and
   Responses paths stream the refusal fragment by fragment, one event per delta.
-  Google's refusal is prompt-level. It carries `category` and
-  `blocked_input=True` and **no text at all**. A Google candidate blocked
-  mid-answer ends the turn with `StopReason.refusal` while emitting no
-  `Refusal` event.
+  Google announces both. A blocked prompt carries `blocked_input=True`; a
+  candidate blocked mid-answer carries the finish reason as its `category`.
+  Gemini generates no words for either, so the text is the transport's own
+  and `spoken` is false.
 
 `Citation`
 : A span of generated text attributed to a source.

@@ -137,16 +137,13 @@ the order of blocks within the assistant turn.
 arrives as a `Refusal` event, not as `TextDelta`. A renderer or a `get_final_text()` that
 only collects text prints nothing.
 
-`AgentStream.get_final_text()` - and so `Agent.run()` - now collects `Refusal.text`, so
-this is fixed for a transport that sends the text. Two cases still produce an empty
-string. Both are visible in the stop reason:
+`AgentStream.get_final_text()` - and so `Agent.run()` - collects `Refusal.text`, and
+every transport now sends some. Gemini generates none of its own for a decline, so its
+transport writes the text and marks it `spoken=False`: a blocked prompt carries
+`blocked_input=True`, and a candidate that finished on `SAFETY`, `RECITATION` or the rest
+carries the finish reason as its `category`.
 
-- Gemini blocking a *prompt*, which sends a `Refusal` with `blocked_input=True`, a
-  `category`, and no text at all. Nothing was generated.
-- A Gemini candidate finishing with `SAFETY`, `RECITATION` and the rest, which maps to
-  `StopReason.refusal` while emitting no `Refusal` event.
-
-So read the stop reason rather than the text. A refusal is terminal and deliberately not
+The stop reason is still the thing to branch on. The text is for a reader. A refusal is terminal and deliberately not
 an error. Reported as one, it leaves a caller unable to tell a decline from a broken
 connection. The caller then retries something that can never work.
 

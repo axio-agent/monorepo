@@ -1192,3 +1192,50 @@ async def test_last_usage_reports_this_turn_and_not_the_one_before(monkeypatch: 
                 pass
 
     assert transport.last_usage is None, "a turn that reported no usage must not report the last one's"
+
+
+class TestABlockedAnswerSaysSo:
+    """Eleven finish reasons map to a refusal, and only a blocked prompt announced it."""
+
+    @staticmethod
+    def _events(chunk: dict[str, Any]) -> list[Any]:
+        transport = GoogleTransport(api_key="k", model=GENAI_MODELS["gemini-3-flash-preview"])
+        return list(transport._chunk_events(GenerateContentChunk.read(Payload(chunk)), _Turn(at=0, seq=1)))
+
+    def test_a_candidate_blocked_for_safety_emits_a_refusal(self) -> None:
+        made = self._events(
+            {"candidates": [{"content": {"parts": [{"text": "half an ans"}]}, "finishReason": "SAFETY"}]}
+        )
+
+        refusals = [e for e in made if isinstance(e, Refusal)]
+        assert [r.category for r in refusals] == ["SAFETY"]
+        assert refusals[0].text, "stored by the agent, or the turn keeps no record of the block"
+        assert not refusals[0].spoken and not refusals[0].blocked_input
+
+    def test_it_comes_after_the_text_the_chunk_carried(self) -> None:
+        # Whatever the chunk carried was generated before the block.
+        made = self._events(
+            {"candidates": [{"content": {"parts": [{"text": "half an ans"}]}, "finishReason": "SAFETY"}]}
+        )
+
+        kinds = [type(e).__name__ for e in made]
+        assert kinds.index("TextDelta") < kinds.index("Refusal")
+
+    def test_a_blocked_prompt_and_a_blocked_candidate_announce_one_refusal(self) -> None:
+        # Two events for one response disagree about blocked_input, and the second says the
+        # opposite of the first about what was blocked.
+        made = self._events(
+            {
+                "promptFeedback": {"blockReason": "SAFETY"},
+                "candidates": [{"content": {"parts": []}, "finishReason": "SAFETY"}],
+            }
+        )
+
+        refusals = [e for e in made if isinstance(e, Refusal)]
+        assert len(refusals) == 1
+        assert refusals[0].blocked_input
+
+    def test_an_ordinary_finish_announces_nothing(self) -> None:
+        made = self._events({"candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}]})
+
+        assert not [e for e in made if isinstance(e, Refusal)]

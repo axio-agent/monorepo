@@ -647,11 +647,10 @@ asyncio.run(main())
 
 The shapes differ and the docs should not flatten them. Anthropic sends one whole refusal with an
 explanation and a category. Chat completions and the Responses API stream it fragment by fragment,
-one event per delta. Google's is prompt-level. It carries `category` and `blocked_input=True` and no
-text at all, so `run()` still returns `""` there. Set `blocked_input` so a consumer can tell a
-rejected prompt from a declined answer. Google also maps a candidate that finished on `SAFETY` or
-`RECITATION` to `StopReason.refusal`, while emitting no `Refusal` event. That is why the stop reason
-and the event are read separately.
+one event per delta. Google announces both a blocked prompt and a blocked answer, and generates no
+text for either, so its transport writes the text itself and marks it `spoken=False`. Set
+`blocked_input` so a consumer can tell a rejected prompt from a declined answer, and announce one
+refusal per response: two events for one turn disagree about which of the two happened.
 
 ## Errors
 
