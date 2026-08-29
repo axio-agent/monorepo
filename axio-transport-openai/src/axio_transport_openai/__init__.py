@@ -283,10 +283,8 @@ def _chat_messages(messages: list[Message], system: str) -> list[dict[str, Any]]
                 # Chat Completions API doesn't support images in tool messages,
                 # so inject them as a follow-up user message.
                 image_parts = _collect_tool_result_images(tool_results)
-                # Anything the turn carries beside its results — the media nudge is one — follows
-                # as its own user message, because a `tool` message holds one result and nothing
-                # else. Tested for an exact match instead, a turn carrying both dropped every
-                # result it had.
+                # A `tool` message holds one result and nothing else, so the rest of the turn
+                # follows as a user message. Gated on an exact match, it dropped every result.
                 image_parts += [
                     {"type": "text", "text": b.text} for b in msg.content if isinstance(b, TextBlock) and b.text
                 ]
@@ -326,10 +324,8 @@ def _chat_messages(messages: list[Message], system: str) -> list[dict[str, Any]]
             tool_calls: list[dict[str, Any]] = []
             for b in msg.content:
                 if isinstance(b, (ReasoningBlock, ProviderBlock)):
-                    # DEBUG and not a warning, unlike `proof()` one layer over: this endpoint has
-                    # no field for either, so leaving them out is the shape of the request rather
-                    # than a loss. A session whose history holds reasoning would otherwise warn on
-                    # every request it sends here.
+                    # DEBUG, not a warning: this endpoint has no field for either, so leaving
+                    # them out is the shape of the request rather than a loss.
                     logger.debug("Chat completions has no place for a %s; leaving it out", type(b).__name__)
                 elif isinstance(b, TextBlock):
                     text_parts.append(b.text)
@@ -887,11 +883,9 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             "api_key": self.api_key,
             # Which endpoint the server speaks is a property of the server, so it has to survive saving.
             "api": self.api,
-            # The registry alone said which models exist, never which one was chosen, so a restored
-            # session resumed on the class default beside a history another model had written: a
-            # different context window, different tools, different billing, and no model-switch
-            # event to say so. The retry policy went the same way, back to ten attempts five
-            # seconds apart however conservatively it had been set.
+            # The registry said which models exist and never which one was chosen, so a restore
+            # resumed on the default beside a history another model wrote. So did the retry
+            # policy, back to ten attempts five seconds apart.
             "model": self.model.id,
             "max_retries": self.max_retries,
             "retry_base_delay": self.retry_base_delay,
@@ -942,10 +936,9 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             chosen["retry_base_delay"] = delay
         built = cls(
             name=str(data.get("name", "")),
-            # Key absent, not value falsy: a partial settings dict omits what it wants the default
-            # for, while a full round-trip writes every key. Read as falsy, a credential saved
-            # empty on purpose picked up whatever the restoring process happened to export, and
-            # the session resumed against an endpoint it was never saved against.
+            # Key absent, not value falsy: a partial dict omits what it wants the default for,
+            # and a full round trip writes every key. Read as falsy, a credential saved empty
+            # picked up whatever the restoring process exported.
             base_url=_saved(data, "base_url", "OPENAI_BASE_URL", "https://api.openai.com/v1"),
             api_key=_saved(data, "api_key", "OPENAI_API_KEY", ""),
             extra_params=dict(data.get("extra_params") or {}),

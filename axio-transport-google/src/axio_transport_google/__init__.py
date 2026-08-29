@@ -909,13 +909,9 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             yield from self._part_events(part, turn)
 
         if turn.stop_reason is StopReason.refusal and not turn.refused:
-            # Eleven finish reasons map to a refusal, and only a blocked *prompt* announced it.
-            # Read as a stop reason alone, a blocked answer reached the caller as an empty turn
-            # that succeeded, which is what this event exists to prevent.
-            #
-            # After the parts, because whatever the chunk carried came before the block; once per
-            # turn, because the prompt-level event says the same thing about the same response and
-            # the two disagree about `blocked_input`.
+            # Eleven finish reasons map to a refusal, and only a blocked prompt announced it,
+            # so a blocked answer reached the caller as an empty turn that succeeded. After the
+            # parts, which came before the block; once per turn, or the two events disagree.
             turn.refused = True
             yield Refusal(
                 index=0,
@@ -940,11 +936,9 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
         elif part.inlineData.data:
             yield _media_event(part, at)
         elif set(part.raw) - {"thought", "thoughtSignature"}:
-            # executableCode, codeExecutionResult, fileData and whatever the API adds next: content
-            # of the turn axio has no type for. This API is stateless — the whole conversation goes
-            # back on every request — so a part that is only watched is a part the next request
-            # does not have, and the model answers the follow-up without the code it just ran.
-            # Its proof rides inside the part, which is where Gemini put it.
+            # executableCode, codeExecutionResult, fileData and whatever comes next: content
+            # this vocabulary has no type for. The API is stateless, so a part only watched is one
+            # the next request does not carry. Its proof rides inside the part.
             kept = True
             yield ProviderOutput(index=at, provider=PROVIDER, kind="part", data=dict(part.raw))
         else:

@@ -305,9 +305,7 @@ class TestRateLimits:
         with patch("asyncio.sleep", capture_sleep):
             await _collect(transport.stream([], [], ""))
 
-        # Only the waits. A zero is the reader giving the event loop a turn on an event it does
-        # not interpret, which is not a backoff and says nothing about the header.
-        assert [delay for delay in sleep_calls if delay] == [7.0]
+        assert sleep_calls == [7.0]
 
     async def test_all_retries_exhausted_raises(
         self,

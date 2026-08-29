@@ -860,12 +860,10 @@ class AgentApp(App[None]):
         return self._thinking
 
     async def _mount_thinking(self, *, before_answer: bool = False) -> _ThinkingWidget:
-        """A thinking widget in the log, above the answer where the answer came first.
+        """A thinking widget in the log, in front of the answer where the answer came first.
 
-        Reasoning happens before the answer, so the marker belongs above it. `_ensure_thinking`
-        mounts at the end because there is no answer yet. The marker for reasoning the provider
-        withheld is mounted at `IterationEnd`, when the answer is already rendered, so it goes in
-        front of that widget instead of below it.
+        Reasoning happens before the answer. The marker for reasoning a provider withheld is
+        mounted once the answer is rendered, so it goes in front of that widget, not below it.
         """
         self._thinking = _ThinkingWidget()
         scroll = self.query_one("#log", VerticalScroll)
@@ -882,8 +880,7 @@ class AgentApp(App[None]):
     async def _close_thinking(self, tokens: int = 0) -> None:
         """Fold the reasoning pane and let go of it, which is the only way to let go of it.
 
-        Cleared without folding, an expanded six-line pane was left in the transcript with nothing
-        pointing at it, and the next turn's reasoning went to a widget nobody could see.
+        Cleared without folding, an expanded pane was stranded in the transcript.
         """
         if self._thinking is None:
             return
@@ -1533,9 +1530,8 @@ class AgentApp(App[None]):
                             case IterationEnd(usage=usage):
                                 # One arm, or a turn that reasoned skips the status update below.
                                 if self._thinking is None and usage.reasoning_tokens:
-                                    # Billed for reasoning and none of it streamed: the provider
-                                    # withheld it. The answer is already on screen, so the marker
-                                    # goes in front of it rather than under it.
+                                    # Billed for reasoning and none streamed: the provider
+                                    # withheld it. The answer is already on screen.
                                     await self._mount_thinking(before_answer=True)
                                 await self._close_thinking(usage.reasoning_tokens)
                                 self._agent_emoji = "✅"
@@ -1544,9 +1540,7 @@ class AgentApp(App[None]):
                             case SessionEndEvent(stop_reason=reason):
                                 await self._close_thinking()
                                 if reason in INCOMPLETE:
-                                    # Nothing else says so. The answer stops mid-sentence and
-                                    # reads exactly like one the model finished. `_write_meta`
-                                    # flushes the text and closes the answer on its way.
+                                    # Nothing else says so, and the answer reads as a whole one.
                                     await self._write_meta(f"[red]Incomplete: {reason}[/]")
                                 else:
                                     await self._flush_text()

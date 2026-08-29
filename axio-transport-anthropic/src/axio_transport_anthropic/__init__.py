@@ -438,10 +438,8 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             # Only the proof travels. The API refuses a thinking block without one.
             yield ReasoningSignature(index=wire.index, signature=block.data, redacted=True, provider=PROVIDER)
         elif block.type not in ("text", "thinking"):
-            # server_tool_use, web_search_tool_result, code execution, mcp: run on the API's side.
-            # Kept until the block closes, because a server_tool_use streams its input in deltas
-            # and is not whole yet. Forwarded as news too: a caller watching the turn wants to see
-            # the search start, not only that it happened.
+            # server_tool_use, web_search_tool_result, code execution, mcp: run on the API's
+            # side. Kept until the block closes, because a server_tool_use streams its input.
             self.hosted[wire.index] = (block.type, block.raw)
             yield ProviderEvent(provider=PROVIDER, kind=block.type, data=dict(block.raw), index=wire.index)
 
@@ -795,10 +793,9 @@ class AnthropicTransport(CompletionTransport):
             "name": self.name,
             "base_url": self.base_url,
             "api_key": self.api_key,
-            # The registry alone said which models exist, never which one was chosen, so a
-            # restored session resumed on the class default beside a history another model had
-            # written. The retry policy and the sampling settings went the same way: read back by
-            # `from_dict` and never written by anything.
+            # The registry said which models exist and never which one was chosen, so a restore
+            # resumed on the default. The retry and sampling settings were read back and never
+            # written.
             "model": self.model.id,
             "max_retries": self.max_retries,
             "retry_base_delay": self.retry_base_delay,

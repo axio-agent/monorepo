@@ -70,10 +70,9 @@ class Decoder:
         # What has arrived. ``utf-8-sig`` strips a leading byte order mark, which the format
         # requires. ``_parts`` holds chunks apart until a terminator arrives, because joining each
         # one into the buffer copies the whole held event again.
-        # ``strict``, not ``replace``: the same stream carries the base64 of a signature and of
-        # encrypted reasoning, which a provider refuses on replay if one character changed. A
-        # U+FFFD substituted there is invisible until that later request fails, with nothing left
-        # locally to point at the decode.
+        #
+        # ``strict``: this stream carries the base64 of a signature, which a provider refuses
+        # on replay if one character changed. A U+FFFD there shows up a request later.
         self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="strict")
         self._parts: list[str] = []
         self._held = ""
@@ -121,11 +120,9 @@ class Decoder:
         if isinstance(chunk, bytes):
             text = self._text.decode(chunk)
         else:
-            # Bytes left half a character behind, and its other half arrived as text rather than
-            # as bytes, so nothing can complete it. Replaced by U+FFFD it was the same silent
-            # corruption of a signature that `errors="strict"` above exists to refuse, so it is
-            # refused here too. A final flush keeps a partial mark, so the state is cleared as
-            # well as read.
+            # Half a character whose other half arrived as text, so nothing can complete it:
+            # refused, like every other byte that will not decode. A final flush keeps a partial
+            # mark, so the state is cleared as well as read.
             if pending := self._text.getstate()[0]:
                 self._text.setstate((b"", 0))
             text = pending.decode("utf-8") + chunk

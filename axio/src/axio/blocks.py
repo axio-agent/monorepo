@@ -158,10 +158,7 @@ def proof(block: TextBlock | ReasoningBlock | ToolUseBlock, provider: str) -> st
     if not block.signature:
         return ""
     if block.provider and block.provider != provider:
-        # A warning, not a debug line: the turn goes out without a proof the provider may require,
-        # and the symptom is a refusal or lost reasoning continuity one request later, with
-        # nothing local to point at. A session that changed transport repeats this per block per
-        # request, which is the situation the operator needs to see.
+        # A warning: the turn goes out unsigned, and the symptom arrives a request later.
         logger.warning("Not replaying a %s proof to %s; the turn goes out unsigned", block.provider, provider)
         return ""
     return block.signature

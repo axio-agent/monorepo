@@ -337,10 +337,8 @@ class Responses(Reader[StreamEvent]):
             raise StreamError(f"Responses completed with an unknown status: {status!r}")
         else:
             self.stop_reason = STOP_REASONS[status]
-            # A finished response still holding a call is a turn that wants the tool run first.
-            # Only a finished one: `cancelled`, `content_filter` and `max_output_tokens` also
-            # arrive here carrying the calls the turn had streamed before it stopped. Rewritten to
-            # tool_use they pass the agent's dispatch gate, and half a turn's calls run.
+            # A finished response still holding a call wants the tool run first. Only a
+            # finished one: rewritten, a cancelled or filtered turn passes the dispatch gate.
             if self.stop_reason is StopReason.end_turn and any(
                 item.type == "function_call" for item in response.output
             ):

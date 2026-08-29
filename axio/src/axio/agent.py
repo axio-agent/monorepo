@@ -537,8 +537,7 @@ class Agent:
                 match event:
                     case TextDelta(index=at, delta=delta):
                         if at != turn.text_at:
-                            # A new part joins the run being built. Where it starts is where a
-                            # proof for it has to cut, so it signs its own text and nothing before.
+                            # Where this part starts is where a proof for it has to cut.
                             last = turn.content[-1] if turn.content else None
                             merging = isinstance(last, TextBlock) and not last.signature
                             turn.text_from = len(last.text) if isinstance(last, TextBlock) and merging else 0
@@ -551,10 +550,7 @@ class Agent:
                             turn.repeated = True
                             return
                     case Refusal(text=text) if text:
-                        # Stored whoever wrote it — the model declining, or the provider explaining
-                        # a block. A turn with no content is refused by the next request, and this
-                        # is the only account of the decline there is. `Refusal.spoken` keeps the
-                        # two apart for a consumer that renders them differently.
+                        # Stored whoever wrote it: a turn with no content is refused next time.
                         self._accumulate_text(turn.content, text)
                     case TextSignature(signature=proof, provider=provider):
                         self._sign_text(turn.content, proof, provider, turn.text_from)
@@ -590,11 +586,8 @@ class Agent:
                         turn.stop_reason = reason
                         await context.add_context_tokens(usage.input_tokens, usage.output_tokens)
         finally:
-            # The turn is over whichever way this generator left the loop, and only an explicit
-            # close ends the transport's own generator with it. Left suspended, the HTTP response
-            # under it is released whenever the collector gets to it rather than when the turn
-            # ended, and the transport cannot tell a consumer that walked away from a stream that
-            # finished on its own.
+            # Left suspended, the HTTP response under it is released by the collector rather
+            # than when the turn ended.
             if (close := getattr(stream, "aclose", None)) is not None:
                 await close()
 
@@ -610,10 +603,8 @@ class Agent:
         partial: dict[str, list[tuple[float, str, str]]] = {}
         results: list[ToolResultBlock] = []
         try:
-            # `_run_tools` cancels the dispatch task in its own `finally`, and that runs only when
-            # the generator is closed. Abandoned by an exception passing through the loop below —
-            # which is what a cancellation between two deltas is — it was closed by the collector
-            # instead, and the tools went on running long after the turn was over.
+            # `_run_tools` cancels the dispatch in its `finally`, which runs only on close.
+            # Abandoned by a cancellation between two deltas, the tools kept running.
             async with aclosing(self._run_tools(runnable, iteration, partial, results)) as deltas:
                 async for delta in deltas:
                     yield delta
@@ -627,9 +618,8 @@ class Agent:
         await self._append(context, Message(role="assistant", content=list(turn.content)))
         answer: list[ContentBlock] = list(results)
         if getattr(self.transport, "nudge_on_media_tool_result", False) and _carries_media(results):
-            # In the message the results are in, not one of its own. Appended separately it made
-            # two user turns in a row, which Anthropic refuses outright and Gemini only survives
-            # because its converter merges them.
+            # In the message the results are in: appended separately it made two user turns in
+            # a row, which Anthropic refuses.
             answer.append(TextBlock(text=_MEDIA_NUDGE))
         await self._append(context, Message(role="user", content=answer))
 
@@ -661,10 +651,8 @@ class Agent:
             try:
                 return await self._dispatch_tools_streaming(runnable, iteration, queue)
             finally:
-                # The sentinel is what ends the loop below. Put only on the way out of a normal
-                # return, a dispatch that raised — a tool argument that would not serialise, a
-                # formatter that failed — left the reader waiting on a queue nothing would ever
-                # fill again, and the turn hung with no error and no timeout.
+                # Put only after a normal return, a dispatch that raised left the loop below
+                # waiting on a queue nothing would fill again.
                 await queue.put(None)
 
         task = asyncio.create_task(run())
@@ -708,10 +696,8 @@ class Agent:
                 turn = _Turn()
                 stream = self.transport.stream(effective_history, active_tools, self.system)
                 try:
-                    # `_consume` closes the transport stream in its own `finally`, and that runs
-                    # only when `_consume` itself is closed. Left to the collector, a caller that
-                    # walked away mid-turn held the HTTP response open until the loop got round to
-                    # finalising an abandoned generator.
+                    # `_consume` closes the stream in its `finally`, which runs only on close.
+                    # Left to the collector, a caller that walked away held the response open.
                     async with aclosing(self._consume(stream, turn, context)) as consumed:
                         async for event in consumed:
                             yield event
@@ -831,8 +817,7 @@ class Agent:
                         return
 
             logger.warning("Max iterations (%d) reached", self.max_iterations)
-            # With the event, like every other error: `get_final_text()` raises on one, and a run
-            # that hit the ceiling returned its half-finished text as an answer without it.
+            # With the event, like every other error, or `get_final_text()` returns half a turn.
             yield Error(exception=RuntimeError(f"Reached max_iterations ({self.max_iterations})"))
             yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
             session_end_emitted = True

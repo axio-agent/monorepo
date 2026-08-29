@@ -55,10 +55,8 @@ def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> 
             seconds = float(raw)
         except ValueError:
             seconds = None
-        # Zero is the server saying "now" and is honoured. A negative count is not a wait at all —
-        # RFC 9110 defines the field as non-negative — so, like a date already past, it says
-        # nothing about when the limit lifts and falls through to the exponential wait. Clamped to
-        # zero it removed the backoff from every transport's retry loop.
+        # Zero means "now". A negative count is not a wait at all — RFC 9110 makes the field
+        # non-negative — so it falls through rather than removing the backoff.
         if seconds is not None and seconds >= 0:
             return _bounded(seconds)
         try:

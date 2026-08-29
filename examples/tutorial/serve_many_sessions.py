@@ -117,10 +117,9 @@ class CloudHarness:
                 opening = asyncio.create_task(self._open(session_id))
                 self._sessions[session_id] = opening
 
-        # Started under the lock and awaited outside it. Held while the container starts, one cold
-        # session made every other session's first turn wait behind its image pull. `shield` keeps
-        # the open running when this caller gives up: it is already creating a container, and a
-        # caller walking away is not a reason to lose track of it.
+        # Started under the lock and awaited outside it: held while the container starts, one
+        # cold session made every other first turn wait. `shield` keeps the open running when
+        # this caller gives up, because it is already creating a container.
         return await asyncio.shield(opening)
 
     async def _open(self, session_id: str) -> CloudSession:
