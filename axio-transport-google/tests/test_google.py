@@ -1164,3 +1164,31 @@ class TestAPartGeminiRanItselfSurvivesTheTurn:
         content = _build_contents_json([Message(role="assistant", content=[block, TextBlock(text="hi")])])
 
         assert content[-1]["parts"] == [{"text": "hi"}]
+
+
+async def test_last_usage_reports_this_turn_and_not_the_one_before(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The agent reads it when a turn ends with no IterationEnd, so a stale value is counted twice.
+
+    It reached the session total and, once repetition-cut turns started counting their tokens,
+    the store's idea of the context size as well.
+    """
+    counted = {
+        "candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 5, "totalTokenCount": 16},
+    }
+    silent = {"candidates": [{"content": {"parts": [{"text": "hi"}]}, "finishReason": "STOP"}]}
+
+    async with aiohttp.ClientSession() as session:
+        transport = GoogleTransport(
+            api_key="k", model=GENAI_MODELS["gemini-3-flash-preview"], session=session, max_retries=1
+        )
+        async with _serving(monkeypatch, counted):
+            async for _ in transport.stream([Message(role="user", content=[TextBlock(text="go")])], [], ""):
+                pass
+        assert transport.last_usage is not None
+
+        async with _serving(monkeypatch, silent):
+            async for _ in transport.stream([Message(role="user", content=[TextBlock(text="go")])], [], ""):
+                pass
+
+    assert transport.last_usage is None, "a turn that reported no usage must not report the last one's"

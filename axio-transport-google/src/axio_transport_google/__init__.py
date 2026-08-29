@@ -753,6 +753,10 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
 
         self._streams += 1
         turn = _Turn(seq=self._streams)
+        # This turn has reported nothing yet. Left at the previous turn's figure, a turn cut short
+        # before its first usage chunk had the last one's tokens counted a second time, into the
+        # session total and into the store's idea of the context size.
+        self.last_usage = None
 
         sent = False
         last_exc: Exception | None = None

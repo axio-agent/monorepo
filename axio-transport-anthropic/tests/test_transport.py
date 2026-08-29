@@ -12,7 +12,14 @@ import aiohttp
 import pytest
 from aiohttp import web
 from axio.agent import Agent
-from axio.blocks import ImageBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.blocks import (
+    ImageBlock,
+    ProviderBlock,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from axio.context import MemoryContextStore
 from axio.events import (
     BlockEnd,
@@ -20,6 +27,7 @@ from axio.events import (
     IterationEnd,
     IterationStart,
     ProviderEvent,
+    ProviderOutput,
     ReasoningDelta,
     ReasoningSignature,
     Refusal,
@@ -905,3 +913,69 @@ async def test_a_refused_call_reaches_the_next_request_with_its_reason() -> None
     assert [p["tool_use_id"] for p in results] == ["call_1"], "the API refuses a call nothing answered"
     assert results[0]["is_error"] is True
     assert "max_tokens" in results[0]["content"], "the reason is what the model reads to know why"
+
+
+class TestABlockTheApiRanItselfSurvivesTheTurn:
+    """This API keeps no copy of the turn: the whole message list goes back on every request.
+
+    A block from a tool the API ran — a web search, a code execution, an MCP call — was forwarded
+    as news and never stored, so the next request did not carry what the model had answered from.
+    """
+
+    @staticmethod
+    def _read(reader: Messages, name: str, **payload: Any) -> list[StreamEvent]:
+        return reader.read(Event(data=json.dumps(payload), event=name))
+
+    def test_a_result_block_is_kept_whole(self) -> None:
+        block = {
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": [{"type": "web_search_result", "title": "axio", "url": "https://example.test"}],
+        }
+        reader = Messages()
+
+        self._read(reader, "content_block_start", index=0, content_block=block)
+        made = self._read(reader, "content_block_stop", index=0)
+
+        assert made[0] == ProviderOutput(provider="anthropic", kind="web_search_tool_result", data=block, index=0)
+
+    def test_a_server_call_waits_for_the_arguments_it_streams(self) -> None:
+        # The block opens with an empty `input` that the deltas fill. Stored from the opening
+        # payload, the call goes back with no arguments and the API refuses the result after it.
+        reader = Messages()
+        start = {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {}}
+
+        self._read(reader, "content_block_start", index=0, content_block=start)
+        self._read(reader, "content_block_delta", index=0, delta={"type": "input_json_delta", "partial_json": '{"q"'})
+        self._read(reader, "content_block_delta", index=0, delta={"type": "input_json_delta", "partial_json": ':"a"}'})
+        made = self._read(reader, "content_block_stop", index=0)
+
+        assert isinstance(made[0], ProviderOutput)
+        assert made[0].data["input"] == {"q": "a"}
+        assert made[0].id == "srvtoolu_1"
+
+    def test_arguments_cut_short_drop_the_block_rather_than_replay_half(self) -> None:
+        reader = Messages()
+        start = {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {}}
+
+        self._read(reader, "content_block_start", index=0, content_block=start)
+        self._read(reader, "content_block_delta", index=0, delta={"type": "input_json_delta", "partial_json": '{"q"'})
+        made = self._read(reader, "content_block_stop", index=0)
+
+        assert not [e for e in made if isinstance(e, ProviderOutput)]
+
+    def test_it_replays_exactly_as_it_arrived(self) -> None:
+        raw = {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []}
+        block = ProviderBlock(provider="anthropic", kind="web_search_tool_result", data=raw)
+
+        parts = _convert_messages([Message(role="assistant", content=[block])])[0]["content"]
+
+        assert parts == [raw]
+
+    def test_a_block_from_another_provider_is_not_sent_here(self) -> None:
+        block = ProviderBlock(provider="openai", kind="web_search_call", data={"type": "web_search_call"})
+        messages = [Message(role="assistant", content=[block, TextBlock(text="hi")])]
+
+        parts = _convert_messages(messages)[0]["content"]
+
+        assert parts == [{"type": "text", "text": "hi"}]

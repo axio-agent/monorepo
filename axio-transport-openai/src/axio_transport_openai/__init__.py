@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Self
@@ -512,6 +512,21 @@ def _saved(data: dict[str, Any], key: str, variable: str, fallback: str) -> str:
     return os.environ.get(variable, fallback)
 
 
+def _number[T: (int, float)](data: dict[str, Any], key: str, as_type: Callable[[Any], T]) -> T | None:
+    """What a saved config said for this number, or None where it said nothing readable.
+
+    A saved value that will not convert takes the class default, like every neighbouring field.
+    Raising instead, one unreadable number failed the whole session restore.
+    """
+    if (found := data.get(key)) is None:
+        return None
+    try:
+        return as_type(found)
+    except (TypeError, ValueError):
+        logger.warning("Saved %s is not a number (%r); taking the default", key, found)
+        return None
+
+
 @dataclass(slots=True)
 class OpenAITransport(CompletionTransport, EmbeddingTransport):
     name: str = "OpenAI"
@@ -903,18 +918,15 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
         # being built: /v1/responses for OpenAI, chat completions for the compatible servers whose
         # subclasses say so. Reading it off `cls` would not work: with slots it is a descriptor.
         chosen: dict[str, Any] = {"api": data["api"]} if data.get("api") else {}
-        if (saved := data.get("model")) is not None:
-            if (spec := models.get(str(saved))) is not None:
-                chosen["model"] = spec
-            else:
-                # Silently taking the default would resume on a model the saved history was not
-                # written by, which is the failure this key exists to prevent.
-                logger.warning("Saved model %r is not in the saved registry; falling back to the default", saved)
-        if (retries := data.get("max_retries")) is not None:
-            chosen["max_retries"] = int(retries)
-        if (delay := data.get("retry_base_delay")) is not None:
-            chosen["retry_base_delay"] = float(delay)
-        return cls(
+        if "models" in data:
+            # Passed only when the config saved a registry. Handed an empty one instead, a partial
+            # settings dict lost the class's own models, and with them any model it named.
+            chosen["models"] = models
+        if (retries := _number(data, "max_retries", int)) is not None:
+            chosen["max_retries"] = retries
+        if (delay := _number(data, "retry_base_delay", float)) is not None:
+            chosen["retry_base_delay"] = delay
+        built = cls(
             name=str(data.get("name", "")),
             # Key absent, not value falsy: a partial settings dict omits what it wants the default
             # for, while a full round-trip writes every key. Read as falsy, a credential saved
@@ -922,11 +934,20 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
             # the session resumed against an endpoint it was never saved against.
             base_url=_saved(data, "base_url", "OPENAI_BASE_URL", "https://api.openai.com/v1"),
             api_key=_saved(data, "api_key", "OPENAI_API_KEY", ""),
-            models=models,
             extra_params=dict(data.get("extra_params") or {}),
             session=session,
             **chosen,
         )
+        if (saved := data.get("model")) is None:
+            return built
+        # Against the registry the transport ended up with, which is the saved one where the
+        # config carried it and the class's own where it did not.
+        if (spec := built.models.get(str(saved))) is not None:
+            return dataclasses.replace(built, model=spec)
+        # Silently taking the default would resume on a model the saved history was not written
+        # by, which is the failure this key exists to prevent.
+        logger.warning("Saved model %r is in no registry this transport has; taking the default", saved)
+        return built
 
 
 class ThinkingMixin:

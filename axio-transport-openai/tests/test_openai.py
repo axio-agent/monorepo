@@ -2106,6 +2106,13 @@ class TestASavedSessionResumesAsItWasSaved:
         assert restored.model.id == OpenAITransport().model.id
         assert any("gpt-5.6" in record.getMessage() for record in caplog.records)
 
+    def test_a_model_named_by_a_partial_config_is_found_in_the_class_registry(self) -> None:
+        # `_saved` exists so a hand-written settings dict can omit what it wants the default for.
+        # Resolved only against a saved registry, such a dict named a model and lost it.
+        restored = OpenAITransport.from_dict({"name": "x", "model": "gpt-5.6"})
+
+        assert restored.model.id == "gpt-5.6"
+
     def test_the_retry_policy_comes_back(self) -> None:
         # Dropped, a deliberately conservative policy reverted to ten attempts five seconds apart.
         saved = OpenAITransport(max_retries=2, retry_base_delay=0.5).to_dict()
@@ -2113,6 +2120,17 @@ class TestASavedSessionResumesAsItWasSaved:
         restored = OpenAITransport.from_dict(saved)
 
         assert (restored.max_retries, restored.retry_base_delay) == (2, 0.5)
+
+    @pytest.mark.parametrize("key,value", [("max_retries", "soon"), ("retry_base_delay", None)])
+    def test_a_number_that_will_not_read_takes_the_default(self, key: str, value: object) -> None:
+        # Every neighbouring field degrades to a default; these two raised, so one unreadable
+        # value in a saved config failed the whole session restore.
+        saved = OpenAITransport(max_retries=2, retry_base_delay=0.5).to_dict()
+        saved[key] = value
+
+        restored = OpenAITransport.from_dict(saved)
+
+        assert getattr(restored, key) == getattr(OpenAITransport(), key)
 
     def test_an_empty_credential_saved_on_purpose_is_not_filled_in_from_the_environment(
         self, monkeypatch: pytest.MonkeyPatch

@@ -15,12 +15,14 @@ from typing import Any, Final, Literal, Protocol, Self, cast
 import aiohttp
 from axio.blocks import (
     ImageBlock,
+    ProviderBlock,
     ReasoningBlock,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     VideoBlock,
     proof,
+    replayable,
 )
 from axio.events import (
     BlockEnd,
@@ -28,6 +30,7 @@ from axio.events import (
     IterationEnd,
     IterationStart,
     ProviderEvent,
+    ProviderOutput,
     ReasoningDelta,
     ReasoningSignature,
     Refusal,
@@ -212,6 +215,11 @@ def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
                         logger.debug("Dropping an unsigned reasoning block from the replayed turn")
                 elif isinstance(b, ToolUseBlock):
                     content_parts.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+                elif isinstance(b, ProviderBlock):
+                    # Back exactly as it arrived. This API keeps no copy of the turn, so a search
+                    # it ran or code it executed is in the next request only if we put it there.
+                    if replayable(b, PROVIDER):
+                        content_parts.append(dict(b.data))
 
         if not content_parts and msg.role == "assistant":
             # Every block was stripped. Skipped, two user turns end up adjacent, which the API
@@ -403,6 +411,10 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         self.stop_reason = ""
         # content_block_delta carries the index and never the tool id.
         self.tool_use_ids: dict[int, str] = {}
+        # Blocks the API produced from its own tools, by index, until the block closes. This API
+        # keeps no copy of the turn, so each one has to go back on the next request.
+        self.hosted: dict[int, tuple[str, Payload]] = {}
+        self.hosted_input: dict[int, list[str]] = {}
 
     # ── what reaches the caller ──────────────────────────────────────────────────────────────
 
@@ -426,6 +438,10 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             yield ReasoningSignature(index=wire.index, signature=block.data, redacted=True, provider=PROVIDER)
         elif block.type not in ("text", "thinking"):
             # server_tool_use, web_search_tool_result, code execution, mcp: run on the API's side.
+            # Kept until the block closes, because a server_tool_use streams its input in deltas
+            # and is not whole yet. Forwarded as news too: a caller watching the turn wants to see
+            # the search start, not only that it happened.
+            self.hosted[wire.index] = (block.type, block.raw)
             yield ProviderEvent(provider=PROVIDER, kind=block.type, data=dict(block.raw), index=wire.index)
 
     @on(BlockDeltaEvent)
@@ -438,6 +454,10 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
                 yield ReasoningDelta(index=index, delta=delta.thinking)
             case "signature_delta":
                 yield ReasoningSignature(index=index, signature=delta.signature, provider=PROVIDER)
+            case "input_json_delta" if index in self.hosted:
+                # The arguments of a tool the API runs itself. They belong to the block being
+                # assembled for replay, not to a call this side will ever dispatch.
+                self.hosted_input.setdefault(index, []).append(delta.partial_json)
             case "input_json_delta":
                 yield ToolInputDelta(
                     index=index,
@@ -453,7 +473,36 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
     @on(BlockStop)
     def _block_stopped(self, wire: BlockStop) -> Iterator[StreamEvent]:
         """The block is complete, so anything accumulated for it now parses."""
+        if (found := self.hosted.pop(wire.index, None)) is not None:
+            if (item := self._hosted_item(wire.index, *found)) is not None:
+                yield ProviderOutput(
+                    provider=PROVIDER,
+                    kind=found[0],
+                    data=item,
+                    index=wire.index,
+                    id=item.get("id", "") if isinstance(item.get("id"), str) else "",
+                )
         yield BlockEnd(index=wire.index)
+
+    def _hosted_item(self, index: int, kind: str, start: Payload) -> dict[str, Any] | None:
+        """One finished block from a tool the API ran, as it will be sent back.
+
+        The block opens with its shape and, for a ``server_tool_use``, an empty ``input`` that the
+        deltas fill. Stored from the opening payload alone, the call goes back with no arguments
+        and the API refuses the result that follows it.
+        """
+        item = dict(start)
+        if (parts := self.hosted_input.pop(index, None)) is None:
+            return item
+        raw = "".join(parts)
+        try:
+            item["input"] = json.loads(raw)
+        except json.JSONDecodeError:
+            # Truncated arguments. Replayed, the API is handed a call the model never finished
+            # writing; dropped, the turn simply does not carry that block.
+            logger.warning("Dropping a %s block whose arguments did not parse (%d chars)", kind, len(raw))
+            return None
+        return item
 
     # ── what only moves this turn's state ────────────────────────────────────────────────────
 
