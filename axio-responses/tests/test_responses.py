@@ -693,7 +693,9 @@ class TestAssistantTurnOrder:
         _, items = convert_messages([turn], "")
 
         kinds = [item.get("type") or item.get("role") for item in items]
-        assert kinds[:3] == ["reasoning", "function_call", "assistant"]
+        # The call has no result in this history, so a stand-in goes where the result would have
+        # been. Appended to the end of the array instead, it answered a call three items back.
+        assert kinds == ["reasoning", "function_call", "function_call_output", "assistant"]
 
     def test_consecutive_text_blocks_stay_one_message(self) -> None:
         turn = Message(role="assistant", content=[TextBlock(text="a"), TextBlock(text="b")])
@@ -854,3 +856,33 @@ def test_a_proof_with_no_provider_recorded_is_still_replayed() -> None:
     assert [i for i in items if i.get("type") == "reasoning"] == [
         {"type": "reasoning", "id": "rs_1", "encrypted_content": "gAAAAAB", "summary": []}
     ]
+
+
+def test_a_stand_in_answers_the_call_it_belongs_to_and_not_the_last_one() -> None:
+    # Appended to the end of the whole array, the stand-in for an interrupted call sat behind
+    # everything the conversation did afterwards, answering a call several turns back.
+    messages = [
+        Message(role="assistant", content=[ToolUseBlock(id="c1", name="search", input={})]),
+        Message(role="user", content=[TextBlock(text="never mind")]),
+        Message(role="assistant", content=[TextBlock(text="ok")]),
+    ]
+
+    _, items = convert_messages(messages, "")
+
+    kinds = [item.get("type") or item.get("role") for item in items]
+    assert kinds == ["function_call", "function_call_output", "user", "assistant"]
+
+
+def test_reasoning_a_later_turn_follows_is_not_trimmed() -> None:
+    # The API refuses a reasoning item with nothing after it, and only the last item has nothing
+    # after it. Trimmed per turn, reasoning was dropped from the middle of the conversation.
+    messages = [
+        Message(role="assistant", content=[ReasoningBlock(text="", signature="enc", id="rs_1")]),
+        Message(role="user", content=[TextBlock(text="go on")]),
+        Message(role="assistant", content=[TextBlock(text="done")]),
+    ]
+
+    _, items = convert_messages(messages, "")
+
+    kinds = [item.get("type") or item.get("role") for item in items]
+    assert kinds == ["reasoning", "user", "assistant"]

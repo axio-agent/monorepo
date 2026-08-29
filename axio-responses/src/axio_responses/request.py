@@ -137,7 +137,6 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
 
         elif msg.role == "assistant":
             content_parts_a: list[dict[str, Any]] = []
-            turn_start = len(items)
             for b in msg.content:
                 if isinstance(b, ReasoningBlock):
                     # `id` and `summary` are required beside the proof. The flush follows that test,
@@ -175,25 +174,33 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
                         }
                     )
             _flush_text(items, content_parts_a)
-            while len(items) > turn_start and items[-1].get("type") == "reasoning":
-                # The API refuses a reasoning item with nothing after it.
-                logger.debug("Dropping a trailing reasoning item, which has no following item")
-                items.pop()
 
-    # Synthesize placeholder outputs for orphan function_calls (no corresponding output)
-    output_ids = {i["call_id"] for i in items if i.get("type") == "function_call_output"}
-    for item in list(items):
-        if item.get("type") == "function_call" and item.get("call_id") not in output_ids:
-            call_id = item.get("call_id", "")
-            # As we go: a call_id appearing twice took a placeholder each time.
-            output_ids.add(call_id)
-            logger.warning("Synthesizing placeholder output for orphan function_call: call_id=%s", call_id)
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": "[Tool was not executed - context was interrupted or compacted]",
-                }
-            )
+    # A call the history has no result for. The API pairs the two by call_id, and the model reads
+    # them in order, so the stand-in goes where the result would have been.
+    answered = {i["call_id"] for i in items if i.get("type") == "function_call_output"}
+    placed: list[dict[str, Any]] = []
+    for item in items:
+        placed.append(item)
+        if item.get("type") != "function_call" or item.get("call_id") in answered:
+            continue
+        call_id = item.get("call_id", "")
+        # As we go: a call_id appearing twice took a stand-in each time.
+        answered.add(call_id)
+        logger.warning("Synthesizing placeholder output for orphan function_call: call_id=%s", call_id)
+        placed.append(
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": "[Tool was not executed - context was interrupted or compacted]",
+            }
+        )
+    items = placed
+
+    # Once, over the whole array. The API refuses a reasoning item with nothing after it, and only
+    # the last item has nothing after it. Trimmed per turn, reasoning that the next turn's own
+    # items follow was dropped from the middle of the conversation.
+    while items and items[-1].get("type") == "reasoning":
+        logger.debug("Dropping a trailing reasoning item, which has no following item")
+        items.pop()
 
     return system, items
