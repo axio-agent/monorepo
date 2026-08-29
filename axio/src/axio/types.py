@@ -40,6 +40,11 @@ class StopReason(StrEnum):
     #: something the provider did not say: that the turn finished, that it was truncated, or that
     #: the transport broke. ``IterationEnd.raw`` carries the word itself.
     unknown = "unknown"
+    #: Axio stopped the turn, because the model was repeating itself. The only reason here the
+    #: provider did not give. Reported as ``end_turn``, a caller could not tell an answer the model
+    #: finished from one cut off mid-word, which is the same objection this vocabulary raises
+    #: against reading a truncated response as a whole one.
+    repetition = "repetition"
 
 
 def stop_reason_from(raw: str, table: Mapping[str, StopReason], *, provider: str) -> StopReason:
@@ -86,6 +91,22 @@ class Usage:
     cache_write_tokens: int = field(default=0, kw_only=True)
     #: The slice of ``output_tokens`` spent on reasoning the caller never sees.
     reasoning_tokens: int = field(default=0, kw_only=True)
+
+    def __post_init__(self) -> None:
+        """Hold the rule above, so no derived count can come out negative.
+
+        Documented and unchecked, a provider report the transport converted wrongly gave
+        ``uncached_input_tokens`` or ``answer_tokens`` below zero, and every display, aggregate,
+        quota check and cost built on them was wrong with nothing saying so.
+        """
+        if min(self.input_tokens, self.output_tokens, self.cache_read_tokens) < 0:
+            raise ValueError(f"token counts cannot be negative: {self}")
+        if min(self.cache_write_tokens, self.reasoning_tokens) < 0:
+            raise ValueError(f"token counts cannot be negative: {self}")
+        if self.cache_read_tokens + self.cache_write_tokens > self.input_tokens:
+            raise ValueError(f"the cache slices are inside input_tokens, which is the grand total: {self}")
+        if self.reasoning_tokens > self.output_tokens:
+            raise ValueError(f"reasoning is a slice of output_tokens, which is the grand total: {self}")
 
     def __add__(self, other: Usage) -> Usage:
         return Usage(

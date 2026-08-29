@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from axio.agent import Agent
-from axio.blocks import ToolResultBlock
+from axio.blocks import ToolResultBlock, ToolUseBlock
 from axio.context import MemoryContextStore
 from axio.events import (
     IterationEnd,
@@ -255,6 +255,49 @@ class TestStopReasonOverride:
         session_ends = [e for e in events if isinstance(e, SessionEndEvent)]
         assert len(session_ends) == 1
         assert session_ends[0].stop_reason == StopReason.end_turn
+
+
+class TestRefusedDispatch:
+    async def test_a_refused_call_is_kept_in_history_with_a_result_saying_why(self) -> None:
+        """A turn whose reason does not vouch for its calls still has to say so to the model.
+
+        Stripped from the history instead, the next request cannot tell the attempt from a turn
+        that called nothing, and the model makes the same call again.
+        """
+        ran: list[str] = []
+
+        async def handler(msg: str) -> str:
+            ran.append(msg)
+            return msg
+
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=handler)
+        transport = StubTransport(
+            [
+                [
+                    ToolUseStart(0, "c1", "echo"),
+                    ToolInputDelta(0, "c1", json.dumps({"msg": "hi"})),
+                    IterationEnd(1, StopReason.max_tokens, Usage(10, 5)),
+                ]
+            ]
+        )
+        context = MemoryContextStore()
+        agent = Agent(system="test", tools=[tool], transport=transport)
+        events = [e async for e in agent.run_stream("go", context)]
+
+        assert ran == [], "a turn that does not vouch for its calls must not run them"
+
+        history = await context.get_history()
+        calls = [b for m in history for b in m.content if isinstance(b, ToolUseBlock)]
+        results = [b for m in history for b in m.content if isinstance(b, ToolResultBlock)]
+        assert [b.id for b in calls] == ["c1"], "the attempted call is what the next turn reads"
+        assert [b.tool_use_id for b in results] == ["c1"], "a stored call with no result is refused next"
+        assert results[0].is_error
+        assert "max_tokens" in str(results[0].content)
+
+        # The call was reported as started, so a caller with no result for it waits forever.
+        reported = [e for e in events if isinstance(e, ToolResult)]
+        assert [(e.tool_use_id, e.is_error) for e in reported] == [("c1", True)]
+        assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [StopReason.max_tokens]
 
 
 class TestStreamingToolDispatch:

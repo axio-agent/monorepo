@@ -179,6 +179,27 @@ def _malformed_results(blocks: list[ToolUseBlock], malformed: set[str]) -> list[
     ]
 
 
+def _refused_results(blocks: list[ToolUseBlock], stop_reason: StopReason | None) -> list[ToolResultBlock]:
+    """What a call the turn did not vouch for gets back instead of a run.
+
+    Dropped from the history instead, the next request holds no trace of the attempt: the model
+    cannot tell a refused call from a turn that called nothing, and makes the same call again.
+    """
+    # str, not .value: a transport may hand the loop a reason this enum never named.
+    named = str(stop_reason) if stop_reason is not None else "no stated reason"
+    return [
+        ToolResultBlock(
+            tool_use_id=block.id,
+            content=(
+                f"Tool {block.name} was not run: the turn ended with {named}, which does not vouch"
+                f" for the calls it produced. Nothing was executed and nothing changed."
+            ),
+            is_error=True,
+        )
+        for block in blocks
+    ]
+
+
 def _carries_media(results: list[ToolResultBlock]) -> bool:
     """Whether any result holds a picture, a sound or a video rather than only text."""
     return any(
@@ -483,44 +504,53 @@ class Agent:
     ) -> AsyncGenerator[StreamEvent, None]:
         """Pass every event through, building the turn's content as they go."""
         detector = _RepetitionDetector()
-        async for event in stream:
-            yield event
-            match event:
-                case TextDelta(delta=delta):
-                    self._accumulate_text(turn.content, delta)
-                    if detector.feed(delta):
-                        note = "\n\n[Output truncated: repetitive content detected]"
-                        self._accumulate_text(turn.content, note)
-                        yield TextDelta(index=0, delta=note)
-                        turn.repeated = True
-                        return
-                case Refusal(text=text) if text:
-                    # A refusal is what the assistant said, and an empty turn is refused next time.
-                    self._accumulate_text(turn.content, text)
-                case TextSignature(signature=proof):
-                    self._sign_text(turn.content, proof)
-                case ReasoningDelta(delta=delta):
-                    self._accumulate_reasoning(turn.content, delta)
-                case ReasoningSignature(index=at, signature=proof, redacted=redacted, id=block_id):
-                    self._sign_reasoning(turn.content, proof, redacted, block_id, joining=at == turn.signed_at)
-                    turn.signed_at = at
-                case ImageOutput(data=data, media_type=mt):
-                    turn.content.append(ImageBlock(media_type=mt, data=data))
-                case AudioOutput(data=data, media_type=mt):
-                    turn.content.append(AudioBlock(media_type=mt, data=data))
-                case VideoOutput(data=data, media_type=mt):
-                    turn.content.append(VideoBlock(media_type=mt, data=data))
-                case ToolUseStart(tool_use_id=tid, name=name, signature=proof):
-                    turn.pending[tid] = _PendingCall(name=name, signature=proof)
-                case ToolInputDelta(tool_use_id=tid, partial_json=chunk) if tid in turn.pending:
-                    turn.pending[tid].json_parts.append(chunk)
-                case IterationEnd(usage=usage, stop_reason=reason):
-                    blocks, turn.malformed = self._finalize_pending_tools(turn.pending, usage)
-                    turn.content.extend(blocks)
-                    turn.pending.clear()
-                    turn.usage = turn.usage + usage
-                    turn.stop_reason = reason
-                    await context.add_context_tokens(usage.input_tokens, usage.output_tokens)
+        try:
+            async for event in stream:
+                yield event
+                match event:
+                    case TextDelta(delta=delta):
+                        self._accumulate_text(turn.content, delta)
+                        if detector.feed(delta):
+                            note = "\n\n[Output truncated: repetitive content detected]"
+                            self._accumulate_text(turn.content, note)
+                            yield TextDelta(index=0, delta=note)
+                            turn.repeated = True
+                            return
+                    case Refusal(text=text) if text:
+                        # A refusal is what the assistant said, and an empty turn is refused next time.
+                        self._accumulate_text(turn.content, text)
+                    case TextSignature(signature=proof):
+                        self._sign_text(turn.content, proof)
+                    case ReasoningDelta(delta=delta):
+                        self._accumulate_reasoning(turn.content, delta)
+                    case ReasoningSignature(index=at, signature=proof, redacted=redacted, id=block_id):
+                        self._sign_reasoning(turn.content, proof, redacted, block_id, joining=at == turn.signed_at)
+                        turn.signed_at = at
+                    case ImageOutput(data=data, media_type=mt):
+                        turn.content.append(ImageBlock(media_type=mt, data=data))
+                    case AudioOutput(data=data, media_type=mt):
+                        turn.content.append(AudioBlock(media_type=mt, data=data))
+                    case VideoOutput(data=data, media_type=mt):
+                        turn.content.append(VideoBlock(media_type=mt, data=data))
+                    case ToolUseStart(tool_use_id=tid, name=name, signature=proof):
+                        turn.pending[tid] = _PendingCall(name=name, signature=proof)
+                    case ToolInputDelta(tool_use_id=tid, partial_json=chunk) if tid in turn.pending:
+                        turn.pending[tid].json_parts.append(chunk)
+                    case IterationEnd(usage=usage, stop_reason=reason):
+                        blocks, turn.malformed = self._finalize_pending_tools(turn.pending, usage)
+                        turn.content.extend(blocks)
+                        turn.pending.clear()
+                        turn.usage = turn.usage + usage
+                        turn.stop_reason = reason
+                        await context.add_context_tokens(usage.input_tokens, usage.output_tokens)
+        finally:
+            # The turn is over whichever way this generator left the loop, and only an explicit
+            # close ends the transport's own generator with it. Left suspended, the HTTP response
+            # under it is released whenever the collector gets to it rather than when the turn
+            # ended, and the transport cannot tell a consumer that walked away from a stream that
+            # finished on its own.
+            if (close := getattr(stream, "aclose", None)) is not None:
+                await close()
 
     async def _dispatch_phase(
         self, blocks: list[ToolUseBlock], turn: _Turn, context: ContextStore, iteration: int
@@ -636,16 +666,29 @@ class Agent:
                 total_usage = total_usage + turn.usage
 
                 if turn.repeated:
-                    await self._append(context, Message(role="assistant", content=list(content)))
+                    # No IterationEnd arrived, so the turn carries neither its usage nor a reason.
+                    # What the transport reported while it streamed is all there is.
                     partial = getattr(self.transport, "last_usage", None)
-                    if partial:
-                        total_usage = total_usage + partial
-                    yield SessionEndEvent(stop_reason=StopReason.end_turn, total_usage=total_usage)
+                    if partial is None:
+                        logger.warning(
+                            "Repetition cut the turn short and %s reports no running usage, so this"
+                            " iteration's tokens are missing from the total",
+                            type(self.transport).__name__,
+                        )
+                        partial = Usage(input_tokens=0, output_tokens=0)
+                    total_usage = total_usage + partial
+                    await self._append(context, Message(role="assistant", content=list(content)))
+                    # Counted here as well: the message is stored either way, and a store that
+                    # never counted it drifts further from the real context size every time,
+                    # which is how autocompaction comes late.
+                    await context.add_context_tokens(partial.input_tokens, partial.output_tokens)
+                    yield SessionEndEvent(stop_reason=StopReason.repetition, total_usage=total_usage)
                     session_end_emitted = True
                     return
 
                 tool_blocks = [b for b in content if isinstance(b, ToolUseBlock)]
 
+                refused: list[ToolResultBlock] = []
                 if tool_blocks and stop_reason not in _DISPATCH:
                     # The run ends immediately after this regardless.
                     logger.warning(
@@ -653,8 +696,10 @@ class Agent:
                         len(tool_blocks),
                         stop_reason,
                     )
-                    # From the turn as well: a stored call with no result beside it is refused next.
-                    content[:] = [b for b in content if not isinstance(b, ToolUseBlock)]
+                    # The calls stay in the turn, each with a result beside it saying why it did
+                    # not run: a stored call with no result is refused by the provider next, and a
+                    # call with neither leaves the model no way to know it was ever attempted.
+                    refused = _refused_results(tool_blocks, stop_reason)
                     tool_blocks = []
 
                 if tool_blocks:
@@ -663,6 +708,12 @@ class Agent:
                     continue
 
                 await self._append(context, Message(role="assistant", content=list(content)))
+                if refused:
+                    await self._append(context, Message(role="user", content=list(refused)))
+                    # The transport already reported these calls as started, so a caller left with
+                    # no result for them shows a call that never resolves.
+                    for event in _result_events(refused, {b.id: b for b in content if isinstance(b, ToolUseBlock)}):
+                        yield event
 
                 match stop_reason:
                     case None:

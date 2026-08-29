@@ -43,6 +43,7 @@ class TestStopReason:
             StopReason.context_window_exceeded,
             StopReason.cancelled,
             StopReason.unknown,
+            StopReason.repetition,
         }
 
     def test_is_str(self) -> None:
@@ -77,12 +78,20 @@ class TestUsageDetail:
         assert usage.answer_tokens == 10
         assert usage.total_tokens == 150
 
-    def test_a_slice_that_escaped_its_total_shows_up_in_what_is_derived(self) -> None:
+    def test_a_slice_that_escaped_its_total_is_refused_where_it_is_built(self) -> None:
         # A transport that reads a provider's cache as outside the input when it is inside reports
-        # a hundred-thousand-token prompt as a handful, and this is where that surfaces.
-        wrong = Usage(100, 50, cache_read_tokens=900)
+        # a hundred-thousand-token prompt as a handful. Documented and unchecked, the mistake
+        # travelled as a negative remainder into every display, aggregate and cost built on it.
+        with pytest.raises(ValueError, match="inside input_tokens"):
+            Usage(100, 50, cache_read_tokens=900)
 
-        assert wrong.uncached_input_tokens < 0, "a negative remainder is how the mistake is visible"
+    def test_reasoning_cannot_outgrow_the_output_it_is_part_of(self) -> None:
+        with pytest.raises(ValueError, match="slice of output_tokens"):
+            Usage(100, 50, reasoning_tokens=60)
+
+    def test_a_negative_count_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="cannot be negative"):
+            Usage(-1, 0)
 
     def test_addition_carries_every_slice(self) -> None:
         first = Usage(10, 5, cache_read_tokens=4, cache_write_tokens=2, reasoning_tokens=3)

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import pytest
 
 from axio.agent import Agent
-from axio.blocks import ReasoningBlock, TextBlock, ToolUseBlock
+from axio.blocks import ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from axio.context import MemoryContextStore
 from axio.events import (
     AudioOutput,
@@ -604,17 +605,34 @@ class TestToolsAreNotRunForAFailedTurn:
             ]
         )
 
+    @staticmethod
+    def _echo() -> tuple[Tool[Any], list[str]]:
+        """An echo tool that records every run, so a test can say nothing ran at all."""
+        ran: list[str] = []
+
+        async def echo(msg: str) -> str:
+            ran.append(msg)
+            return msg
+
+        return Tool(name="echo", description="Returns input", handler=echo), ran
+
     async def test_a_failed_turn_does_not_run_its_calls(self) -> None:
         # The run ends immediately afterwards regardless, so running them buys nothing and acts on
         # output the transport has just reported as failed.
-        agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.refusal))
+        tool, ran = self._echo()
+        agent = Agent(system="", tools=[tool], transport=self._turn(StopReason.refusal))
         events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
-        assert not [e for e in events if isinstance(e, ToolResult)]
+        assert ran == []
+        # Reported all the same, and as an error: the transport announced the call as started, so
+        # a caller left with no result for it shows a call that never resolves.
+        assert [(e.tool_use_id, e.is_error) for e in events if isinstance(e, ToolResult)] == [("call_1", True)]
 
     async def test_a_declined_turn_does_not_run_its_calls(self) -> None:
-        agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.refusal))
+        tool, ran = self._echo()
+        agent = Agent(system="", tools=[tool], transport=self._turn(StopReason.refusal))
         events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
-        assert not [e for e in events if isinstance(e, ToolResult)]
+        assert ran == []
+        assert all(e.is_error for e in events if isinstance(e, ToolResult))
 
     async def test_a_turn_that_asked_for_them_still_runs_them(self) -> None:
         agent = Agent(system="", tools=[make_echo_tool()], transport=self._turn(StopReason.tool_use))
@@ -629,11 +647,14 @@ class TestToolsAreNotRunForAFailedTurn:
         assert [e.tool_use_id for e in events if isinstance(e, ToolResult)] == ["call_1"]
 
 
-class TestAnUnrunCallIsNotPersisted:
+class TestAnUnrunCallIsPersistedWithItsRefusal:
     async def test_a_failed_turn_leaves_no_orphan_call_in_the_history(self) -> None:
-        """Cleared from the dispatch list only, the call was still stored with no result beside it.
+        """The call is stored, and a result saying it did not run is stored beside it.
 
-        The next request then carried a call nothing answered, which Anthropic and Google refuse.
+        A call nothing answered is refused by Anthropic and Google on the next request. Dropping
+        the call closed that, and opened another: the next request then held no trace of the
+        attempt, so the model could not tell it from a turn that called nothing, and made the same
+        call again.
         """
         transport = StubTransport(
             [
@@ -651,7 +672,11 @@ class TestAnUnrunCallIsNotPersisted:
             pass
 
         stored = [b for m in await context.get_history() for b in m.content]
-        assert not [b for b in stored if isinstance(b, ToolUseBlock)]
+        calls = [b for b in stored if isinstance(b, ToolUseBlock)]
+        results = [b for b in stored if isinstance(b, ToolResultBlock)]
+        assert [b.id for b in calls] == ["call_1"]
+        assert [b.tool_use_id for b in results] == ["call_1"], "no call may be left without a result"
+        assert results[0].is_error and "refusal" in str(results[0].content)
 
     async def test_a_turn_that_asked_for_a_tool_still_stores_the_call(self) -> None:
         transport = StubTransport(
@@ -983,3 +1008,72 @@ async def test_a_turn_that_broke_after_reporting_its_cost_still_bills_for_it() -
 
     ends = [e for e in events if isinstance(e, SessionEndEvent)]
     assert ends[0].total_usage == Usage(1000, 500)
+
+
+class TestARepetitionCutIsReportedAsOne:
+    """`_RepetitionDetector` stops the turn mid-stream, and no IterationEnd follows it."""
+
+    #: Long enough to reach the detector's minimum, and a two-character period it fires on.
+    LOOP = "ab" * 500
+
+    @staticmethod
+    def _transport(usage: Usage | None = None) -> StubTransport:
+        transport = StubTransport([[TextDelta(0, TestARepetitionCutIsReportedAsOne.LOOP)]])
+        if usage is not None:
+            # What a transport that reports running totals has by the time the cut lands.
+            transport.last_usage = usage  # type: ignore[attr-defined]
+        return transport
+
+    async def test_the_caller_is_told_axio_cut_the_turn_and_not_that_it_finished(self) -> None:
+        agent = Agent(system="", transport=self._transport())
+        events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
+
+        ends = [e for e in events if isinstance(e, SessionEndEvent)]
+        assert [e.stop_reason for e in ends] == [StopReason.repetition]
+
+    async def test_the_tokens_of_the_turn_it_cut_are_counted_in_the_store(self) -> None:
+        # The message is appended either way. A store that never counted it drifts further from
+        # the real context size on every cut, and autocompaction fires late by that much.
+        context = MemoryContextStore()
+        agent = Agent(system="", transport=self._transport(Usage(120, 40)))
+
+        events = [e async for e in agent.run_stream("hi", context)]
+
+        assert await context.get_context_tokens() == (120, 40)
+        ends = [e for e in events if isinstance(e, SessionEndEvent)]
+        assert ends[0].total_usage == Usage(120, 40)
+
+    async def test_a_transport_with_nothing_to_report_says_so(self, caplog: pytest.LogCaptureFixture) -> None:
+        agent = Agent(system="", transport=self._transport())
+
+        with caplog.at_level(logging.WARNING, logger="axio.agent"):
+            async for _ in agent.run_stream("hi", MemoryContextStore()):
+                pass
+
+        assert any("missing from the total" in record.getMessage() for record in caplog.records)
+
+
+async def test_the_transport_stream_is_closed_when_the_turn_ends() -> None:
+    """Left suspended, the HTTP response under it is released by the collector and not by the turn.
+
+    The repetition cut returns from the middle of the loop, which is where this went unnoticed.
+    """
+    closed = False
+
+    class _Watched:
+        async def _generate(self) -> AsyncIterator[StreamEvent]:
+            nonlocal closed
+            try:
+                yield TextDelta(0, TestARepetitionCutIsReportedAsOne.LOOP)
+                yield IterationEnd(1, StopReason.end_turn, Usage(1, 1))
+            finally:
+                closed = True
+
+        def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:
+            return self._generate()
+
+    agent = Agent(system="", transport=cast(Any, _Watched()))
+    async for _ in agent.run_stream("hi", MemoryContextStore()):
+        pass
+
+    assert closed, "the turn ended without closing the stream it stopped reading"
