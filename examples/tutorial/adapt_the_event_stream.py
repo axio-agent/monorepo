@@ -114,7 +114,15 @@ async def verify_example() -> None:
         "type": "SessionEndEvent",
         "data": {
             "stop_reason": "end_turn",
-            "total_usage": {"input_tokens": 10, "output_tokens": 4},
+            "total_usage": {
+                "input_tokens": 10,
+                "output_tokens": 4,
+                # Every slice travels with the totals it sits inside, so a caller can bill a
+                # cached token and a written one at the rates each of them costs.
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            },
         },
     }
 
