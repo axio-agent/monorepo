@@ -527,7 +527,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             # was cut.
             raise StreamError("Anthropic stream ended without a stop_reason")
         stop = stop_reason_from(self.stop_reason, _STOP_REASON_MAP, provider="Anthropic")
-        usage = Usage(
+        usage = Usage.reported(
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cache_read_tokens=self.cache_read,

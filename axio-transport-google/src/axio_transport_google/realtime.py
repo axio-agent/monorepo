@@ -434,7 +434,7 @@ class GeminiLiveSession(RealtimeSession):
 def _build_usage(meta: dict[str, Any] | None) -> Usage | None:
     if not meta:
         return None
-    return Usage(
+    return Usage.reported(
         input_tokens=int(meta.get("promptTokenCount", 0) or 0),
         output_tokens=int(meta.get("responseTokenCount", meta.get("candidatesTokenCount", 0)) or 0),
     )

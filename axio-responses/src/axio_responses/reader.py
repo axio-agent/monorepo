@@ -433,7 +433,7 @@ class Responses(Reader[StreamEvent]):
 
     def _count(self, usage: ResponseUsage) -> None:
         """The token counts, whose slices this API reports inside their totals. Nothing is added."""
-        self.usage = Usage(
+        self.usage = Usage.reported(
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cache_read_tokens=usage.input_tokens_details.cached_tokens,

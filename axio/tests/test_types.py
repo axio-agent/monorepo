@@ -93,6 +93,35 @@ class TestUsageDetail:
         with pytest.raises(ValueError, match="cannot be negative"):
             Usage(-1, 0)
 
+
+class TestWhatAProviderReported:
+    """`reported()` is how a transport builds one, because a provider is not held to the rule.
+
+    Built directly, a report that breaks the rule raises, and a whole answer is lost over an
+    accounting discrepancy. Repaired here, the turn survives and the numbers stay usable.
+    """
+
+    def test_a_cache_slice_outside_its_total_raises_the_total(self) -> None:
+        # Anthropic counts only the tokens after the last cache breakpoint. A transport that did
+        # not add them back reported a hundred-thousand-token prompt as a handful.
+        usage = Usage.reported(50, 10, cache_read_tokens=100_000)
+
+        assert usage.input_tokens == 100_000, "the tokens were billed, so they are not thrown away"
+        assert usage.uncached_input_tokens == 0
+
+    def test_reasoning_outside_its_total_raises_the_total(self) -> None:
+        usage = Usage.reported(10, 5, reasoning_tokens=40)
+
+        assert (usage.output_tokens, usage.answer_tokens) == (40, 0)
+
+    def test_a_report_that_follows_the_rule_is_left_alone(self) -> None:
+        usage = Usage.reported(100, 50, cache_read_tokens=80, cache_write_tokens=5, reasoning_tokens=20)
+
+        assert usage == Usage(100, 50, cache_read_tokens=80, cache_write_tokens=5, reasoning_tokens=20)
+
+    def test_a_negative_count_never_reaches_the_derived_figures(self) -> None:
+        assert Usage.reported(-5, -1, cache_read_tokens=-3) == Usage(0, 0)
+
     def test_addition_carries_every_slice(self) -> None:
         first = Usage(10, 5, cache_read_tokens=4, cache_write_tokens=2, reasoning_tokens=3)
         second = Usage(20, 7, cache_read_tokens=1, cache_write_tokens=6, reasoning_tokens=2)

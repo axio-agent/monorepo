@@ -217,7 +217,7 @@ class OpenAIRealtimeSession(RealtimeSession):
             usage_data = resp.get("usage")
             usage: Usage | None = None
             if usage_data:
-                usage = Usage(
+                usage = Usage.reported(
                     input_tokens=usage_data.get("input_tokens", 0),
                     output_tokens=usage_data.get("output_tokens", 0),
                 )

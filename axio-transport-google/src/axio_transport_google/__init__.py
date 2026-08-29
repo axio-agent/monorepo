@@ -310,7 +310,7 @@ def _usage(um: UsageMetadata, *, final: bool = False) -> Usage:
     other way round and is already inside the prompt count. Read as reported, a thinking model
     billed its reasoning to nobody.
     """
-    usage = Usage(
+    usage = Usage.reported(
         input_tokens=um.promptTokenCount + um.toolUsePromptTokenCount,
         output_tokens=um.candidatesTokenCount + um.thoughtsTokenCount,
         cache_read_tokens=um.cachedContentTokenCount,

@@ -98,6 +98,9 @@ class Usage:
         Documented and unchecked, a provider report the transport converted wrongly gave
         ``uncached_input_tokens`` or ``answer_tokens`` below zero, and every display, aggregate,
         quota check and cost built on them was wrong with nothing saying so.
+
+        This raises, so a caller that builds one out of provider numbers must use ``reported()``,
+        which repairs the report instead of losing the turn it belongs to.
         """
         if min(self.input_tokens, self.output_tokens, self.cache_read_tokens) < 0:
             raise ValueError(f"token counts cannot be negative: {self}")
@@ -107,6 +110,49 @@ class Usage:
             raise ValueError(f"the cache slices are inside input_tokens, which is the grand total: {self}")
         if self.reasoning_tokens > self.output_tokens:
             raise ValueError(f"reasoning is a slice of output_tokens, which is the grand total: {self}")
+
+    @classmethod
+    def reported(
+        cls,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+    ) -> Usage:
+        """What a provider said, held to the rule above rather than trusted to follow it.
+
+        Constructed directly, a provider that reports a slice larger than the total it belongs to
+        fails ``__post_init__``, and a whole answer is lost over an accounting discrepancy. Every
+        transport reads its provider's numbers through here instead.
+
+        A slice that outgrew its total means the total was reported without it. The total is
+        therefore raised to hold the slices, which keeps the tokens the provider billed for; the
+        other repair, cutting the slice down, throws them away and under-reports the cost.
+        """
+        slices = max(0, cache_read_tokens) + max(0, cache_write_tokens)
+        if slices > input_tokens:
+            logger.warning(
+                "Provider reported %d cached input tokens inside %d; reading the total as exclusive",
+                slices,
+                input_tokens,
+            )
+            input_tokens = slices
+        if reasoning_tokens > output_tokens:
+            logger.warning(
+                "Provider reported %d reasoning tokens inside %d output; reading the total as exclusive",
+                reasoning_tokens,
+                output_tokens,
+            )
+            output_tokens = reasoning_tokens
+        return cls(
+            input_tokens=max(0, input_tokens),
+            output_tokens=max(0, output_tokens),
+            cache_read_tokens=max(0, cache_read_tokens),
+            cache_write_tokens=max(0, cache_write_tokens),
+            reasoning_tokens=max(0, reasoning_tokens),
+        )
 
     def __add__(self, other: Usage) -> Usage:
         return Usage(

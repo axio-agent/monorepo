@@ -666,7 +666,7 @@ class OpenAITransport(CompletionTransport, EmbeddingTransport):
 
             if data.usage is not None:
                 # The slices are reported inside their totals here, so nothing is added.
-                usage = Usage(
+                usage = Usage.reported(
                     input_tokens=data.usage.prompt_tokens,
                     output_tokens=data.usage.completion_tokens,
                     cache_read_tokens=data.usage.prompt_tokens_details.cached_tokens,
