@@ -5,6 +5,12 @@ description = "Interactive REPL coding assistant for Axio"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 keywords = ["llm", "agent", "ai", "repl", "coding-assistant"]
 dependencies = [
     "axio",

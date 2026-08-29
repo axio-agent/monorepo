@@ -5,6 +5,12 @@ description = "ChatGPT (Codex) OAuth transport for Axio using Responses API"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 keywords = ["llm", "agent", "ai", "openai", "chatgpt", "transport"]
 dependencies = ["axio", "axio-responses", "aiohttp>=3.11"]
 

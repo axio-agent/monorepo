@@ -4,6 +4,12 @@ version = "0.1.0"
 description = "Microphone and speaker helpers for Axio realtime agents"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 keywords = ["llm", "agent", "ai", "audio", "realtime", "sounddevice"]
 dependencies = ["axio", "sounddevice>=0.5", "numpy>=2"]
 
