@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 
 from .events import Error, Refusal, SessionEndEvent, StreamEvent, TextDelta
 from .exceptions import StreamError
+from .types import INCOMPLETE
+
+logger = logging.getLogger(__name__)
 
 
 class AgentStream:
@@ -31,9 +35,21 @@ class AgentStream:
             await self._generator.aclose()
 
     async def get_final_text(self) -> str:
+        """Everything the turn said, and nothing about whether it finished saying it.
+
+        A run ending on one of :data:`~axio.types.INCOMPLETE` returns a truncated answer that
+        reads exactly like a whole one, because a ``str`` has nowhere to put the reason. It is
+        logged as a warning here, and :meth:`get_session_end` carries it for a caller that needs
+        to branch on it. ``Error`` still raises, so a broken turn is never returned as an answer.
+        """
         parts: list[str] = []
         try:
             async for event in self:
+                if isinstance(event, SessionEndEvent) and event.stop_reason in INCOMPLETE:
+                    logger.warning(
+                        "Returning an answer the model did not finish: the run ended on %s",
+                        event.stop_reason,
+                    )
                 if isinstance(event, Error):
                     raise StreamError(str(event.exception)) from event.exception
                 if isinstance(event, TextDelta):

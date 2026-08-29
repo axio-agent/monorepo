@@ -67,3 +67,9 @@ class TestHowLongToWait:
     def test_the_caller_can_pass_anything_mapping_like(self) -> None:
         headers: Any = {"Retry-After": "0.5"}
         assert retry_delay(_Response(headers), 1) == 0.5
+
+
+def test_an_unusable_base_never_asks_asyncio_to_sleep_backwards() -> None:
+    # `base` is a caller's retry_base_delay and is checked nowhere on the way here.
+    assert retry_delay(None, 1, base=-5.0) == 0.0
+    assert retry_delay(None, 1, base=float("nan")) == 0.0

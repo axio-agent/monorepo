@@ -859,18 +859,40 @@ class AgentApp(App[None]):
         assert self._thinking is not None
         return self._thinking
 
-    async def _mount_thinking(self) -> _ThinkingWidget:
-        """A thinking widget at the end of the log, leaving the answer above it alone.
+    async def _mount_thinking(self, *, before_answer: bool = False) -> _ThinkingWidget:
+        """A thinking widget in the log, above the answer where the answer came first.
 
-        The marker for reasoning the provider withheld is mounted after the answer, not before it,
-        so it must not close the answer the way `_ensure_thinking` does.
+        Reasoning happens before the answer, so the marker belongs above it. `_ensure_thinking`
+        mounts at the end because there is no answer yet. The marker for reasoning the provider
+        withheld is mounted at `IterationEnd`, when the answer is already rendered, so it goes in
+        front of that widget instead of below it.
         """
         self._thinking = _ThinkingWidget()
         scroll = self.query_one("#log", VerticalScroll)
-        if scroll.is_attached:
+        if not scroll.is_attached:
+            return self._thinking
+        answer = self._current_md
+        if before_answer and answer is not None and answer.is_attached:
+            await scroll.mount(self._thinking, before=answer)
+        else:
             await scroll.mount(self._thinking)
             scroll.scroll_end(animate=False)
         return self._thinking
+
+    async def _close_thinking(self, tokens: int = 0) -> None:
+        """Fold the reasoning pane and let go of it, which is the only way to let go of it.
+
+        Cleared without folding, an expanded six-line pane was left in the transcript with nothing
+        pointing at it, and the next turn's reasoning went to a widget nobody could see.
+        """
+        if self._thinking is None:
+            return
+        self._thinking.collapse(tokens)
+        if self._thinking.empty:
+            # An iteration that neither reasoned nor was billed for it. A bare marker there says
+            # nothing and reads as a second turn.
+            await self._thinking.remove()
+        self._thinking = None
 
     async def _ensure_md(self) -> Markdown:
         if self._current_md is None:
@@ -1510,41 +1532,28 @@ class AgentApp(App[None]):
                                 w.complete(tid, is_error=is_error, content=content, tool_input=inp)
                             case IterationEnd(usage=usage):
                                 # One arm, or a turn that reasoned skips the status update below.
-                                thinking = self._thinking
-                                if thinking is None and usage.reasoning_tokens:
+                                if self._thinking is None and usage.reasoning_tokens:
                                     # Billed for reasoning and none of it streamed: the provider
-                                    # withheld it. The marker goes after the answer it belongs to.
-                                    thinking = await self._mount_thinking()
-                                if thinking is not None:
-                                    thinking.collapse(usage.reasoning_tokens)
-                                    if thinking.empty:
-                                        # An iteration that neither reasoned nor was billed for it.
-                                        # A bare marker there says nothing and reads as a second turn.
-                                        await thinking.remove()
-                                    self._thinking = None
+                                    # withheld it. The answer is already on screen, so the marker
+                                    # goes in front of it rather than under it.
+                                    await self._mount_thinking(before_answer=True)
+                                await self._close_thinking(usage.reasoning_tokens)
                                 self._agent_emoji = "✅"
                                 self._last_input_tokens = usage.input_tokens
                                 await self._update_status()
-                            case SessionEndEvent(stop_reason=reason) if reason in INCOMPLETE:
-                                # Nothing else says so. The answer stops mid-sentence and reads
-                                # exactly like one the model finished.
-                                await self._flush_text()
-                                await self._write_meta(f"[red]Incomplete: {reason}[/]")
-                                self._current_md = None
-                                self._response_text = ""
-                                self._declined = False
+                            case SessionEndEvent(stop_reason=reason):
+                                await self._close_thinking()
+                                if reason in INCOMPLETE:
+                                    # Nothing else says so. The answer stops mid-sentence and
+                                    # reads exactly like one the model finished. `_write_meta`
+                                    # flushes the text and closes the answer on its way.
+                                    await self._write_meta(f"[red]Incomplete: {reason}[/]")
+                                else:
+                                    await self._flush_text()
+                                    self._current_md = None
+                                    self._response_text = ""
+                                    self._declined = False
                                 self._tool_status = None
-                                self._thinking = None
-                            case SessionEndEvent():
-                                await self._flush_text()
-                                self._current_md = None
-                                self._response_text = ""
-                                self._declined = False
-                                self._tool_status = None
-                                # Cleared here as well as at IterationEnd: a turn that ended any
-                                # other way left this pointing at a collapsed widget, and the next
-                                # turn's reasoning was appended to the last turn's marker.
-                                self._thinking = None
                             case Error(exception=exc):
                                 await self._write_meta(f"[red]Error: {exc}[/]")
                 finally:
@@ -1567,7 +1576,7 @@ class AgentApp(App[None]):
             while not self._pending_input.empty():
                 self._pending_input.get_nowait()
             self._tool_status = None
-            self._thinking = None
+            await self._close_thinking()
             await self._update_status()
             if cancelled:
                 await self._flush_text()
@@ -1653,7 +1662,8 @@ class AgentApp(App[None]):
         self._response_text = ""
         self._declined = False
         self._tool_status = None
-        # Removed with every other child, so what is left here is a detached widget.
+        # Removed with every other child, so what is left here is a detached widget. Dropped
+        # rather than folded, because the pane it pointed at is gone with the rest of the log.
         self._thinking = None
         self._nav_index = None
 

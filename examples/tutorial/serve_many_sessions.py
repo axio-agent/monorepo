@@ -94,12 +94,14 @@ class CloudHarness:
     # [docs:start-serve-session-create]
     @staticmethod
     def _failed(opening: asyncio.Task[CloudSession]) -> bool:
-        """Whether this open finished and raised, which is the only reason to forget it."""
-        return (
-            opening.done()
-            and not opening.cancelled()
-            and opening.exception() is not None
-        )
+        """Whether this open finished without producing a session, which is when to forget it.
+
+        Cancelled counts. Kept, a cancelled open hands `CancelledError` to every later turn for
+        that ID for the life of the harness.
+        """
+        if not opening.done():
+            return False
+        return opening.cancelled() or opening.exception() is not None
 
     async def _session(self, session_id: str) -> CloudSession:
         async with self._registry_lock:

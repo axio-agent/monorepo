@@ -48,15 +48,15 @@ class StopReason(StrEnum):
     repetition = "repetition"
 
 
-#: Reasons that end a run holding an answer that is not finished. ``end_turn`` finished one;
-#: ``refusal`` and ``error`` announce themselves through events of their own. These say nothing
+#: Reasons that end a run holding an answer that is not finished, and say so nowhere else.
+#: ``end_turn`` finished one. ``refusal`` and ``error`` announce themselves through events of
+#: their own, and ``repetition`` writes its own note into the text it cut. These four say nothing
 #: unless the caller shows them, and a truncated answer then reads exactly like a whole one.
 INCOMPLETE: Final = frozenset(
     {
         StopReason.max_tokens,
         StopReason.context_window_exceeded,
         StopReason.cancelled,
-        StopReason.repetition,
         StopReason.unknown,
     }
 )

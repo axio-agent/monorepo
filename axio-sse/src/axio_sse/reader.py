@@ -199,10 +199,11 @@ class Reader[T]:
         async for event in events(chunks, until=until):
             produced = self.read(event, strict=strict)
             if not produced:
-                # An event this reader does not interpret yields nothing, so the consumer gets no
-                # turn on the loop. A stream that sends many of them in one read buffer — an
-                # endpoint that names one event family per tool it runs sends dozens — starved
-                # everything else until the buffer ran out, and a terminal UI stopped repainting.
+                # An event that became nothing gives the consumer no turn on the loop. A reader
+                # that forwards what it does not interpret produces something for those, so this
+                # is the set it names and deliberately does not read — lifecycle and progress
+                # events, of which one read buffer holds many. Left to run through, they starved
+                # everything else until the buffer ran out and a terminal UI stopped repainting.
                 await asyncio.sleep(0)
                 continue
             for made in produced:

@@ -78,9 +78,12 @@ def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> 
 
 
 def _bounded(seconds: float) -> float:
-    """A wait this process can actually sit through.
+    """A wait this process can actually sit through, and never a negative or unreal one.
 
-    Only figures already known to be a wait reach here: a header saying "nan" parses to a float
-    that fails the ``>= 0`` test above, and a date already past fails its own.
+    The header branches hand it a figure they have already checked. The fallback hands it
+    ``base``, which is a caller's ``retry_base_delay`` and is checked nowhere: negative, it asks
+    ``asyncio.sleep`` for a wait backwards, and NaN raises out of the retry loop.
     """
-    return min(seconds, _LONGEST_WAIT)
+    if seconds != seconds:  # NaN
+        return 0.0
+    return min(max(0.0, seconds), _LONGEST_WAIT)
