@@ -47,6 +47,7 @@ from axio.field import StrictStr
 from axio.models import Capability, ModelSpec
 from axio.tool import Tool
 from axio.tool_args import ToolArgStream
+from axio.types import INCOMPLETE
 from axio_tools_local.list_files import list_files
 from axio_tools_local.patch_file import patch_file
 from axio_tools_local.read_file import read_file
@@ -441,9 +442,13 @@ async def run_prompt(agent: Agent, ctx: MemoryContextStore, prompt: str) -> None
             case Error(exception=exc):
                 print(f"\n{RED}Error: {exc}{RESET}", file=sys.stderr)
 
-            case SessionEndEvent(total_usage=usage):
+            case SessionEndEvent(stop_reason=reason, total_usage=usage):
                 if in_text:
                     print()
+                if reason in INCOMPLETE:
+                    # Nothing else says so. The answer stops mid-sentence and reads exactly like
+                    # one the model finished.
+                    print(f"{RED}[incomplete: {reason}]{RESET}")
                 print(f"{DIM}[{usage.input_tokens}in/{usage.output_tokens}out tokens]{RESET}")
 
 

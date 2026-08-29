@@ -6,6 +6,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Final
 
 type ToolName = str
 type ToolCallID = str
@@ -45,6 +46,20 @@ class StopReason(StrEnum):
     #: finished from one cut off mid-word, which is the same objection this vocabulary raises
     #: against reading a truncated response as a whole one.
     repetition = "repetition"
+
+
+#: Reasons that end a run holding an answer that is not finished. ``end_turn`` finished one;
+#: ``refusal`` and ``error`` announce themselves through events of their own. These say nothing
+#: unless the caller shows them, and a truncated answer then reads exactly like a whole one.
+INCOMPLETE: Final = frozenset(
+    {
+        StopReason.max_tokens,
+        StopReason.context_window_exceeded,
+        StopReason.cancelled,
+        StopReason.repetition,
+        StopReason.unknown,
+    }
+)
 
 
 def stop_reason_from(raw: str, table: Mapping[str, StopReason], *, provider: str) -> StopReason:

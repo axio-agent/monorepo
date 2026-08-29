@@ -221,26 +221,29 @@ def _video_to_dict(block: VideoBlock) -> dict[str, Any]:
 
 @to_dict.register(ReasoningBlock)
 def _reasoning_to_dict(block: ReasoningBlock) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "type": "reasoning",
         "text": block.text,
-        "signature": block.signature,
         "redacted": block.redacted,
         "id": block.id,
-        "provider": block.provider,
     }
+    # Written only when there is one, as on every other block: an empty key on each of them grows
+    # every stored session for nothing.
+    if block.signature:
+        out["signature"] = block.signature
+    if block.provider:
+        out["provider"] = block.provider
+    return out
 
 
 @to_dict.register(ToolUseBlock)
 def _tool_use_to_dict(block: ToolUseBlock) -> dict[str, Any]:
-    return {
-        "type": "tool_use",
-        "id": block.id,
-        "name": block.name,
-        "input": block.input,
-        "signature": block.signature,
-        "provider": block.provider,
-    }
+    out: dict[str, Any] = {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+    if block.signature:
+        out["signature"] = block.signature
+    if block.provider:
+        out["provider"] = block.provider
+    return out
 
 
 @to_dict.register(ProviderBlock)

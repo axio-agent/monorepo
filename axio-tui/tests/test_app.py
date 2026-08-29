@@ -62,12 +62,14 @@ class TestTheThinkingWidget:
         assert w.shown == "[dim]✻ thinking · 938 tokens[/]"
 
     def test_the_count_arrives_after_the_fold(self) -> None:
-        # reasoning_tokens comes with IterationEnd, which is after the answer has started.
+        # reasoning_tokens comes with IterationEnd, which is after the answer has started and the
+        # pane has already folded. `collapse` is the one way in: it keeps the figure it has when
+        # called without one, and redraws when a later call brings it.
         w = _ThinkingWidget()
         w.add("x")
         w.collapse()
 
-        w.count(42)
+        w.collapse(42)
 
         assert "42 tokens" in w.shown
 

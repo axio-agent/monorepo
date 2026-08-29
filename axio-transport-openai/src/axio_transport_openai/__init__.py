@@ -15,7 +15,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Self
 
 import aiohttp
-from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.blocks import ImageBlock, ProviderBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from axio.events import (
     IterationEnd,
     IterationStart,
@@ -31,6 +31,7 @@ from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.retry import is_retryable, retry_delay
+from axio.schema import strip_title
 from axio.tool import Tool
 from axio.transport import CompletionTransport, EmbeddingTransport
 from axio.types import StopReason, Usage, stop_reason_from
@@ -317,7 +318,13 @@ def _chat_messages(messages: list[Message], system: str) -> list[dict[str, Any]]
             text_parts: list[str] = []
             tool_calls: list[dict[str, Any]] = []
             for b in msg.content:
-                if isinstance(b, TextBlock):
+                if isinstance(b, (ReasoningBlock, ProviderBlock)):
+                    # DEBUG and not a warning, unlike `proof()` one layer over: this endpoint has
+                    # no field for either, so leaving them out is the shape of the request rather
+                    # than a loss. A session whose history holds reasoning would otherwise warn on
+                    # every request it sends here.
+                    logger.debug("Chat completions has no place for a %s; leaving it out", type(b).__name__)
+                elif isinstance(b, TextBlock):
                     text_parts.append(b.text)
                 elif isinstance(b, ToolUseBlock):
                     tool_calls.append(
@@ -367,7 +374,7 @@ def _chat_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
             "function": {
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.input_schema,
+                "parameters": strip_title(tool.input_schema),
             },
         }
         for tool in tools

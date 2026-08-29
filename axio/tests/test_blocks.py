@@ -140,14 +140,9 @@ class TestToDict:
 
     def test_tool_use(self) -> None:
         d = to_dict(ToolUseBlock(id="c1", name="echo", input={"x": 1}))
-        assert d == {
-            "type": "tool_use",
-            "id": "c1",
-            "name": "echo",
-            "input": {"x": 1},
-            "signature": "",
-            "provider": "",
-        }
+        # No empty signature and no empty provider: an unsigned call is the common one, and a key
+        # for each on every stored call grows a session for nothing.
+        assert d == {"type": "tool_use", "id": "c1", "name": "echo", "input": {"x": 1}}
 
     def test_tool_result_str(self) -> None:
         d = to_dict(ToolResultBlock(tool_use_id="c1", content="ok"))

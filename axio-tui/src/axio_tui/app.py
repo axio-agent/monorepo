@@ -35,6 +35,7 @@ from axio.permission import PermissionGuard
 from axio.selector import ToolSelector
 from axio.tool import Tool
 from axio.tool_args import ToolArgStream
+from axio.types import INCOMPLETE
 from axio_context_sqlite import SQLiteContextStore
 from pygments.token import Token  # type: ignore[import-untyped]
 from rich.markup import escape
@@ -199,12 +200,6 @@ class _ThinkingWidget(Static):
         unverified organisation. Worth saying, because the tokens are billed either way.
         """
         return bool(self._tokens) and not self._chars
-
-    def count(self, tokens: int) -> None:
-        """The provider's own figure, which arrives after the answer has started."""
-        self._tokens = tokens
-        if self._done:
-            self._draw()
 
     def _draw(self) -> None:
         if self._done:
@@ -852,16 +847,29 @@ class AgentApp(App[None]):
         scroll.scroll_end(animate=False)
 
     async def _ensure_thinking(self) -> _ThinkingWidget:
-        """The widget this turn's reasoning goes to, mounted the first time there is any."""
+        """The widget this turn's reasoning goes to, mounted the first time there is any.
+
+        Reasoning arrives before the answer, so the answer being written is closed first.
+        """
         if self._thinking is None:
             await self._flush_text()
             self._current_md = None
             self._response_text = ""
-            self._thinking = _ThinkingWidget()
-            scroll = self.query_one("#log", VerticalScroll)
-            if scroll.is_attached:
-                await scroll.mount(self._thinking)
-                scroll.scroll_end(animate=False)
+            await self._mount_thinking()
+        assert self._thinking is not None
+        return self._thinking
+
+    async def _mount_thinking(self) -> _ThinkingWidget:
+        """A thinking widget at the end of the log, leaving the answer above it alone.
+
+        The marker for reasoning the provider withheld is mounted after the answer, not before it,
+        so it must not close the answer the way `_ensure_thinking` does.
+        """
+        self._thinking = _ThinkingWidget()
+        scroll = self.query_one("#log", VerticalScroll)
+        if scroll.is_attached:
+            await scroll.mount(self._thinking)
+            scroll.scroll_end(animate=False)
         return self._thinking
 
     async def _ensure_md(self) -> Markdown:
@@ -1502,8 +1510,12 @@ class AgentApp(App[None]):
                                 w.complete(tid, is_error=is_error, content=content, tool_input=inp)
                             case IterationEnd(usage=usage):
                                 # One arm, or a turn that reasoned skips the status update below.
-                                if usage.reasoning_tokens or self._thinking is not None:
-                                    thinking = await self._ensure_thinking()
+                                thinking = self._thinking
+                                if thinking is None and usage.reasoning_tokens:
+                                    # Billed for reasoning and none of it streamed: the provider
+                                    # withheld it. The marker goes after the answer it belongs to.
+                                    thinking = await self._mount_thinking()
+                                if thinking is not None:
                                     thinking.collapse(usage.reasoning_tokens)
                                     if thinking.empty:
                                         # An iteration that neither reasoned nor was billed for it.
@@ -1513,12 +1525,26 @@ class AgentApp(App[None]):
                                 self._agent_emoji = "✅"
                                 self._last_input_tokens = usage.input_tokens
                                 await self._update_status()
+                            case SessionEndEvent(stop_reason=reason) if reason in INCOMPLETE:
+                                # Nothing else says so. The answer stops mid-sentence and reads
+                                # exactly like one the model finished.
+                                await self._flush_text()
+                                await self._write_meta(f"[red]Incomplete: {reason}[/]")
+                                self._current_md = None
+                                self._response_text = ""
+                                self._declined = False
+                                self._tool_status = None
+                                self._thinking = None
                             case SessionEndEvent():
                                 await self._flush_text()
                                 self._current_md = None
                                 self._response_text = ""
                                 self._declined = False
                                 self._tool_status = None
+                                # Cleared here as well as at IterationEnd: a turn that ended any
+                                # other way left this pointing at a collapsed widget, and the next
+                                # turn's reasoning was appended to the last turn's marker.
+                                self._thinking = None
                             case Error(exception=exc):
                                 await self._write_meta(f"[red]Error: {exc}[/]")
                 finally:
@@ -1541,6 +1567,7 @@ class AgentApp(App[None]):
             while not self._pending_input.empty():
                 self._pending_input.get_nowait()
             self._tool_status = None
+            self._thinking = None
             await self._update_status()
             if cancelled:
                 await self._flush_text()
@@ -1626,6 +1653,8 @@ class AgentApp(App[None]):
         self._response_text = ""
         self._declined = False
         self._tool_status = None
+        # Removed with every other child, so what is left here is a detached widget.
+        self._thinking = None
         self._nav_index = None
 
     def action_quit(self) -> None:  # type: ignore[override]

@@ -43,7 +43,7 @@ from .selector import ToolSelector
 from .stream import AgentStream
 from .tool import CONTEXT, Tool
 from .transport import CompletionTransport, RealtimeSession, RealtimeTransport
-from .types import StopReason, Usage
+from .types import INCOMPLETE, StopReason, Usage
 
 __all__ = [
     "Agent",
@@ -72,6 +72,7 @@ __all__ = [
     "RealtimeAgent",
     "RealtimeSession",
     "RealtimeTransport",
+    "INCOMPLETE",
     "ProviderBlock",
     "ReasoningBlock",
     "ReasoningDelta",
