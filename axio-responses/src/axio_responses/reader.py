@@ -298,7 +298,10 @@ class Responses(Reader[StreamEvent]):
     def _completed(self, wire: Completed) -> None:
         response = wire.response
         self._count(response.usage)
-        status = response.status or "completed"
+        # Not `or "completed"`: a missing or wrongly typed status reads as the empty string here,
+        # and coercing it to success made an envelope that never said it finished into a whole
+        # answer. Unnamed, it falls to the raise below with the empty string as its name.
+        status = response.status
         if self.stop_reason == StopReason.refusal:
             # The status enum has no refusal member, so a declined response still completes.
             pass
@@ -310,7 +313,12 @@ class Responses(Reader[StreamEvent]):
         else:
             self.stop_reason = STOP_REASONS[status]
             # A finished response still holding a call is a turn that wants the tool run first.
-            if any(item.type == "function_call" for item in response.output):
+            # Only a finished one: `cancelled`, `content_filter` and `max_output_tokens` also
+            # arrive here carrying the calls the turn had streamed before it stopped. Rewritten to
+            # tool_use they pass the agent's dispatch gate, and half a turn's calls run.
+            if self.stop_reason is StopReason.end_turn and any(
+                item.type == "function_call" for item in response.output
+            ):
                 self.stop_reason = StopReason.tool_use
         logger.info(
             "Response completed: status=%s, stop=%s, in=%d, out=%d",

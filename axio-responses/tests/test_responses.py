@@ -22,7 +22,7 @@ from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.tool import Tool
 from axio.types import StopReason, Usage
-from axio_sse import Event, UnknownEvent
+from axio_sse import Event, MalformedPayload, UnknownEvent
 
 from axio_responses import Responses, convert_messages, convert_tools
 
@@ -509,6 +509,30 @@ def test_a_failed_status_is_raised_and_not_returned() -> None:
         _reads(Responses(), type="response.completed", response={"status": "failed", "usage": {}})
 
 
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        ("cancelled", StopReason.cancelled),
+        ("content_filter", StopReason.refusal),
+        ("max_output_tokens", StopReason.max_tokens),
+        ("length", StopReason.max_tokens),
+    ],
+)
+def test_a_turn_cut_short_keeps_its_reason_even_holding_a_call(status: str, expected: StopReason) -> None:
+    """A stopped turn streams the calls it had already begun, and the envelope still names why.
+
+    Rewritten to tool_use the reason passes the agent's dispatch gate, which admits tool_use, and
+    the half-written calls of a cancelled or filtered turn run.
+    """
+    reader = Responses()
+    _reads(
+        reader,
+        type="response.completed",
+        response={"status": status, "usage": {}, "output": [{"type": "function_call"}]},
+    )
+    assert reader.finished().stop_reason is expected
+
+
 def test_an_unknown_status_is_not_rescued_by_a_pending_tool_call() -> None:
     # The calls are real output, but an unrecognised status says the turn is not known to have
     # succeeded, so running the tool on it would act on a response nobody vouched for.
@@ -704,3 +728,18 @@ def test_a_dropped_reasoning_block_does_not_split_the_text_around_it() -> None:
     _, items = convert_messages([turn], "")
 
     assert items == [{"role": "assistant", "content": "ab"}]
+
+
+def test_a_completed_envelope_with_no_status_is_not_read_as_success() -> None:
+    # `response.status or "completed"` turned a missing or wrongly typed status into a finished
+    # answer, one line above the raise that refuses a status the table does not know.
+    with pytest.raises(StreamError, match="unknown status"):
+        _reads(Responses(), type="response.completed", response={"usage": {}})
+
+
+def test_a_corrupt_event_stops_the_turn_instead_of_shortening_it() -> None:
+    # Skipped, the deltas before it stood, the completion after it still reported success, and the
+    # caller was handed a partial answer with nothing saying anything was lost.
+    reader = Responses()
+    with pytest.raises(MalformedPayload):
+        reader.read(Event(data='{"type": "response.output_text.delta", "delta": '))
