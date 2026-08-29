@@ -840,6 +840,35 @@ class TestWhereOneTextBlockEnds:
 
         assert stored == [("signed", "S1"), ("after", "")]
 
+    async def test_a_proof_covers_the_part_it_was_issued_for_and_no_more(self) -> None:
+        # Gemini signs the part it issued the proof for. Merged into the run before it, the stored
+        # proof covered text the provider never signed, and the replay is refused.
+        stored = await self._stored(
+            [
+                TextDelta(0, "unsigned "),
+                TextDelta(1, "signed"),
+                TextSignature(index=1, signature="S1"),
+                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+            ]
+        )
+
+        assert stored == [("unsigned ", ""), ("signed", "S1")]
+
+    async def test_an_unsigned_run_is_still_one_block(self) -> None:
+        # The other half of the same rule: only a proof cuts the run, so an answer that arrives as
+        # many parts and is signed once at the end is not one block per part.
+        stored = await self._stored(
+            [
+                TextDelta(0, "one "),
+                TextDelta(1, "two "),
+                TextDelta(2, "three"),
+                TextSignature(index=2, signature="S1"),
+                IterationEnd(1, StopReason.end_turn, Usage(1, 1)),
+            ]
+        )
+
+        assert stored == [("one two ", ""), ("three", "S1")]
+
 
 class TestOnlyVouchedForCallsRun:
     """The turn must say it finished before anything it produced is acted on."""

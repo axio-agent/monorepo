@@ -267,6 +267,10 @@ class _Turn:
     repeated: bool = False
     #: Which block the last proof was for. A repeated index continues that proof.
     signed_at: int | None = None
+    #: Which part the last text delta came from, and where that part's text starts inside the
+    #: block it was merged into. A proof covers one part, so that offset is where to cut.
+    text_at: int | None = None
+    text_from: int = 0
 
 
 @dataclass(slots=True)
@@ -425,11 +429,18 @@ class Agent:
         content: list[TurnBlock],
         data: str,
         provider: str = "",
+        signs_from: int = 0,
     ) -> None:
         """Attach the provider's proof to the answer text it belongs to.
 
         The proof arrives after the text it signs, so it goes on the nearest text still unsigned.
         Put on a reasoning block or a call instead, it is replayed on a part nobody signed.
+
+        ``signs_from`` is where the signed part's text begins inside that block. Google signs the
+        part it issued the proof for, and an answer reaches this vocabulary as a run of parts
+        merged into one block, so a proof stored over the whole run covers text the provider never
+        signed. The block is cut there: what came before keeps no proof, and what was signed
+        carries its own.
         """
         at = _last_unsigned(content, TextBlock)
         if at is None:
@@ -437,7 +448,13 @@ class Agent:
             # replayed to the provider as content it never produced.
             logger.warning("Dropping a text signature with no text to attach it to")
             return
-        content[at] = replace(content[at], signature=data, provider=provider)  # type: ignore[arg-type]
+        block = content[at]
+        assert isinstance(block, TextBlock)  # noqa: S101 - _last_unsigned looked for this kind
+        if 0 < signs_from < len(block.text):
+            content[at] = replace(block, text=block.text[:signs_from])
+            content.insert(at + 1, TextBlock(text=block.text[signs_from:], signature=data, provider=provider))
+            return
+        content[at] = replace(block, signature=data, provider=provider)
 
     @staticmethod
     def _finalize_pending_tools(
@@ -518,7 +535,14 @@ class Agent:
             async for event in stream:
                 yield event
                 match event:
-                    case TextDelta(delta=delta):
+                    case TextDelta(index=at, delta=delta):
+                        if at != turn.text_at:
+                            # A new part joins the run being built. Where it starts is where a
+                            # proof for it has to cut, so it signs its own text and nothing before.
+                            last = turn.content[-1] if turn.content else None
+                            merging = isinstance(last, TextBlock) and not last.signature
+                            turn.text_from = len(last.text) if isinstance(last, TextBlock) and merging else 0
+                            turn.text_at = at
                         self._accumulate_text(turn.content, delta)
                         if detector.feed(delta):
                             note = "\n\n[Output truncated: repetitive content detected]"
@@ -527,10 +551,14 @@ class Agent:
                             turn.repeated = True
                             return
                     case Refusal(text=text) if text:
-                        # A refusal is what the assistant said, and an empty turn is refused next time.
+                        # Stored whoever wrote it — the model declining, or the provider explaining
+                        # a block. A turn with no content is refused by the next request, and this
+                        # is the only account of the decline there is. `Refusal.spoken` keeps the
+                        # two apart for a consumer that renders them differently.
                         self._accumulate_text(turn.content, text)
                     case TextSignature(signature=proof, provider=provider):
-                        self._sign_text(turn.content, proof, provider)
+                        self._sign_text(turn.content, proof, provider, turn.text_from)
+                        turn.text_from = 0
                     case ReasoningDelta(delta=delta):
                         self._accumulate_reasoning(turn.content, delta)
                     case ReasoningSignature(
