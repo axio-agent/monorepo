@@ -92,27 +92,34 @@ class CloudHarness:
         self._closed = False
 
     # [docs:start-serve-session-create]
+    @staticmethod
+    def _failed(opening: asyncio.Task[CloudSession]) -> bool:
+        """Whether this open finished and raised, which is the only reason to forget it."""
+        return (
+            opening.done()
+            and not opening.cancelled()
+            and opening.exception() is not None
+        )
+
     async def _session(self, session_id: str) -> CloudSession:
         async with self._registry_lock:
             if self._closed:
                 raise RuntimeError("harness is closed")
 
             opening = self._sessions.get(session_id)
+            if opening is not None and self._failed(opening):
+                # A session that would not open is not a session. Kept, its failure is handed to
+                # every later turn for that ID; dropped here, the next request tries again.
+                opening = None
             if opening is None:
                 opening = asyncio.create_task(self._open(session_id))
                 self._sessions[session_id] = opening
 
-        # Started under the lock and awaited outside it. Held while the container starts, one
-        # cold session made every other session's first turn wait behind its image pull.
-        try:
-            return await asyncio.shield(opening)
-        except BaseException:
-            # A session that would not open is not a session. Left in the registry, its failure
-            # is handed to every later turn for that ID.
-            async with self._registry_lock:
-                if self._sessions.get(session_id) is opening:
-                    del self._sessions[session_id]
-            raise
+        # Started under the lock and awaited outside it. Held while the container starts, one cold
+        # session made every other session's first turn wait behind its image pull. `shield` keeps
+        # the open running when this caller gives up: it is already creating a container, and a
+        # caller walking away is not a reason to lose track of it.
+        return await asyncio.shield(opening)
 
     async def _open(self, session_id: str) -> CloudSession:
         resources = AsyncExitStack()
