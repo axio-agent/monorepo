@@ -53,6 +53,14 @@ class Payload(dict[str, Any]):
         return [Payload(one) for one in found if isinstance(one, dict)]
 
 
+class MalformedPayload(ValueError):
+    """An event that carried data no reader can act on.
+
+    Raised rather than skipped: the stream said this event mattered, and there is no way to
+    continue reading it that does not report a partial turn as a whole one.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class Event:
     """One dispatched event, with the four fields the format defines."""
@@ -74,24 +82,23 @@ class Event:
         return self.event or "message"
 
     def payload(self) -> Payload | None:
-        """This event's JSON object, or None when it carries none.
+        """This event's JSON object, or None where the event carries no data at all.
 
-        Junk is skipped rather than raised: one unreadable event must not end a turn that was
-        working. It is a warning only where the data opens as an object. Anything else is a
-        sentinel the caller did not name in ``until``, and one warning per turn is noise.
+        Data that will not parse raises. Skipped instead, a text or tool-call event whose JSON
+        arrived corrupt was dropped, the completion event after it still reported success, and the
+        caller got a short answer or half a tool's arguments with nothing saying anything was lost.
+
+        A sentinel such as ``[DONE]`` is data too, and reaches here as junk. Name it in ``until``,
+        which ends the stream before it is read.
         """
         if not self.data:
             return None
         try:
             got = json.loads(self.data)
-        except json.JSONDecodeError:
-            log.log(
-                logging.WARNING if self.data.startswith("{") else logging.DEBUG,
-                "payload is not JSON, skipping: %.80s",
-                self.data,
-            )
-            return None
+        except json.JSONDecodeError as exc:
+            log.error("payload is not JSON: %.80s", self.data)
+            raise MalformedPayload(f"event {self.name!r} carries data that is not JSON: {exc}") from exc
         if not isinstance(got, dict):
-            log.warning("payload is not an object, skipping: %.80s", self.data)
-            return None
+            log.error("payload is not an object: %.80s", self.data)
+            raise MalformedPayload(f"event {self.name!r} carries {type(got).__name__} and not an object")
         return Payload(got)

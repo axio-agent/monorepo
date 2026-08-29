@@ -170,11 +170,12 @@ class Reader[T]:
 
     def read(self, event: Event, *, strict: bool = False) -> list[T]:
         """Everything this one event became, empty where it became nothing."""
+        # Latched first, so a nested unknown obeys the same policy as a top-level one, and so a
+        # read that raises before its handler runs has not left the last read's policy on self.
+        self._strict = strict
         payload = event.payload()
         if payload is None:
             return []
-        # Latched for the read, so a nested unknown obeys the same policy as a top-level one.
-        self._strict = strict
         name = event.name if self._by == EVENT_NAME else payload.string(self._by)
         claimed = self._handlers.get(name)
         if claimed is None:

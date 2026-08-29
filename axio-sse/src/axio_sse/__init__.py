@@ -20,8 +20,8 @@ the day the provider sends something new.
 This module knows nothing about HTTP and imports no client.
 """
 
-from .decoder import Decoder
-from .event import Event, Payload
+from .decoder import Decoder, EventTooLarge
+from .event import Event, MalformedPayload, Payload
 from .reader import EVENT_NAME, Handled, Reader, UnknownEvent, on
 from .stream import events, payloads
 from .wire import Wire
@@ -30,7 +30,9 @@ __all__ = [
     "EVENT_NAME",
     "Decoder",
     "Event",
+    "EventTooLarge",
     "Handled",
+    "MalformedPayload",
     "Payload",
     "Reader",
     "UnknownEvent",

@@ -5,20 +5,28 @@ import logging
 
 import pytest
 
-from axio_sse import Event, Payload
+from axio_sse import Event, MalformedPayload, Payload
 
 
-async def test_an_unnamed_sentinel_is_quiet_and_a_broken_payload_is_not(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.DEBUG, logger="axio.sse"):
-        assert Event(data="[DONE]").payload() is None
-        assert Event(data="{not json").payload() is None
-    levels = [record.levelno for record in caplog.records]
-    assert levels == [logging.DEBUG, logging.WARNING]
+async def test_a_broken_payload_is_reported_before_it_raises(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.DEBUG, logger="axio.sse"), pytest.raises(MalformedPayload):
+        Event(data="{not json").payload()
+    assert [record.levelno for record in caplog.records] == [logging.ERROR]
 
 
-async def test_a_payload_that_is_not_json_is_skipped_rather_than_fatal() -> None:
-    assert Event(data="{not json").payload() is None
-    assert Event(data="[1,2]").payload() is None
+@pytest.mark.parametrize("data", ["{not json", "[1,2]", "[DONE]"])
+async def test_data_that_will_not_read_fails_the_stream(data: str) -> None:
+    """Skipped instead, the events after it still finished the turn and reported success.
+
+    A caller then got a short answer, or half a tool's arguments, with nothing saying that a
+    delta had been dropped. A sentinel is data too: name it in `until` rather than let it through.
+    """
+    with pytest.raises(MalformedPayload):
+        Event(data=data).payload()
+
+
+async def test_an_event_with_no_data_carries_no_payload() -> None:
+    # A name with no data is not corruption. The format allows it, and it reads as nothing.
     assert Event(data="").payload() is None
 
 

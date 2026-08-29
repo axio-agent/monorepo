@@ -19,6 +19,16 @@ _MIN_PIECE = 4096
 #: refuses, and CPython refuses to parse past 4300 digits.
 _RETRY_DIGITS: Final = 18
 
+#: How large one event may grow before the decoder refuses it, in characters. Nothing in the
+#: format ends an event but a blank line, so an endpoint that never sends one — or a line that
+#: never terminates — is held in full until the process runs out of memory. Generous enough that
+#: no real event meets it: an inline base64 image is the largest thing any of these streams carry.
+MAX_EVENT: Final = 32 * 1024 * 1024
+
+
+class EventTooLarge(ValueError):
+    """One event grew past the decoder's limit, and the stream was refused rather than held."""
+
 
 class Decoder:
     """The format as a state machine: feed it chunks, take the events they completed.
@@ -35,6 +45,9 @@ class Decoder:
     """
 
     __slots__ = (
+        "_limit",
+        "_pending",
+        "_data_size",
         "_text",
         "_held",
         "_parts",
@@ -48,7 +61,8 @@ class Decoder:
         "_retry",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, limit: int = MAX_EVENT) -> None:
+        self._limit = limit
         self.reset()
 
     def reset(self) -> None:
@@ -56,9 +70,15 @@ class Decoder:
         # What has arrived. ``utf-8-sig`` strips a leading byte order mark, which the format
         # requires. ``_parts`` holds chunks apart until a terminator arrives, because joining each
         # one into the buffer copies the whole held event again.
-        self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="replace")
+        # ``strict``, not ``replace``: the same stream carries the base64 of a signature and of
+        # encrypted reasoning, which a provider refuses on replay if one character changed. A
+        # U+FFFD substituted there is invisible until that later request fails, with nothing left
+        # locally to point at the decode.
+        self._text = codecs.getincrementaldecoder("utf-8-sig")(errors="strict")
         self._parts: list[str] = []
         self._held = ""
+        #: Characters held that no line has taken yet, against ``_limit``.
+        self._pending = 0
         self._start = 0
         self._scan = 0
         self._opened = False
@@ -66,6 +86,7 @@ class Decoder:
 
         # What the lines read so far have collected, for the next dispatch.
         self._data: list[str] = []
+        self._data_size = 0
         self._event = ""
         self._id = ""
         self._retry: int | None = None
@@ -114,7 +135,12 @@ class Decoder:
                 # The pending bytes stay: they are half a character, not a mark.
                 self._text.setstate((self._text.getstate()[0], 0))
         if final:
-            text += self._text.decode(b"", True)
+            try:
+                text += self._text.decode(b"", True)
+            except UnicodeDecodeError:
+                # The stream stopped mid-character. Whatever it was carrying never reached its
+                # blank line either, and `_forget` drops that; half a character is the same loss.
+                pass
         if self._trailing_cr:
             text, self._trailing_cr = "\r" + text, False
         if text.endswith("\r") and not final:
@@ -132,6 +158,9 @@ class Decoder:
             self._parts[-1] += text
         else:
             self._parts.append(text)
+        self._pending += len(text)
+        if self._pending > self._limit:
+            raise EventTooLarge(f"a line ran past {self._limit} characters with no terminator")
 
     def _compact(self) -> None:
         """Drop the lines already read, once they outweigh what is left."""
@@ -145,8 +174,8 @@ class Decoder:
         Dispatched instead, a connection cut between a frame and the blank line after it makes a
         truncated turn read as a finished one.
         """
-        self._held, self._start, self._scan = "", 0, 0
-        self._data, self._event, self._retry = [], "", None
+        self._held, self._start, self._scan, self._pending = "", 0, 0, 0
+        self._data, self._data_size, self._event, self._retry = [], 0, "", None
 
     def _join(self) -> None:
         """Make the held text one string again, and drop the lines already read."""
@@ -176,6 +205,7 @@ class Decoder:
             self._scan = len(held)
             return None
         line = held[self._start : at]
+        self._pending -= after - self._start
         self._start = self._scan = after
         return line
 
@@ -191,7 +221,7 @@ class Decoder:
     def _dispatch(self) -> Event:
         made = Event(data="\n".join(self._data), event=self._event, id=self._id, retry=self._retry)
         # The id survives dispatch, per the format: it is the stream's position, not this event's.
-        self._data, self._event, self._retry = [], "", None
+        self._data, self._data_size, self._event, self._retry = [], 0, "", None
         return made
 
     def _read(self, line: str) -> Event | None:
@@ -200,7 +230,7 @@ class Decoder:
             # must not become a stream of empty events.
             if self._collected():
                 return self._dispatch()
-            self._data, self._event = [], ""
+            self._data, self._data_size, self._event = [], 0, ""
             return None
         if line.startswith(":"):
             return None  # comment line
@@ -208,6 +238,9 @@ class Decoder:
         value = value.removeprefix(" ")  # exactly one space, per the format
         if name == "data":
             self._data.append(value)
+            self._data_size += len(value) + 1
+            if self._data_size > self._limit:
+                raise EventTooLarge(f"an event collected more than {self._limit} characters of data")
         elif name == "event":
             self._event = value
         elif name == "id" and "\0" not in value:

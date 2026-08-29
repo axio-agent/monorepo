@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from axio_sse import Decoder, Event
+from axio_sse.decoder import EventTooLarge
 
 #: The `read` fixture, typed where it is used. Importing this from conftest only resolves
 #: when this package is pytest's rootdir, which breaks collection from the repository root.
@@ -325,3 +326,46 @@ def test_only_the_first_mark_is_stripped(as_bytes: bool) -> None:
     made = Decoder().decode(stream.encode() if as_bytes else stream, final=True)
 
     assert made == []
+
+
+def test_a_line_that_never_ends_is_refused_rather_than_held() -> None:
+    # Nothing in the format ends an event but a blank line, so a stream that sends neither grew
+    # the buffer until the process ran out of memory.
+    decoder = Decoder(limit=1024)
+
+    with pytest.raises(EventTooLarge, match="no terminator"):
+        for _ in range(10):
+            decoder.decode(b"x" * 256)
+
+
+def test_an_event_that_never_dispatches_is_refused_too() -> None:
+    # Terminated lines, so nothing is held; the data buffer they fill is what grows.
+    decoder = Decoder(limit=1024)
+
+    with pytest.raises(EventTooLarge, match="of data"):
+        for _ in range(10):
+            decoder.decode(b"data: " + b"x" * 256 + b"\n")
+
+
+def test_the_limit_measures_one_event_and_not_the_stream() -> None:
+    decoder = Decoder(limit=1024)
+
+    made = [event for _ in range(10) for event in decoder.decode(b"data: " + b"x" * 256 + b"\n\n")]
+
+    assert len(made) == 10, "each event dispatched, so none of them added to the next"
+
+
+def test_a_byte_that_is_not_utf8_fails_the_stream() -> None:
+    # The same stream carries the base64 of a signature and of encrypted reasoning, which the
+    # provider refuses on replay if one character changed. Replaced by U+FFFD the block is stored
+    # as if intact, and the only symptom arrives a request later.
+    with pytest.raises(UnicodeDecodeError):
+        Decoder().decode(b'data: {"signature":"\xff\xfe"}\n\n')
+
+
+def test_a_stream_cut_mid_character_still_gives_up_what_completed() -> None:
+    decoder = Decoder()
+
+    made = decoder.decode(b"data: whole\n\ndata: cut \xd0", final=True)
+
+    assert [event.data for event in made] == ["whole"], "the cut event never reached its blank line"
