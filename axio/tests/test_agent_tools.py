@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from axio.agent import Agent
-from axio.blocks import ToolResultBlock, ToolUseBlock
+from axio.blocks import ImageBlock, ToolResultBlock, ToolUseBlock
 from axio.context import MemoryContextStore
 from axio.events import (
     IterationEnd,
@@ -21,6 +21,7 @@ from axio.events import (
     ToolResult,
     ToolUseStart,
 )
+from axio.messages import Message
 from axio.testing import StubTransport, make_echo_tool, make_text_response, make_tool_use_response
 from axio.tool import Tool
 from axio.types import StopReason, Usage
@@ -435,3 +436,44 @@ class TestDispatchThatBreaksInsteadOfFinishing:
                     events.append(event)
 
         assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [StopReason.error]
+
+
+class TestTheMediaNudge:
+    """Gemini ends a turn holding media in about twenty tokens, so the agent asks it to go on."""
+
+    @staticmethod
+    async def _stored() -> list[Message]:
+        async def picture() -> list[ImageBlock]:
+            return [ImageBlock(media_type="image/png", data=b"\x89PNG")]
+
+        tool: Tool[Any] = Tool(name="picture", description="a picture", handler=picture)
+
+        class _Nudging(StubTransport):
+            nudge_on_media_tool_result = True
+
+        transport = _Nudging(
+            [
+                make_tool_use_response("picture", "c1", {}),
+                make_text_response("done"),
+            ]
+        )
+        context = MemoryContextStore()
+        async for _ in Agent(system="", tools=[tool], transport=transport).run_stream("go", context):
+            pass
+        return await context.get_history()
+
+    async def test_it_travels_in_the_message_the_results_are_in(self) -> None:
+        # Appended as a message of its own it made two user turns in a row, which Anthropic
+        # refuses outright and Gemini survives only because its converter merges them.
+        history = await self._stored()
+
+        user_turns = [m for m in history if m.role == "user"]
+        results = [m for m in user_turns if any(isinstance(b, ToolResultBlock) for b in m.content)]
+        assert len(results) == 1
+        assert [type(b).__name__ for b in results[0].content] == ["ToolResultBlock", "TextBlock"]
+
+    async def test_no_two_user_turns_ever_land_in_a_row(self) -> None:
+        history = await self._stored()
+
+        roles = [m.role for m in history]
+        assert all(a != b or a != "user" for a, b in zip(roles, roles[1:], strict=False))

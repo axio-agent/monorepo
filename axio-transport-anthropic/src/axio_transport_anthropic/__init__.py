@@ -226,14 +226,7 @@ def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
             # Every block was stripped. Skipped, two user turns end up adjacent, which the API
             # refuses for the rest of the session.
             content_parts = [{"type": "text", "text": _EMPTY_TURN}]
-        if not content_parts:
-            continue
-        if result and result[-1]["role"] == msg.role:
-            # The API refuses two turns of one role in a row. The agent appends the media nudge as
-            # a user message of its own, right after the user message holding the tool results,
-            # and a turn that returned an image was refused for it.
-            result[-1]["content"].extend(content_parts)
-        else:
+        if content_parts:
             result.append({"role": msg.role, "content": content_parts})
 
     return result

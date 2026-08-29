@@ -625,9 +625,13 @@ class Agent:
         results += _malformed_results(blocks, turn.malformed)
 
         await self._append(context, Message(role="assistant", content=list(turn.content)))
-        await self._append(context, Message(role="user", content=list(results)))
+        answer: list[ContentBlock] = list(results)
         if getattr(self.transport, "nudge_on_media_tool_result", False) and _carries_media(results):
-            await self._append(context, Message(role="user", content=[TextBlock(text=_MEDIA_NUDGE)]))
+            # In the message the results are in, not one of its own. Appended separately it made
+            # two user turns in a row, which Anthropic refuses outright and Gemini only survives
+            # because its converter merges them.
+            answer.append(TextBlock(text=_MEDIA_NUDGE))
+        await self._append(context, Message(role="user", content=answer))
 
         for event in _result_events(results, {b.id: b for b in blocks}):
             yield event
@@ -827,6 +831,9 @@ class Agent:
                         return
 
             logger.warning("Max iterations (%d) reached", self.max_iterations)
+            # With the event, like every other error: `get_final_text()` raises on one, and a run
+            # that hit the ceiling returned its half-finished text as an answer without it.
+            yield Error(exception=RuntimeError(f"Reached max_iterations ({self.max_iterations})"))
             yield SessionEndEvent(stop_reason=StopReason.error, total_usage=total_usage)
             session_end_emitted = True
 

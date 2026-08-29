@@ -271,7 +271,7 @@ def _chat_messages(messages: list[Message], system: str) -> list[dict[str, Any]]
     for msg in messages:
         if msg.role == "user":
             tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-            if tool_results and len(tool_results) == len(msg.content):
+            if tool_results:
                 for tr in tool_results:
                     result.append(
                         {
@@ -283,6 +283,13 @@ def _chat_messages(messages: list[Message], system: str) -> list[dict[str, Any]]
                 # Chat Completions API doesn't support images in tool messages,
                 # so inject them as a follow-up user message.
                 image_parts = _collect_tool_result_images(tool_results)
+                # Anything the turn carries beside its results — the media nudge is one — follows
+                # as its own user message, because a `tool` message holds one result and nothing
+                # else. Tested for an exact match instead, a turn carrying both dropped every
+                # result it had.
+                image_parts += [
+                    {"type": "text", "text": b.text} for b in msg.content if isinstance(b, TextBlock) and b.text
+                ]
                 if image_parts:
                     result.append({"role": "user", "content": image_parts})
             else:

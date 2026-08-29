@@ -1041,18 +1041,3 @@ class TestASavedAnthropicSessionResumesAsItWasSaved:
         saved["max_retries"] = "soon"
 
         assert AnthropicTransport.from_dict(saved).max_retries == AnthropicTransport().max_retries
-
-
-def test_two_user_turns_in_a_row_become_one() -> None:
-    # The API refuses two turns of one role in a row. The agent appends the media nudge as its own
-    # user message, right after the one holding the tool results, so a turn that returned an image
-    # was refused — and on Vertex the Gemini transport routes Claude through this converter.
-    messages = [
-        Message(role="user", content=[ToolResultBlock(tool_use_id="c1", content="done")]),
-        Message(role="user", content=[TextBlock(text="Proceed.")]),
-    ]
-
-    result = _convert_messages(messages)
-
-    assert [m["role"] for m in result] == ["user"]
-    assert [p["type"] for p in result[0]["content"]] == ["tool_result", "text"]
