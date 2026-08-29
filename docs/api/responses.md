@@ -69,6 +69,7 @@ assert reader.finished().stop_reason.value == "end_turn"
 
 ```{eval-rst}
 .. autofunction:: axio.schema.strip_title
+   :no-index:
 ```
 
 `STOP_REASONS` maps a published response status, or the reason an incomplete response
