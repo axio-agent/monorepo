@@ -516,6 +516,9 @@ class _Turn:
         self.usage = Usage(0, 0)
         self.counts = None
         self.stop_reason = StopReason.end_turn
+        # The provider's own word for why the failed attempt stopped. Left behind, it was reported
+        # as the reason for the attempt that replaced it.
+        self.reason = ""
         self.finished = False
         self.has_tool_calls = False
         self.served_by = None
@@ -765,31 +768,37 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             turn.restart()
+            wait: float | None = None
             try:
                 async with self.session.post(url, json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
-                        if is_retryable(resp.status) and attempt < self.max_retries and not sent:
-                            logger.warning(
-                                "Gemini HTTP %d (attempt %d/%d): %.200s",
-                                resp.status,
-                                attempt,
-                                self.max_retries,
-                                error_text,
-                            )
-                            await asyncio.sleep(retry_delay(resp, attempt, base=self.retry_base_delay))
-                            continue
-                        raise StreamError(f"{resp.status} {resp.reason}: {error_text[:1000]}")
+                        if not (is_retryable(resp.status) and attempt < self.max_retries and not sent):
+                            raise StreamError(f"{resp.status} {resp.reason}: {error_text[:1000]}")
+                        logger.warning(
+                            "Gemini HTTP %d (attempt %d/%d): %.200s",
+                            resp.status,
+                            attempt,
+                            self.max_retries,
+                            error_text,
+                        )
+                        # Read here, because only the response carries Retry-After. Slept here too,
+                        # the connection and its unread body stayed open for the whole backoff.
+                        wait = retry_delay(resp, attempt, base=self.retry_base_delay)
+                    else:
+                        async for payload in payloads(resp.content.iter_any()):
+                            if self.debug:
+                                logger.warning(
+                                    "DEBUG response chunk:\n%s",
+                                    json.dumps(_redact_body(dict(payload)), indent=2, ensure_ascii=False),
+                                )
+                            for event in self._chunk_events(GenerateContentChunk.read(payload), turn):
+                                sent = True
+                                yield event
 
-                    async for payload in payloads(resp.content.iter_any()):
-                        if self.debug:
-                            logger.warning(
-                                "DEBUG response chunk:\n%s",
-                                json.dumps(_redact_body(dict(payload)), indent=2, ensure_ascii=False),
-                            )
-                        for event in self._chunk_events(GenerateContentChunk.read(payload), turn):
-                            sent = True
-                            yield event
+                if wait is not None:
+                    await asyncio.sleep(wait)
+                    continue
 
                 usage = _usage(turn.counts, final=True) if turn.counts is not None else turn.usage
                 stop_reason, candidate_reason = turn.stop_reason, turn.reason
@@ -869,6 +878,11 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             turn.finished = True
             turn.reason = candidate.finishReason
             turn.stop_reason = stop_reason_from(candidate.finishReason, _FINISH_REASON_MAP, provider="Gemini")
+            if turn.stop_reason is StopReason.refusal:
+                # Eleven finish reasons map to a refusal, and only a blocked *prompt* emitted the
+                # event. Read as a stop reason alone, a blocked answer reached the caller as an
+                # empty turn that succeeded, which is what this event exists to prevent.
+                yield Refusal(index=0, spoken=False, category=candidate.finishReason, raw=dict(candidate.raw))
 
         # Grounding travels whole. Four providers shape it four incompatible ways.
         for kind, metadata in (
