@@ -169,16 +169,17 @@ def test_a_retry_in_digits_that_are_not_ascii_is_ignored(value: str) -> None:
     assert Decoder().decode(f"retry: {value}\ndata: x\n\n", final=True) == [Event(data="x")]
 
 
-def test_a_switch_from_bytes_to_text_does_not_swallow_a_half_read_character() -> None:
-    # The byte decoder was holding the first byte of a two-byte character. A str chunk can never
-    # complete it, and dropped it took the character with it and said nothing.
+def test_a_switch_from_bytes_to_text_refuses_the_half_read_character() -> None:
+    # The byte decoder was holding the first byte of a two-byte character, and a str chunk can
+    # never complete it. Dropped, it took the character with it and said nothing; replaced by
+    # U+FFFD, it corrupted whatever the stream was carrying, which for a signature shows up only
+    # when the provider refuses the replay a request later.
     decoder = Decoder()
     decoder.decode(b"data: ")
     decoder.decode(b"\xc3")  # the first byte of a two-byte character
 
-    made = decoder.decode("x\n\n")
-
-    assert [event.data for event in made] == ["\ufffdx"]
+    with pytest.raises(UnicodeDecodeError):
+        decoder.decode("x\n\n")
 
 
 def test_text_after_a_clean_byte_boundary_adds_nothing() -> None:
@@ -191,14 +192,16 @@ def test_text_after_a_clean_byte_boundary_adds_nothing() -> None:
 
 
 def test_a_partial_bom_does_not_outlive_the_line_it_broke() -> None:
-    # A final flush returns nothing for a partial BOM and leaves the byte in the decoder. Held, it
-    # prefixed the next byte chunk long after the corruption, breaking a line that was clean.
+    # The stream carried one byte of a mark and then text, which can never complete it, so the
+    # switch is refused. The byte is dropped from the decoder either way: held, it prefixed the
+    # next byte chunk long after the corruption, breaking a line that was clean.
     decoder = Decoder()
     decoder.decode(b"\xef")
-    decoder.decode("")
 
-    made = decoder.decode(b"data: broken\n\ndata: clean\n\n")
+    with pytest.raises(UnicodeDecodeError):
+        decoder.decode("")
 
+    made = decoder.decode(b"data: clean\n\n")
     assert [event.data for event in made] == ["clean"]
 
 
@@ -353,6 +356,18 @@ def test_the_limit_measures_one_event_and_not_the_stream() -> None:
     made = [event for _ in range(10) for event in decoder.decode(b"data: " + b"x" * 256 + b"\n\n")]
 
     assert len(made) == 10, "each event dispatched, so none of them added to the next"
+
+
+def test_one_read_holding_many_complete_events_is_not_one_oversized_event() -> None:
+    # 64 KB is aiohttp's default read buffer, so a single chunk routinely carries hundreds of
+    # events. Measured as it arrived, the buffer tripped a limit about one line and blamed a line
+    # that had ended long before.
+    decoder = Decoder(limit=1024)
+    stream = b"".join(b"data: " + b"x" * 200 + b"\n\n" for _ in range(20))
+
+    made = decoder.decode(stream)
+
+    assert len(made) == 20
 
 
 def test_a_byte_that_is_not_utf8_fails_the_stream() -> None:

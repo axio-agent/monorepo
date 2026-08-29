@@ -101,6 +101,7 @@ class Decoder:
         text = self._text_of(chunk, final)
         self._hold(text)
         if not final and "\n" not in text and "\r" not in text:
+            self._bounded()
             return []
         self._join()
 
@@ -112,6 +113,7 @@ class Decoder:
             self._forget()
         elif self._start and self._start * 2 >= len(self._held):
             self._compact()
+        self._bounded()
         return made
 
     def _text_of(self, chunk: bytes | str, final: bool) -> str:
@@ -119,11 +121,14 @@ class Decoder:
         if isinstance(chunk, bytes):
             text = self._text.decode(chunk)
         else:
-            # Bytes left half a character behind. A final flush keeps a partial mark, so the state
-            # is cleared as well as replaced.
+            # Bytes left half a character behind, and its other half arrived as text rather than
+            # as bytes, so nothing can complete it. Replaced by U+FFFD it was the same silent
+            # corruption of a signature that `errors="strict"` above exists to refuse, so it is
+            # refused here too. A final flush keeps a partial mark, so the state is cleared as
+            # well as read.
             if pending := self._text.getstate()[0]:
                 self._text.setstate((b"", 0))
-            text = pending.decode("utf-8", "replace") + chunk
+            text = pending.decode("utf-8") + chunk
         if not self._opened:
             # The byte decoder took one mark already, and a second is data. Stripped here as well,
             # two marks would read differently as bytes than as text.
@@ -159,6 +164,14 @@ class Decoder:
         else:
             self._parts.append(text)
         self._pending += len(text)
+
+    def _bounded(self) -> None:
+        """Refuse a line that never ends, measured once the complete ones are gone.
+
+        Checked as the chunk arrives instead, ``_pending`` was still the whole unread buffer, so
+        one read holding many small complete events tripped a limit about a single line and named
+        a cause that had not happened.
+        """
         if self._pending > self._limit:
             raise EventTooLarge(f"a line ran past {self._limit} characters with no terminator")
 
