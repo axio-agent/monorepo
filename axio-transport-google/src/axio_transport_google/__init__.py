@@ -10,7 +10,7 @@ import os
 from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 import aiohttp
 from axio.blocks import (
@@ -18,12 +18,15 @@ from axio.blocks import (
     AudioMediaType,
     ImageBlock,
     ImageMediaType,
+    ProviderBlock,
     ReasoningBlock,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     VideoBlock,
     VideoMediaType,
+    proof,
+    replayable,
 )
 from axio.events import (
     AudioOutput,
@@ -31,6 +34,7 @@ from axio.events import (
     IterationEnd,
     IterationStart,
     ProviderEvent,
+    ProviderOutput,
     ReasoningDelta,
     ReasoningSignature,
     Refusal,
@@ -67,6 +71,10 @@ from axio_transport_google._generated_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: What this protocol is called wherever its name is written: on the proofs it issues and on the
+#: events it forwards. Vertex AI serves the same protocol, so it says this too.
+PROVIDER: Final = "google"
 
 
 class _RefreshableCredentials(Protocol):
@@ -395,16 +403,24 @@ def _assistant_parts(msg: Message, thought_signatures: dict[str, str] | None) ->
         if isinstance(block, TextBlock):
             parts.append(_text_part(block))
         elif isinstance(block, ReasoningBlock):
+            # `proof` leaves out one another provider issued: sent here it is not a thoughtSignature
+            # at all, and Gemini reads whatever it is as its own.
+            signed = proof(block, PROVIDER)
             if block.text:
                 thought: Part = {"text": block.text, "thought": True}
-                if block.signature:
-                    thought["thoughtSignature"] = block.signature
+                if signed:
+                    thought["thoughtSignature"] = signed
                 parts.append(thought)
-            elif block.signature:
+            elif signed:
                 # Gemini puts the proof on the part it signed, and a thought with no text is not it.
-                unplaced.append(block.signature)
+                unplaced.append(signed)
         elif isinstance(block, (ImageBlock, AudioBlock, VideoBlock)):
             parts.append(_inline_data_part(block))
+        elif isinstance(block, ProviderBlock):
+            # Back exactly as it arrived, proof included. Rebuilt from what we understood of it,
+            # a part this vocabulary has no type for would go back as something else.
+            if replayable(block, PROVIDER):
+                parts.append(cast("Part", dict(block.data)))
         elif isinstance(block, ToolUseBlock):
             parts.append(_call_part(block, unplaced, thought_signatures))
     return parts
@@ -416,8 +432,8 @@ def _text_part(block: TextBlock) -> Part:
     Sent without it, a turn whose text Gemini signed fails with ``MISSING_THOUGHT_SIGNATURE``.
     """
     part: Part = {"text": block.text}
-    if block.signature:
-        part["thoughtSignature"] = block.signature
+    if signed := proof(block, PROVIDER):
+        part["thoughtSignature"] = signed
     return part
 
 
@@ -428,9 +444,13 @@ def _call_part(block: ToolUseBlock, unplaced: deque[str], from_transport: dict[s
     transport does not.
     """
     part: Part = {"functionCall": {"name": block.name, "args": block.input, "id": block.id}}
-    proof = block.signature or (unplaced.popleft() if unplaced else "") or (from_transport or {}).get(block.id, "")
-    if proof:
-        part["thoughtSignature"] = proof
+    # The other two are this session's own, held by this transport, so only the stored one can
+    # have come from somewhere else.
+    signed = (
+        proof(block, PROVIDER) or (unplaced.popleft() if unplaced else "") or (from_transport or {}).get(block.id, "")
+    )
+    if signed:
+        part["thoughtSignature"] = signed
     return part
 
 
@@ -861,7 +881,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             yield from self._call_events(part, turn)
             return
 
-        carried = True
+        carried, kept = True, False
         if part.text and part.thought:
             yield ReasoningDelta(index=at, delta=part.text)
         elif part.text:
@@ -870,26 +890,29 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             yield _media_event(part, at)
         elif set(part.raw) - {"thought", "thoughtSignature"}:
             # executableCode, codeExecutionResult, fileData and whatever the API adds next: content
-            # of the turn axio has no type for. Emitted even when signed, because a proof is not a
-            # reason to drop what it proves.
-            yield ProviderEvent(provider="google", kind="part", data=dict(part.raw), index=at)
+            # of the turn axio has no type for. This API is stateless — the whole conversation goes
+            # back on every request — so a part that is only watched is a part the next request
+            # does not have, and the model answers the follow-up without the code it just ran.
+            # Its proof rides inside the part, which is where Gemini put it.
+            kept = True
+            yield ProviderOutput(index=at, provider=PROVIDER, kind="part", data=dict(part.raw))
         else:
             carried = False
 
-        if not part.thoughtSignature:
+        if not part.thoughtSignature or kept:
             return
         if part.thought or not carried:
             # It signs reasoning, or it is the bare proof of a call that follows. Emitted after
             # the reasoning, never before: the agent signs the block it has just built.
-            yield ReasoningSignature(index=at, signature=part.thoughtSignature)
+            yield ReasoningSignature(index=at, signature=part.thoughtSignature, provider=PROVIDER)
         elif part.text:
             # The proof signs answer text, so it rides on that text block. Emitted after the text,
             # never before, for the same reason as reasoning.
-            yield TextSignature(index=at, signature=part.thoughtSignature)
+            yield TextSignature(index=at, signature=part.thoughtSignature, provider=PROVIDER)
         else:
-            # Media, executableCode and the rest: axio has no block that can hold this proof, so it
-            # travels raw rather than attaching to a block the provider did not sign.
-            yield ProviderEvent(provider="google", kind="thoughtSignature", data=dict(part.raw), index=at)
+            # Media: axio's block for it has nowhere to hold a proof, so it travels raw rather than
+            # attaching to a block the provider did not sign.
+            yield ProviderEvent(provider=PROVIDER, kind="thoughtSignature", data=dict(part.raw), index=at)
 
     def _call_events(self, part: ContentPart, turn: _Turn) -> Iterator[StreamEvent]:
         """The start and the arguments of one function call."""
@@ -902,7 +925,9 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             self._thought_signatures[call_id] = part.thoughtSignature
         # The signature goes on the call, not beside it. Sent bare it attaches to whatever block
         # is still unsigned.
-        yield ToolUseStart(index=at, tool_use_id=call_id, name=call.name, signature=part.thoughtSignature)
+        yield ToolUseStart(
+            index=at, tool_use_id=call_id, name=call.name, signature=part.thoughtSignature, provider=PROVIDER
+        )
         yield ToolInputDelta(
             index=at, tool_use_id=call_id, partial_json=json.dumps(dict(call.args)) if call.args else "{}"
         )

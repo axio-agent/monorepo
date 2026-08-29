@@ -5,13 +5,22 @@ import logging
 from typing import Any
 
 import pytest
-from axio.blocks import AudioBlock, ImageBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.blocks import (
+    AudioBlock,
+    ImageBlock,
+    ProviderBlock,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from axio.events import (
     BlockEnd,
     Citation,
     IterationEnd,
     IterationStart,
     ProviderEvent,
+    ProviderOutput,
     ReasoningDelta,
     ReasoningSignature,
     Refusal,
@@ -321,7 +330,9 @@ def test_a_finished_reasoning_item_yields_its_proof() -> None:
         output_index=0,
         item={"type": "reasoning", "id": "rs_1", "encrypted_content": "gAAAAAB..."},
     )
-    assert made[0] == ReasoningSignature(index=0, signature="gAAAAAB...", id="rs_1")
+    # The protocol that issued it travels with it, so a session that later changes transport does
+    # not send an OpenAI proof to a provider that never made one.
+    assert made[0] == ReasoningSignature(index=0, signature="gAAAAAB...", id="rs_1", provider="openai")
     assert made[1] == BlockEnd(index=0)
 
 
@@ -338,6 +349,35 @@ def test_a_finished_item_that_is_not_reasoning_only_closes_the_block() -> None:
 def test_a_reasoning_item_with_nothing_to_replay_only_closes_the_block() -> None:
     made = _reads(Responses(), type="response.output_item.done", output_index=0, item={"type": "reasoning"})
     assert made == [BlockEnd(index=0)]
+
+
+def test_an_item_from_a_tool_this_api_ran_itself_becomes_content_to_replay() -> None:
+    """store=False means this API keeps nothing, so every item it produced is expected back.
+
+    Forwarded as news and never stored, the next request was missing the search the model had just
+    answered from, and the turn after it was answered from a hole.
+    """
+    item = {
+        "type": "web_search_call",
+        "id": "ws_1",
+        "status": "completed",
+        "action": {"type": "search", "query": "axio agent"},
+    }
+
+    made = _reads(Responses(), type="response.output_item.done", output_index=1, item=item)
+
+    assert made[0] == ProviderOutput(index=1, provider="openai", kind="web_search_call", data=item, id="ws_1")
+    assert made[1] == BlockEnd(index=1)
+
+
+def test_an_item_type_nobody_has_published_yet_is_kept_the_same_way() -> None:
+    # The set of item types is a function of which tools exist, so a list of them here would be
+    # stale the day one is added, and the turn would lose whatever the new one produced.
+    item = {"type": "quantum_call", "id": "q_1", "whatever": [1, 2, 3]}
+
+    made = _reads(Responses(), type="response.output_item.done", output_index=0, item=item)
+
+    assert made[0] == ProviderOutput(index=0, provider="openai", kind="quantum_call", data=item, id="q_1")
 
 
 def test_the_reasoning_goes_back_as_the_item_this_api_takes() -> None:
@@ -743,3 +783,74 @@ def test_a_corrupt_event_stops_the_turn_instead_of_shortening_it() -> None:
     reader = Responses()
     with pytest.raises(MalformedPayload):
         reader.read(Event(data='{"type": "response.output_text.delta", "delta": '))
+
+
+def test_an_item_from_a_tool_this_api_ran_goes_back_exactly_as_it_arrived() -> None:
+    # store=False, so nothing is kept on the provider's side: the search the model answered from
+    # is in the next request only if we put it there.
+    item = {"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"query": "axio"}}
+    messages = [
+        Message(
+            role="assistant",
+            content=[
+                ProviderBlock(provider="openai", kind="web_search_call", data=item, id="ws_1"),
+                TextBlock(text="Found it."),
+            ],
+        )
+    ]
+
+    _, items = convert_messages(messages, "")
+
+    assert items[0] == item, "the item is replayed verbatim, not rebuilt from what we understood"
+    assert items[1] == {"role": "assistant", "content": "Found it."}
+
+
+def test_an_item_another_provider_made_is_not_sent_here() -> None:
+    # The value means something only to the protocol that produced it. Sent on, it is refused at
+    # best, and at worst accepted somewhere it was never meant to sit.
+    messages = [
+        Message(
+            role="assistant",
+            content=[
+                ProviderBlock(provider="google", kind="executableCode", data={"code": "x"}),
+                TextBlock(text="done"),
+            ],
+        )
+    ]
+
+    _, items = convert_messages(messages, "")
+
+    assert items == [{"role": "assistant", "content": "done"}]
+
+
+def test_a_proof_another_provider_issued_is_not_replayed_as_encrypted_content() -> None:
+    messages = [
+        Message(
+            role="assistant",
+            content=[
+                ReasoningBlock(text="", signature="anthropic-signature", id="rs_1", provider="anthropic"),
+                TextBlock(text="done"),
+            ],
+        )
+    ]
+
+    _, items = convert_messages(messages, "")
+
+    assert not [i for i in items if i.get("type") == "reasoning"]
+
+
+def test_a_proof_with_no_provider_recorded_is_still_replayed() -> None:
+    # A turn stored before anyone recorded one, whose transport is almost always the one that
+    # wrote it. Dropped, the sessions that already exist lose proofs that are valid.
+    messages = [
+        Message(
+            role="assistant",
+            content=[ReasoningBlock(text="", signature="gAAAAAB", id="rs_1"), TextBlock(text="done")],
+        )
+    ]
+
+    _, items = convert_messages(messages, "")
+
+    assert [i for i in items if i.get("type") == "reasoning"] == [
+        {"type": "reasoning", "id": "rs_1", "encrypted_content": "gAAAAAB", "summary": []}
+    ]

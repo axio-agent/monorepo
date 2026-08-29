@@ -623,7 +623,9 @@ class TestTheWholeVocabulary:
                 event="content_block_delta",
             )
         )
-        assert made == [ReasoningSignature(index=0, signature="ErUBCkYIBRgC")]
+        # Named beside the proof, so a session that later changes transport does not send an
+        # Anthropic signature to a provider that never issued one.
+        assert made == [ReasoningSignature(index=0, signature="ErUBCkYIBRgC", provider="anthropic")]
 
     def test_a_redacted_thinking_block_carries_its_proof_and_no_text(self) -> None:
         made = Messages().read(
@@ -632,7 +634,7 @@ class TestTheWholeVocabulary:
                 event="content_block_start",
             )
         )
-        assert made == [ReasoningSignature(index=1, signature="EroBCkYI", redacted=True)]
+        assert made == [ReasoningSignature(index=1, signature="EroBCkYI", redacted=True, provider="anthropic")]
 
     def test_a_citation_carries_the_unit_its_span_is_counted_in(self) -> None:
         # Only char_location counts characters; page_location counts pages. Compared across units
@@ -839,3 +841,36 @@ def test_a_turn_that_ended_properly_still_finishes() -> None:
     reader = Messages()
     reader.read(Event(data=json.dumps({"delta": {"stop_reason": "end_turn"}}), event="message_delta"))
     assert reader.finished().stop_reason == StopReason.end_turn
+
+
+class TestAProofFromAnotherProviderIsNotSentHere:
+    """The value means something only to the protocol that made it.
+
+    Anthropic sends it as a thinking signature, Google as thoughtSignature, Responses as
+    encrypted_content. Read out of the same field by whichever converter runs, a session that
+    changed transport put one provider's opaque data in another's protocol slot.
+    """
+
+    @staticmethod
+    def _thinking(block: ReasoningBlock) -> list[dict[str, Any]]:
+        messages = [Message(role="assistant", content=[block, TextBlock(text="done")])]
+        parts = _convert_messages(messages)[0]["content"]
+        return [p for p in parts if p["type"] in ("thinking", "redacted_thinking")]
+
+    def test_a_google_proof_is_left_out(self) -> None:
+        assert self._thinking(ReasoningBlock(text="hm", signature="sig", provider="google")) == []
+
+    def test_a_redacted_block_from_elsewhere_is_left_out_too(self) -> None:
+        assert self._thinking(ReasoningBlock(signature="sig", redacted=True, provider="openai")) == []
+
+    def test_this_provider_s_own_proof_still_travels(self) -> None:
+        assert self._thinking(ReasoningBlock(text="hm", signature="sig", provider="anthropic")) == [
+            {"type": "thinking", "thinking": "hm", "signature": "sig"}
+        ]
+
+    def test_a_proof_with_no_provider_recorded_still_travels(self) -> None:
+        # A turn stored before anyone recorded one. Dropped, an existing session loses proofs that
+        # are valid and the API refuses the replay.
+        assert self._thinking(ReasoningBlock(text="hm", signature="sig")) == [
+            {"type": "thinking", "thinking": "hm", "signature": "sig"}
+        ]

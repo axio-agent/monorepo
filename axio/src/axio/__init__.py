@@ -1,7 +1,7 @@
 """axio - public API."""
 
 from .agent import Agent
-from .blocks import ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from .blocks import ProviderBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from .context import ContextStore, MemoryContextStore
 from .events import (
     AudioOutput,
@@ -13,6 +13,7 @@ from .events import (
     IterationEnd,
     IterationStart,
     ProviderEvent,
+    ProviderOutput,
     ReasoningDelta,
     ReasoningSignature,
     Refusal,
@@ -67,9 +68,11 @@ __all__ = [
     "Message",
     "PermissionGuard",
     "ProviderEvent",
+    "ProviderOutput",
     "RealtimeAgent",
     "RealtimeSession",
     "RealtimeTransport",
+    "ProviderBlock",
     "ReasoningBlock",
     "ReasoningDelta",
     "ReasoningSignature",

@@ -5,16 +5,19 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Any
+from typing import Any, Final
 
 from axio.blocks import (
     AudioBlock,
     ImageBlock,
+    ProviderBlock,
     ReasoningBlock,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     VideoBlock,
+    proof,
+    replayable,
 )
 from axio.messages import Message
 from axio.schema import strip_title
@@ -22,6 +25,11 @@ from axio.tool import Tool
 from axio.types import StopReason
 
 logger = logging.getLogger(__name__)
+
+#: What this protocol is called wherever its name is written: on the proofs it issues, on the
+#: items it expects back, and on the events it forwards. The Codex transport speaks this same
+#: protocol, so its turns say "openai" too rather than naming a fifth provider.
+PROVIDER: Final = "openai"
 
 STOP_REASONS: dict[str, StopReason] = {
     "completed": StopReason.end_turn,
@@ -133,19 +141,26 @@ def convert_messages(messages: list[Message], system: str) -> tuple[str, list[di
             for b in msg.content:
                 if isinstance(b, ReasoningBlock):
                     # `id` and `summary` are required beside the proof. The flush follows that test,
-                    # or a dropped block splits one run of text in two.
-                    if b.id and b.signature:
+                    # or a dropped block splits one run of text in two. `proof` leaves out what
+                    # another provider issued: sent here it is not encrypted content at all.
+                    if b.id and (encrypted := proof(b, PROVIDER)):
                         _flush_text(items, content_parts_a)
                         items.append(
                             {
                                 "type": "reasoning",
                                 "id": b.id,
-                                "encrypted_content": b.signature,
+                                "encrypted_content": encrypted,
                                 "summary": [],
                             }
                         )
                     else:
                         logger.debug("Dropping a reasoning block with no encrypted content to replay")
+                elif isinstance(b, ProviderBlock):
+                    # Back exactly as it arrived. This API keeps no copy of the turn, so an item
+                    # from a tool it ran itself is only in the request if we put it there.
+                    if replayable(b, PROVIDER):
+                        _flush_text(items, content_parts_a)
+                        items.append(dict(b.data))
                 elif isinstance(b, TextBlock):
                     content_parts_a.append({"type": "output_text", "text": b.text})
                 elif isinstance(b, ToolUseBlock):

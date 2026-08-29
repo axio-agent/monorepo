@@ -10,7 +10,7 @@ import logging
 import os
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, Self, cast
+from typing import Any, Final, Literal, Protocol, Self, cast
 
 import aiohttp
 from axio.blocks import (
@@ -20,6 +20,7 @@ from axio.blocks import (
     ToolResultBlock,
     ToolUseBlock,
     VideoBlock,
+    proof,
 )
 from axio.events import (
     BlockEnd,
@@ -46,6 +47,10 @@ from axio.types import StopReason, Usage, stop_reason_from
 from axio_sse import EVENT_NAME, Payload, Reader, Wire, on
 
 logger = logging.getLogger(__name__)
+
+#: What this protocol is called wherever its name is written: on the proofs it issues and on the
+#: events it forwards. Anthropic on Vertex AI speaks the same protocol, so it says this too.
+PROVIDER: Final = "anthropic"
 
 ANTHROPIC_API_VERSION = "2023-06-01"
 VERTEX_ANTHROPIC_VERSION = "vertex-2023-10-16"
@@ -194,11 +199,14 @@ def _convert_messages(messages: list[Message]) -> list[dict[str, Any]]:
                 if isinstance(b, TextBlock):
                     content_parts.append({"type": "text", "text": b.text})
                 elif isinstance(b, ReasoningBlock):
-                    # Unaltered, or not at all: the API checks the signature it issued.
-                    if b.redacted:
-                        content_parts.append({"type": "redacted_thinking", "data": b.signature})
-                    elif b.signature:
-                        content_parts.append({"type": "thinking", "thinking": b.text, "signature": b.signature})
+                    # Unaltered, or not at all: the API checks the signature it issued. `proof`
+                    # also leaves out one another provider issued, which this API never made and
+                    # would read as its own.
+                    signed = proof(b, PROVIDER)
+                    if b.redacted and signed:
+                        content_parts.append({"type": "redacted_thinking", "data": signed})
+                    elif signed:
+                        content_parts.append({"type": "thinking", "thinking": b.text, "signature": signed})
                     else:
                         # Unsigned, so the API would refuse it. Nothing proves the text is the model's.
                         logger.debug("Dropping an unsigned reasoning block from the replayed turn")
@@ -415,10 +423,10 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             yield ToolUseStart(index=wire.index, tool_use_id=block.id, name=block.name)
         elif block.type == "redacted_thinking":
             # Only the proof travels. The API refuses a thinking block without one.
-            yield ReasoningSignature(index=wire.index, signature=block.data, redacted=True)
+            yield ReasoningSignature(index=wire.index, signature=block.data, redacted=True, provider=PROVIDER)
         elif block.type not in ("text", "thinking"):
             # server_tool_use, web_search_tool_result, code execution, mcp: run on the API's side.
-            yield ProviderEvent(provider="anthropic", kind=block.type, data=dict(block.raw), index=wire.index)
+            yield ProviderEvent(provider=PROVIDER, kind=block.type, data=dict(block.raw), index=wire.index)
 
     @on(BlockDeltaEvent)
     def _block_delta(self, wire: BlockDeltaEvent) -> Iterator[StreamEvent]:
@@ -429,7 +437,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             case "thinking_delta":
                 yield ReasoningDelta(index=index, delta=delta.thinking)
             case "signature_delta":
-                yield ReasoningSignature(index=index, signature=delta.signature)
+                yield ReasoningSignature(index=index, signature=delta.signature, provider=PROVIDER)
             case "input_json_delta":
                 yield ToolInputDelta(
                     index=index,
@@ -485,7 +493,7 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         The eight names above are the whole published vocabulary today, so nothing reaches here
         yet. When the API adds a ninth it arrives under its own name instead of disappearing.
         """
-        yield ProviderEvent(provider="anthropic", kind=name, data=dict(payload))
+        yield ProviderEvent(provider=PROVIDER, kind=name, data=dict(payload))
 
     # ── what ends the turn ───────────────────────────────────────────────────────────────────
 

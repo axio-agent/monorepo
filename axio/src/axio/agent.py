@@ -17,6 +17,7 @@ from .blocks import (
     AudioBlock,
     ContentBlock,
     ImageBlock,
+    ProviderBlock,
     ReasoningBlock,
     TextBlock,
     ToolResultBlock,
@@ -29,6 +30,7 @@ from .events import (
     Error,
     ImageOutput,
     IterationEnd,
+    ProviderOutput,
     ReasoningDelta,
     ReasoningSignature,
     Refusal,
@@ -242,11 +244,12 @@ class _PendingCall:
 
     name: str
     signature: str = ""
+    provider: str = ""
     json_parts: list[str] = field(default_factory=list)
 
 
 #: What one iteration accumulates while the transport streams it.
-type TurnBlock = TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock
+type TurnBlock = TextBlock | ReasoningBlock | ImageBlock | AudioBlock | VideoBlock | ToolUseBlock | ProviderBlock
 
 
 @dataclass(slots=True)
@@ -392,6 +395,7 @@ class Agent:
         redacted: bool,
         id: str = "",
         joining: bool = False,
+        provider: str = "",
     ) -> None:
         """Attach the provider's proof to the reasoning it belongs to.
 
@@ -409,14 +413,18 @@ class Agent:
         at = _last_unsigned(content, ReasoningBlock)
         if at is None:
             # A provider that sends the proof before the reasoning, which none does today.
-            content.append(ReasoningBlock(signature=data, redacted=redacted, id=id))
+            content.append(ReasoningBlock(signature=data, redacted=redacted, id=id, provider=provider))
             return
-        content[at] = replace(content[at], signature=data, redacted=redacted, id=id)  # type: ignore[arg-type]
+        # The provider travels with the proof: stored without it, no converter can tell whether the
+        # value is one it issued, and a session that changed transport replays it to a stranger.
+        signed = replace(content[at], signature=data, redacted=redacted, id=id, provider=provider)  # type: ignore[arg-type]
+        content[at] = signed
 
     @staticmethod
     def _sign_text(
         content: list[TurnBlock],
         data: str,
+        provider: str = "",
     ) -> None:
         """Attach the provider's proof to the answer text it belongs to.
 
@@ -429,7 +437,7 @@ class Agent:
             # replayed to the provider as content it never produced.
             logger.warning("Dropping a text signature with no text to attach it to")
             return
-        content[at] = replace(content[at], signature=data)  # type: ignore[arg-type]
+        content[at] = replace(content[at], signature=data, provider=provider)  # type: ignore[arg-type]
 
     @staticmethod
     def _finalize_pending_tools(
@@ -468,7 +476,9 @@ class Agent:
                     )
                     malformed.add(tid)
                     inp = {}
-            blocks.append(ToolUseBlock(id=tid, name=info.name, input=inp, signature=info.signature))
+            blocks.append(
+                ToolUseBlock(id=tid, name=info.name, input=inp, signature=info.signature, provider=info.provider)
+            )
         return blocks, malformed
 
     async def _select_tools(self, history: list[Message], tools: list[Tool[Any]]) -> Iterable[Tool[Any]]:
@@ -519,21 +529,29 @@ class Agent:
                     case Refusal(text=text) if text:
                         # A refusal is what the assistant said, and an empty turn is refused next time.
                         self._accumulate_text(turn.content, text)
-                    case TextSignature(signature=proof):
-                        self._sign_text(turn.content, proof)
+                    case TextSignature(signature=proof, provider=provider):
+                        self._sign_text(turn.content, proof, provider)
                     case ReasoningDelta(delta=delta):
                         self._accumulate_reasoning(turn.content, delta)
-                    case ReasoningSignature(index=at, signature=proof, redacted=redacted, id=block_id):
-                        self._sign_reasoning(turn.content, proof, redacted, block_id, joining=at == turn.signed_at)
+                    case ReasoningSignature(
+                        index=at, signature=proof, redacted=redacted, id=block_id, provider=provider
+                    ):
+                        self._sign_reasoning(
+                            turn.content, proof, redacted, block_id, joining=at == turn.signed_at, provider=provider
+                        )
                         turn.signed_at = at
+                    case ProviderOutput(provider=provider, kind=kind, data=item, id=item_id):
+                        # Stored, not watched: the endpoint that produced it keeps no history of
+                        # its own, so the next request is incomplete without this item back.
+                        turn.content.append(ProviderBlock(provider=provider, kind=kind, data=item, id=item_id))
                     case ImageOutput(data=data, media_type=mt):
                         turn.content.append(ImageBlock(media_type=mt, data=data))
                     case AudioOutput(data=data, media_type=mt):
                         turn.content.append(AudioBlock(media_type=mt, data=data))
                     case VideoOutput(data=data, media_type=mt):
                         turn.content.append(VideoBlock(media_type=mt, data=data))
-                    case ToolUseStart(tool_use_id=tid, name=name, signature=proof):
-                        turn.pending[tid] = _PendingCall(name=name, signature=proof)
+                    case ToolUseStart(tool_use_id=tid, name=name, signature=proof, provider=provider):
+                        turn.pending[tid] = _PendingCall(name=name, signature=proof, provider=provider)
                     case ToolInputDelta(tool_use_id=tid, partial_json=chunk) if tid in turn.pending:
                         turn.pending[tid].json_parts.append(chunk)
                     case IterationEnd(usage=usage, stop_reason=reason):

@@ -100,21 +100,47 @@ assert block == TextBlock(text="hello")
 
 `to_dict` is a `singledispatch` with one registration per block type. Binary
 payloads are base64-encoded. `ToolResultBlock` recurses into its content. A
-`ReasoningBlock` carries its proof through the round trip:
+`ReasoningBlock` carries its proof through the round trip, and `provider` names
+the protocol that issued that proof:
 
 <!-- name: test_serialization -->
 ```python
 from axio import ReasoningBlock
 
-d = to_dict(ReasoningBlock(text="step one", signature="sig-abc", id="rs_1"))
+block = ReasoningBlock(text="step one", signature="sig-abc", id="rs_1", provider="anthropic")
+d = to_dict(block)
 assert d == {
     "type": "reasoning",
     "text": "step one",
     "signature": "sig-abc",
     "redacted": False,
     "id": "rs_1",
+    "provider": "anthropic",
 }
-assert from_dict(d) == ReasoningBlock(text="step one", signature="sig-abc", id="rs_1")
+assert from_dict(d) == block
+```
+
+The proof means nothing outside the protocol that made it: Anthropic sends it as
+a thinking signature, Google as `thoughtSignature`, the Responses API as
+`encrypted_content`. `provider` travels with it so a session that changes
+transport does not replay one provider's opaque data to another. Each request
+converter asks `blocks.proof(block, provider)` rather than reading the field
+directly, and gets an empty string where the two disagree. A block with no
+provider recorded — one stored before the field existed — is still replayed.
+
+An endpoint that runs its own tools produces items this vocabulary has no shape
+for: a web search, a file search, code it executed. Where the application keeps
+the history rather than the provider, those have to go back too, so they are
+stored whole as a `ProviderBlock` and replayed verbatim by the transport that
+speaks the same protocol:
+
+<!-- name: test_serialization -->
+```python
+from axio import ProviderBlock
+
+item = {"type": "web_search_call", "id": "ws_1", "status": "completed"}
+block = ProviderBlock(provider="openai", kind="web_search_call", data=item, id="ws_1")
+assert from_dict(to_dict(block)) == block
 ```
 
 A store that persists messages by hand rather than through `to_dict` must keep

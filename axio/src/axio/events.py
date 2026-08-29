@@ -33,6 +33,10 @@ class ToolUseStart:
     rather than for the reasoning beside it. Replayed on the call itself: attached to a reasoning
     block instead, the call comes back unsigned and the provider refuses the turn."""
 
+    provider: str = ""
+    """Which protocol issued ``signature``, in the names :class:`ProviderEvent` uses. Stored with
+    the proof so a session that changes transport does not replay it to one that never made it."""
+
 
 @dataclass(frozen=True, slots=True)
 class ToolInputDelta:
@@ -211,6 +215,31 @@ class ProviderEvent:
     """The content-block or output index, where the payload carries one."""
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderOutput:
+    """One output item of this turn that the next request has to send back unread.
+
+    :class:`ProviderEvent` forwards what a caller may want to watch; this one names what the turn
+    is not complete without. An endpoint that keeps no history of its own — ``store=False`` on the
+    Responses API — expects every item it produced back on the next request, including those from
+    the tools it ran itself: a web search, a file search, a code interpreter, and item types that
+    do not exist yet. Read as news rather than as content, they were watched and dropped, and the
+    next request was missing what the model had answered from.
+
+    The agent stores it as a :class:`~axio.blocks.ProviderBlock`, and the transport that speaks the
+    same protocol replays ``data`` verbatim.
+    """
+
+    index: int
+    provider: str
+    """Which protocol produced it, in the names :class:`ProviderEvent` uses."""
+    kind: str
+    """The item's own type, verbatim."""
+    data: dict[str, Any]
+    """The item exactly as it arrived, never interpreted here."""
+    id: str = ""
+
+
 # ── Block lifecycle ─────────────────────────────────────────────────────────
 
 
@@ -297,6 +326,9 @@ class ReasoningSignature:
     """How the provider names the block this proves, where it names them. Replayed beside the
     proof, because a provider that identifies reasoning by id refuses the pair without it."""
 
+    provider: str = ""
+    """Which protocol issued this proof, in the names :class:`ProviderEvent` uses."""
+
 
 @dataclass(frozen=True, slots=True)
 class TextSignature:
@@ -312,6 +344,9 @@ class TextSignature:
 
     index: int
     signature: str
+
+    provider: str = ""
+    """Which protocol issued this proof, in the names :class:`ProviderEvent` uses."""
 
 
 # ── Iteration lifecycle ─────────────────────────────────────────────────────
@@ -353,6 +388,7 @@ type StreamEvent = (
     | IterationEnd
     | Error
     | ProviderEvent
+    | ProviderOutput
     | SessionEndEvent
     | AudioOutputDelta
     | TranscriptDelta

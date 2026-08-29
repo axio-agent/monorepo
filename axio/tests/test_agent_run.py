@@ -10,13 +10,22 @@ from typing import Any, cast
 import pytest
 
 from axio.agent import Agent
-from axio.blocks import ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.blocks import (
+    ProviderBlock,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    from_dict,
+    to_dict,
+)
 from axio.context import MemoryContextStore
 from axio.events import (
     AudioOutput,
     Error,
     ImageOutput,
     IterationEnd,
+    ProviderOutput,
     ReasoningDelta,
     ReasoningSignature,
     Refusal,
@@ -1077,3 +1086,45 @@ async def test_the_transport_stream_is_closed_when_the_turn_ends() -> None:
         pass
 
     assert closed, "the turn ended without closing the stream it stopped reading"
+
+
+class TestAProviderHostedItemBecomesContent:
+    """An endpoint that runs its own tools answers with items axio has no shape for.
+
+    Where the application keeps the history — store=False on the Responses API — the provider
+    expects every one of them back. Watched and dropped, the next request was missing what the
+    model had just answered from.
+    """
+
+    ITEM = {"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"query": "axio"}}
+
+    def _transport(self) -> StubTransport:
+        return StubTransport(
+            [
+                [
+                    ProviderOutput(index=0, provider="openai", kind="web_search_call", data=self.ITEM, id="ws_1"),
+                    TextDelta(0, "Found it."),
+                    IterationEnd(1, StopReason.end_turn, Usage(5, 2)),
+                ]
+            ]
+        )
+
+    async def test_the_turn_stores_it_beside_the_answer(self) -> None:
+        context = MemoryContextStore()
+        agent = Agent(system="", transport=self._transport())
+
+        async for _ in agent.run_stream("go", context):
+            pass
+
+        assistant = [m for m in await context.get_history() if m.role == "assistant"][0]
+        assert assistant.content == [
+            ProviderBlock(provider="openai", kind="web_search_call", data=self.ITEM, id="ws_1"),
+            TextBlock(text="Found it."),
+        ]
+
+    async def test_it_survives_being_written_out_and_read_back(self) -> None:
+        # A stored session is JSON on the way out. A block that does not round-trip is one the
+        # next process cannot replay, which is the same loss one turn later.
+        block = ProviderBlock(provider="openai", kind="web_search_call", data=self.ITEM, id="ws_1")
+
+        assert from_dict(to_dict(block)) == block

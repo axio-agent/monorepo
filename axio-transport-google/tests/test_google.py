@@ -15,6 +15,7 @@ from axio import Agent, MemoryContextStore
 from axio.blocks import (
     AudioBlock,
     ImageBlock,
+    ProviderBlock,
     ReasoningBlock,
     TextBlock,
     ToolResultBlock,
@@ -44,6 +45,7 @@ from axio_transport_google import (
     _Turn,
     _usage,
 )
+from axio_transport_google._generated_types import Part
 
 
 async def _dummy_tool(query: str) -> str:
@@ -957,7 +959,9 @@ class TestAProofOnAnswerTextSurvivesTheRoundTrip:
         history = await self._history(monkeypatch, self._CHUNK)
 
         assistant = [m for m in history if m.role == "assistant"][0]
-        assert assistant.content == [TextBlock(text="42", signature="SIG")]
+        # The protocol that issued the proof is stored with it, so a session that later changes
+        # transport does not replay a thoughtSignature to a provider that never made one.
+        assert assistant.content == [TextBlock(text="42", signature="SIG", provider="google")]
 
     async def test_the_stored_answer_replays_on_the_part_gemini_signed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         history = await self._history(monkeypatch, self._CHUNK)
@@ -998,10 +1002,18 @@ class TestWhatAPartProduces:
         assert [type(e).__name__ for e in events] == ["TextDelta", "TextSignature"]
         assert events[1].signature == "SIG"
 
-    def test_a_signed_part_axio_has_no_type_for_still_reaches_the_caller(self) -> None:
+    def test_a_signed_part_axio_has_no_type_for_is_kept_whole(self) -> None:
         # The signature suppressed the event carrying the content, so the code ran and vanished.
-        events = self._events({"executableCode": {"code": "print(1)"}, "thoughtSignature": "SIG"})
-        assert [e.kind for e in events] == ["part", "thoughtSignature"]
+        # It is kept rather than watched: this API is stateless, and a part left out of the next
+        # request is one the model answers the follow-up without.
+        raw = {"executableCode": {"code": "print(1)"}, "thoughtSignature": "SIG"}
+
+        events = self._events(raw)
+
+        assert [type(e).__name__ for e in events] == ["ProviderOutput"]
+        # One event, not two: the proof rides inside the part, which is where Gemini put it, so
+        # replaying the part verbatim replays the proof with it.
+        assert events[0].data == raw
 
     def test_a_signed_image_is_not_reasoning_either(self) -> None:
         events = self._events({"inlineData": {"mimeType": "image/png", "data": "aGk="}, "thoughtSignature": "SIG"})
@@ -1075,3 +1087,80 @@ class TestWhichProofACallReplaysWith:
         parts = _build_contents_json([turn], {"c1": "FROM_THE_MAP"})[0]["parts"]
 
         assert parts[0]["thoughtSignature"] == "FROM_THE_MAP"
+
+
+class TestAProofFromAnotherProviderIsNotSentHere:
+    """A thoughtSignature is Gemini's own. Read out of the same field by whichever converter runs,
+    a session that changed transport put one provider's opaque data in another's protocol slot."""
+
+    @staticmethod
+    def _parts(block: Any) -> list[Part]:
+        return _build_contents_json([Message(role="assistant", content=[block])])[-1]["parts"]
+
+    def test_an_anthropic_proof_is_left_off_the_answer_text(self) -> None:
+        assert self._parts(TextBlock(text="42", signature="SIG", provider="anthropic")) == [{"text": "42"}]
+
+    def test_an_anthropic_proof_is_left_off_a_call(self) -> None:
+        call = ToolUseBlock(id="c1", name="echo", input={}, signature="SIG", provider="anthropic")
+        assert self._parts(call) == [{"functionCall": {"name": "echo", "args": {}, "id": "c1"}}]
+
+    def test_a_thought_signed_elsewhere_is_not_moved_onto_the_next_part(self) -> None:
+        # A signature with no text of its own is held for the call that follows. One from another
+        # provider held that way would be attached to a part Gemini never signed.
+        blocks = [
+            ReasoningBlock(signature="SIG", provider="openai"),
+            ToolUseBlock(id="c1", name="echo", input={}),
+        ]
+        parts = _build_contents_json([Message(role="assistant", content=blocks)])[-1]["parts"]
+        assert parts == [{"functionCall": {"name": "echo", "args": {}, "id": "c1"}}]
+
+    def test_this_provider_s_own_proof_still_travels(self) -> None:
+        assert self._parts(TextBlock(text="42", signature="SIG", provider="google")) == [
+            {"text": "42", "thoughtSignature": "SIG"}
+        ]
+
+    def test_a_proof_with_no_provider_recorded_still_travels(self) -> None:
+        assert self._parts(TextBlock(text="42", signature="SIG")) == [{"text": "42", "thoughtSignature": "SIG"}]
+
+
+class TestAPartGeminiRanItselfSurvivesTheTurn:
+    """This API is stateless: the whole conversation goes back on every request.
+
+    A part axio has no type for — executableCode, codeExecutionResult, and whatever is added next —
+    was forwarded as news and never stored, so the next request did not carry the code the model
+    had just run, and the follow-up was answered without it.
+    """
+
+    RAW = {"executableCode": {"language": "PYTHON", "code": "print(1)"}, "thoughtSignature": "SIG"}
+
+    async def test_the_agent_stores_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        chunk = {
+            "candidates": [{"content": {"parts": [self.RAW, {"text": "1"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1, "totalTokenCount": 4},
+        }
+        async with _serving(monkeypatch, chunk):
+            async with aiohttp.ClientSession() as session:
+                transport = GoogleTransport(
+                    api_key="k", model=GENAI_MODELS["gemini-3-flash-preview"], session=session, max_retries=1
+                )
+                context = MemoryContextStore()
+                async for _ in Agent(system="", tools=[], transport=transport).run_stream("go", context):
+                    pass
+                history = await context.get_history()
+
+        assistant = [m for m in history if m.role == "assistant"][0]
+        assert assistant.content[0] == ProviderBlock(provider="google", kind="part", data=self.RAW)
+
+    def test_it_replays_exactly_as_it_arrived(self) -> None:
+        block = ProviderBlock(provider="google", kind="part", data=self.RAW)
+
+        parts = _build_contents_json([Message(role="assistant", content=[block])])[-1]["parts"]
+
+        assert parts == [self.RAW], "rebuilt instead, a part with no type here goes back as something else"
+
+    def test_a_part_from_another_provider_is_not_sent_here(self) -> None:
+        block = ProviderBlock(provider="openai", kind="web_search_call", data={"type": "web_search_call"})
+
+        content = _build_contents_json([Message(role="assistant", content=[block, TextBlock(text="hi")])])
+
+        assert content[-1]["parts"] == [{"text": "hi"}]

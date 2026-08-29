@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from typing import Final
 
 from axio.events import (
     BlockEnd,
@@ -17,6 +18,7 @@ from axio.events import (
     IterationEnd,
     IterationStart,
     ProviderEvent,
+    ProviderOutput,
     ReasoningDelta,
     ReasoningSignature,
     Refusal,
@@ -29,9 +31,13 @@ from axio.exceptions import StreamError
 from axio.types import StopReason, Usage, stop_reason_from
 from axio_sse import Payload, Reader, Wire, on
 
-from .request import STOP_REASONS
+from .request import PROVIDER, STOP_REASONS
 
 logger = logging.getLogger("axio.responses")
+
+#: Item types this reader turns into content of its own. Everything else is the API's own tooling
+#: — a search it ran, a file it read, code it executed — and has to travel back unread.
+_INTERPRETED: Final = frozenset({"message", "reasoning", "function_call"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +70,9 @@ class OutputItem(Wire):
     #: Present on a ``reasoning`` item when the request asked for it. Opaque, and sent back on
     #: the next request.
     encrypted_content: str = ""
+    #: The item exactly as it arrived. An item this reader does not interpret has to go back whole
+    #: on the next request, and no shape declared here would hold a type nobody has published yet.
+    raw: Payload = field(default_factory=Payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,7 +281,23 @@ class Responses(Reader[StreamEvent]):
         Without it a turn that reasoned and then called a tool starts the next round blind.
         """
         if wire.item.type == "reasoning" and wire.item.encrypted_content:
-            yield ReasoningSignature(index=wire.output_index, signature=wire.item.encrypted_content, id=wire.item.id)
+            yield ReasoningSignature(
+                index=wire.output_index,
+                signature=wire.item.encrypted_content,
+                id=wire.item.id,
+                provider=PROVIDER,
+            )
+        elif wire.item.type not in _INTERPRETED:
+            # The request says store=False, so this API keeps nothing: every item it produced is
+            # expected back on the next one. Watched as a ProviderEvent and never stored, the next
+            # request was missing the search the model had just answered from.
+            yield ProviderOutput(
+                index=wire.output_index,
+                provider=PROVIDER,
+                kind=wire.item.type,
+                data=dict(wire.item.raw),
+                id=wire.item.id,
+            )
         yield BlockEnd(index=wire.output_index)
 
     @on(ItemAdded)
@@ -284,7 +309,7 @@ class Responses(Reader[StreamEvent]):
         if item.id:
             self.call_ids[item.id] = item.call_id
         logger.info("Tool call started: %s (call_id=%s, item_id=%s)", item.name, item.call_id, item.id)
-        yield ToolUseStart(index=wire.output_index, tool_use_id=item.call_id, name=item.name)
+        yield ToolUseStart(index=wire.output_index, tool_use_id=item.call_id, name=item.name, provider=PROVIDER)
 
     @on(ArgumentsDelta)
     def _arguments(self, wire: ArgumentsDelta) -> Iterator[StreamEvent]:
@@ -394,7 +419,7 @@ class Responses(Reader[StreamEvent]):
         model ran, or the searches it made, matches on ``kind``. Any other consumer ignores it.
         """
         yield ProviderEvent(
-            provider="openai",
+            provider=PROVIDER,
             kind=name,
             data=dict(payload),
             index=payload.number("output_index", default=-1) if "output_index" in payload else None,
