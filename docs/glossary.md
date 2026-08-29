@@ -120,7 +120,7 @@ Terms used throughout Axio documentation.
 : A reasoning block whose text the provider withheld. `redacted` is true and `text` is empty. The signature still has to travel.
 
 **Refusal**
-: An event saying the model declined, or the provider blocked the turn. Deliberately not a `TextDelta`: as ordinary assistant text a decline is indistinguishable from an answer. `blocked_input` is true where the prompt was rejected and nothing was generated. Terminal but not an error — the same prompt sent again will be declined again.
+: An event saying the model declined, or the provider blocked the turn. Deliberately not a `TextDelta`: as ordinary assistant text a decline is indistinguishable from an answer. `blocked_input` is true where the prompt was rejected and nothing was generated. `spoken` is false where `text` is the provider's account of the decline rather than the model's words, which is what Anthropic's `stop_details.explanation` is. Terminal but not an error — the same prompt sent again will be declined again.
 
 **Responses API**
 : OpenAI's `/v1/responses` endpoint, the default for `OpenAITransport` (`api="responses"`) and the API `axio-transport-codex` speaks. It takes function tools and reasoning together, which `/v1/chat/completions` refuses. `axio-responses` holds both halves of it.

@@ -528,6 +528,9 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
             details = wire.delta.stop_details
             yield Refusal(
                 index=0,
+                # The provider's account of the decline, not the model's words: nothing was
+                # generated. Its own schema calls it unstable, so it is shown and never parsed.
+                spoken=False,
                 text=details.explanation,
                 category=details.category or None,
                 raw=dict(wire.delta.stop_details.raw),

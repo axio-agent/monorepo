@@ -856,7 +856,10 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             # A blocked prompt is a finished turn, so no candidate and no finishReason follow.
             turn.finished = True
             turn.stop_reason = StopReason.refusal
-            yield Refusal(index=0, category=block_reason, blocked_input=True, raw=dict(chunk.promptFeedback))
+            # No text and nothing spoken: this API rejects the prompt and generates nothing.
+            yield Refusal(
+                index=0, spoken=False, category=block_reason, blocked_input=True, raw=dict(chunk.promptFeedback)
+            )
 
         if not chunk.candidates:
             return

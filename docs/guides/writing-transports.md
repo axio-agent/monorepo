@@ -609,7 +609,14 @@ answer. As an empty successful turn it is indistinguishable from nothing at all.
 consumer can act on it.
 
 Emit `Refusal` and finish with `StopReason.refusal`. `AgentStream.get_final_text()` collects the
-refusal text, so `run()` returns the decline rather than the empty string it used to:
+refusal text, so `run()` returns the decline rather than the empty string it used to.
+
+Set `spoken=False` where the text is your own account of the decline rather than the model's
+words. OpenAI and the Responses API stream a refusal as output content, so theirs is spoken.
+Anthropic sends `stop_details.explanation` beside a response with no content at all, and Gemini
+rejects the prompt and generates nothing. The agent stores either kind as the turn's text — a
+stored turn with no content is refused by the next request — and a consumer that renders the two
+differently reads this flag:
 
 <!-- name: test_refusal_reaches_caller -->
 ```python

@@ -296,6 +296,19 @@ class Refusal:
     index: int
     text: str = ""
 
+    spoken: bool = True
+    """Whether ``text`` is the model's own words.
+
+    True on the endpoints that stream a refusal as output content, which is what OpenAI and the
+    Responses API do. False where the text is the provider explaining why it stopped: Anthropic
+    sends `stop_details.explanation`, which its own schema documents as unstable and not to be
+    parsed, and the model generated nothing at all.
+
+    The agent stores either kind as the turn's text, because a stored turn with no content is
+    refused by the next request and the explanation is the only account of the decline there is.
+    A consumer that renders the two differently — the model declining, against the provider
+    reporting a block — reads this."""
+
     category: str | None = None
     """The provider's own category, verbatim. Not normalised: the taxonomies do not overlap, and a
     mapping between them would state something no provider says."""

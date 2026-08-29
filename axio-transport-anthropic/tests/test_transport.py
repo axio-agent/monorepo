@@ -745,13 +745,16 @@ class TestRefusalAndCumulativeUsage:
         assert isinstance(refusal, Refusal)
         assert refusal.category == "cyber"
         assert refusal.text.startswith("This request was declined")
+        assert not refusal.spoken, "the provider explaining, not the model speaking"
         assert reader.finished().stop_reason == StopReason.refusal
 
     def test_a_decline_with_no_named_category_still_arrives(self) -> None:
         # Both fields are null where the decline maps to no category. That null is permanent, not a
         # placeholder, so it must not stop the event being emitted.
         made = Messages().read(Event(data=json.dumps({"delta": {"stop_reason": "refusal"}}), event="message_delta"))
-        assert made == [Refusal(index=0, text="", category=None, raw={})]
+        # `spoken` is false on this endpoint whatever the category: a decline arrives as a
+        # successful response with no content, so the model wrote none of this.
+        assert made == [Refusal(index=0, text="", spoken=False, category=None, raw={})]
 
     def test_an_ordinary_turn_emits_no_refusal(self) -> None:
         made = Messages().read(Event(data=json.dumps({"delta": {"stop_reason": "end_turn"}}), event="message_delta"))
