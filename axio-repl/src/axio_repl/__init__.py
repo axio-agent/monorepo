@@ -433,7 +433,10 @@ async def run_prompt(agent: Agent, ctx: MemoryContextStore, prompt: str) -> None
                 sys.stdout.flush()
 
             case IterationEnd():
-                pass
+                # The banner goes once per turn, and a prompt that runs tools has several. Set
+                # once for the whole prompt, a refusal in a later turn printed its text with
+                # nothing marking it as a refusal.
+                declined = False
 
             case Error(exception=exc):
                 print(f"\n{RED}Error: {exc}{RESET}", file=sys.stderr)

@@ -713,6 +713,9 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             location=self.location,
             model=model_spec,
             max_retries=self.max_retries,
+            # Both halves of the policy, or a deliberately patient retry became the Anthropic
+            # transport's own default of five seconds.
+            retry_base_delay=self.retry_base_delay,
             temperature=self.temperature,
             top_p=self.top_p,
             top_k=int(self.top_k) if self.top_k is not None else None,

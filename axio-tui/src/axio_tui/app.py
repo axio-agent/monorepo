@@ -165,12 +165,20 @@ class _ThinkingWidget(Static):
         super().__init__("", classes="meta")
         #: What was last drawn. Kept because Static gives no way to read it back.
         self.shown = ""
-        self._text = ""
+        #: Only the lines this widget shows. The whole reasoning was kept and split again on every
+        #: delta, so a model that reasons at length paid for its own output once per chunk.
+        self._tail: list[str] = [""]
+        #: How much reasoning arrived, which is all the two properties below need of it.
+        self._chars = 0
         self._done = False
         self._tokens = 0
 
     def add(self, delta: str) -> None:
-        self._text += delta
+        self._chars += len(delta)
+        lines = delta.split("\n")
+        self._tail[-1] += lines[0]
+        self._tail.extend(lines[1:])
+        del self._tail[: -self.LINES]
         self._draw()
 
     def collapse(self, tokens: int = 0) -> None:
@@ -181,7 +189,7 @@ class _ThinkingWidget(Static):
     @property
     def empty(self) -> bool:
         """Nothing to show and nothing to report, so the marker would say nothing either."""
-        return not self._text and not self._tokens
+        return not self._chars and not self._tokens
 
     @property
     def withheld(self) -> bool:
@@ -190,7 +198,7 @@ class _ThinkingWidget(Static):
         Its own choice, not a fault here: OpenAI withholds reasoning summaries from an
         unverified organisation. Worth saying, because the tokens are billed either way.
         """
-        return bool(self._tokens) and not self._text
+        return bool(self._tokens) and not self._chars
 
     def count(self, tokens: int) -> None:
         """The provider's own figure, which arrives after the answer has started."""
@@ -204,8 +212,7 @@ class _ThinkingWidget(Static):
             note = ", not sent by the provider" if self.withheld else ""
             self.shown = f"[dim]✻ thinking{cost}{note}[/]"
         else:
-            tail = self._text.splitlines()[-self.LINES :] or [""]
-            body = "\n".join(f"[dim]{escape(line)}[/]" for line in tail)
+            body = "\n".join(f"[dim]{escape(line)}[/]" for line in self._tail)
             self.shown = f"[dim italic]✻ thinking…[/]\n{body}"
         self.update(self.shown)
 

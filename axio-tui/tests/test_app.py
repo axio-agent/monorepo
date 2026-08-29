@@ -122,3 +122,19 @@ class TestTheThinkingWidget:
         spoken.collapse(0)
 
         assert not billed.empty and not spoken.empty
+
+
+def test_the_thinking_widget_keeps_only_the_lines_it_shows() -> None:
+    # The whole reasoning was kept and split again on every delta, so a model that reasons at
+    # length paid for its own output once per chunk.
+    from axio_tui.app import _ThinkingWidget
+
+    widget = _ThinkingWidget()
+    for at in range(200):
+        widget.add(f"line {at}\n")
+
+    assert len(widget._tail) <= _ThinkingWidget.LINES + 1
+    widget._draw()
+    assert "line 199" in widget.shown
+    assert "line 100" not in widget.shown
+    assert not widget.empty
