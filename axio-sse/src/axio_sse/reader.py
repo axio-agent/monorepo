@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Mapping
 from types import MappingProxyType
@@ -196,5 +197,13 @@ class Reader[T]:
         events.
         """
         async for event in events(chunks, until=until):
-            for made in self.read(event, strict=strict):
+            produced = self.read(event, strict=strict)
+            if not produced:
+                # An event this reader does not interpret yields nothing, so the consumer gets no
+                # turn on the loop. A stream that sends many of them in one read buffer — an
+                # endpoint that names one event family per tool it runs sends dozens — starved
+                # everything else until the buffer ran out, and a terminal UI stopped repainting.
+                await asyncio.sleep(0)
+                continue
+            for made in produced:
                 yield made

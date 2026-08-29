@@ -52,9 +52,15 @@ def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> 
     if isinstance(headers, Mapping):
         raw = str(headers.get("Retry-After", "")).strip()
         try:
-            return _bounded(float(raw))
+            seconds = float(raw)
         except ValueError:
-            pass
+            seconds = None
+        # Zero is the server saying "now" and is honoured. A negative count is not a wait at all —
+        # RFC 9110 defines the field as non-negative — so, like a date already past, it says
+        # nothing about when the limit lifts and falls through to the exponential wait. Clamped to
+        # zero it removed the backoff from every transport's retry loop.
+        if seconds is not None and seconds >= 0:
+            return _bounded(seconds)
         try:
             when = parsedate_to_datetime(raw)
         except (TypeError, ValueError):
@@ -72,7 +78,9 @@ def retry_delay(resp: HasHeaders | None, attempt: int, *, base: float = 2.0) -> 
 
 
 def _bounded(seconds: float) -> float:
-    """A wait this process can actually sit through, and never a negative one."""
-    if seconds != seconds:  # NaN, which float() reads from a header saying "nan"
-        return 0.0
-    return min(max(0.0, seconds), _LONGEST_WAIT)
+    """A wait this process can actually sit through.
+
+    Only figures already known to be a wait reach here: a header saying "nan" parses to a float
+    that fails the ``>= 0`` test above, and a date already past fails its own.
+    """
+    return min(seconds, _LONGEST_WAIT)

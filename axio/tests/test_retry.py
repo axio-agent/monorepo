@@ -55,8 +55,11 @@ class TestHowLongToWait:
     def test_a_header_that_is_neither_falls_back(self) -> None:
         assert retry_delay(_Response({"Retry-After": "soon-ish"}), 1, base=1.0) == 1.0
 
-    def test_a_negative_header_never_asks_to_wait_backwards(self) -> None:
-        assert retry_delay(_Response({"Retry-After": "-30"}), 1) == 0.0
+    def test_a_negative_header_backs_off_instead_of_not_waiting(self) -> None:
+        # RFC 9110 defines the field as non-negative, so a negative count is not a wait at all. It
+        # says nothing about when the limit lifts, and read as zero it removed the backoff from
+        # every transport's retry loop.
+        assert retry_delay(_Response({"Retry-After": "-30"}), 1, base=1.0) == 1.0
 
     def test_a_response_without_headers_falls_back(self) -> None:
         assert retry_delay(object(), 2, base=1.0) == 2.0  # type: ignore[arg-type]
