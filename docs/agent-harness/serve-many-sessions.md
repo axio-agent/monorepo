@@ -41,6 +41,13 @@ The registry lock prevents two cold requests from creating duplicate resources
 for one ID. A per-session lock serializes history mutation without blocking
 other sessions.
 
+The lock covers the registry and not the work. Opening a session starts a
+container, which takes seconds; held under the registry lock, one cold session
+makes every other session's first turn wait behind it. The registry therefore
+holds the task that opens the session. The lock is released as soon as that task
+exists, and each caller awaits it outside. A task that fails is removed, so the
+next request for that ID tries again instead of being handed the same failure.
+
 ```{literalinclude} ../../examples/tutorial/serve_many_sessions.py
 :language: python
 :caption: examples/tutorial/serve_many_sessions.py
