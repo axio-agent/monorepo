@@ -979,3 +979,60 @@ class TestABlockTheApiRanItselfSurvivesTheTurn:
         parts = _convert_messages(messages)[0]["content"]
 
         assert parts == [{"type": "text", "text": "hi"}]
+
+
+class TestASavedAnthropicSessionResumesAsItWasSaved:
+    """The same round-trip holes the OpenAI transport had, in the transport beside it."""
+
+    def test_the_selected_model_comes_back(self) -> None:
+        saved = AnthropicTransport(model=ANTHROPIC_MODELS["claude-opus-4-6"]).to_dict()
+
+        assert AnthropicTransport.from_dict(saved).model.id == "claude-opus-4-6"
+
+    def test_a_model_named_by_a_partial_config_is_found_in_the_class_registry(self) -> None:
+        # Handed an empty registry, a hand-written settings dict named a model and lost it.
+        restored = AnthropicTransport.from_dict({"name": "x", "model": "claude-opus-4-6"})
+
+        assert restored.model.id == "claude-opus-4-6"
+
+    def test_the_retry_policy_comes_back(self) -> None:
+        saved = AnthropicTransport(max_retries=2, retry_base_delay=0.5).to_dict()
+
+        restored = AnthropicTransport.from_dict(saved)
+
+        assert (restored.max_retries, restored.retry_base_delay) == (2, 0.5)
+
+    def test_the_sampling_settings_come_back(self) -> None:
+        # `from_dict` read all four and `to_dict` wrote none of them.
+        saved = AnthropicTransport(temperature=0.3, top_p=0.9, top_k=40, thinking_budget=2048).to_dict()
+
+        restored = AnthropicTransport.from_dict(saved)
+
+        assert (restored.temperature, restored.top_p, restored.top_k, restored.thinking_budget) == (
+            0.3,
+            0.9,
+            40,
+            2048,
+        )
+
+    def test_an_empty_credential_saved_on_purpose_is_not_filled_in_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-someone-elses")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://elsewhere.example/v1")
+        saved = AnthropicTransport(api_key="", base_url="").to_dict()
+
+        restored = AnthropicTransport.from_dict(saved)
+
+        assert (restored.api_key, restored.base_url) == ("", "")
+
+    def test_a_partial_config_still_takes_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-mine")
+
+        assert AnthropicTransport.from_dict({"name": "x"}).api_key == "sk-mine"
+
+    def test_a_number_that_will_not_read_takes_the_default(self) -> None:
+        saved = AnthropicTransport(max_retries=2).to_dict()
+        saved["max_retries"] = "soon"
+
+        assert AnthropicTransport.from_dict(saved).max_retries == AnthropicTransport().max_retries

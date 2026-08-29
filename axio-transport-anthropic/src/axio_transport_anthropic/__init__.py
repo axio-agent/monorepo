@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import importlib.util
 import json
 import logging
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, Protocol, Self, cast
 
@@ -592,6 +593,28 @@ class Messages(Reader[StreamEvent], by=EVENT_NAME):
         return IterationEnd(iteration=0, stop_reason=stop, usage=usage)
 
 
+def _saved(data: dict[str, Any], key: str, variable: str, fallback: str) -> str:
+    """What a saved config said for this field, or the environment where it said nothing at all."""
+    if (found := data.get(key)) is not None:
+        return str(found)
+    return os.environ.get(variable, fallback)
+
+
+def _number[T: (int, float)](data: dict[str, Any], key: str, as_type: Callable[[Any], T]) -> T | None:
+    """What a saved config said for this number, or None where it said nothing readable.
+
+    A saved value that will not convert takes the class default. Raising instead, one unreadable
+    number failed the whole session restore.
+    """
+    if (found := data.get(key)) is None:
+        return None
+    try:
+        return as_type(found)
+    except (TypeError, ValueError):
+        logger.warning("Saved %s is not a number (%r); taking the default", key, found)
+        return None
+
+
 @dataclass(slots=True)
 class AnthropicTransport(CompletionTransport):
     name: str = "Anthropic"
@@ -769,6 +792,13 @@ class AnthropicTransport(CompletionTransport):
             "name": self.name,
             "base_url": self.base_url,
             "api_key": self.api_key,
+            # The registry alone said which models exist, never which one was chosen, so a
+            # restored session resumed on the class default beside a history another model had
+            # written. The retry policy and the sampling settings went the same way: read back by
+            # `from_dict` and never written by anything.
+            "model": self.model.id,
+            "max_retries": self.max_retries,
+            "retry_base_delay": self.retry_base_delay,
             "models": [
                 {
                     "id": m.id,
@@ -787,6 +817,9 @@ class AnthropicTransport(CompletionTransport):
                 d["project"] = self.project
             if self.location:
                 d["location"] = self.location
+        for name in ("temperature", "top_p", "top_k", "thinking_budget"):
+            if (value := getattr(self, name)) is not None:
+                d[name] = value
         return d
 
     @classmethod
@@ -806,18 +839,37 @@ class AnthropicTransport(CompletionTransport):
                 for m in data.get("models", [])
             ]
         )
-        return cls(
+        chosen: dict[str, Any] = {}
+        if "models" in data:
+            # Passed only when the config saved a registry. Handed an empty one instead, a partial
+            # settings dict lost the class's own models, and with them any model it named.
+            chosen["models"] = models
+        if (retries := _number(data, "max_retries", int)) is not None:
+            chosen["max_retries"] = retries
+        if (delay := _number(data, "retry_base_delay", float)) is not None:
+            chosen["retry_base_delay"] = delay
+        built = cls(
             name=str(data.get("name", "")),
-            base_url=str(data.get("base_url", ""))
-            or os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
-            api_key=str(data.get("api_key", "")) or os.environ.get("ANTHROPIC_API_KEY", ""),
+            # Key absent, not value falsy: a partial settings dict omits what it wants the default
+            # for, while a full round trip writes every key. Read as falsy, a credential saved
+            # empty on purpose picked up whatever the restoring process happened to export.
+            base_url=_saved(data, "base_url", "ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
+            api_key=_saved(data, "api_key", "ANTHROPIC_API_KEY", ""),
             vertexai=bool(data.get("vertexai", False)),
             project=str(data.get("project", "")),
             location=str(data.get("location", "")),
-            temperature=float(data["temperature"]) if data.get("temperature") is not None else None,
-            top_p=float(data["top_p"]) if data.get("top_p") is not None else None,
-            top_k=int(data["top_k"]) if data.get("top_k") is not None else None,
-            thinking_budget=int(data["thinking_budget"]) if data.get("thinking_budget") is not None else None,
-            models=models,
+            temperature=_number(data, "temperature", float),
+            top_p=_number(data, "top_p", float),
+            top_k=_number(data, "top_k", int),
+            thinking_budget=_number(data, "thinking_budget", int),
             session=session,
+            **chosen,
         )
+        if (saved := data.get("model")) is None:
+            return built
+        # Against the registry the transport ended up with, which is the saved one where the
+        # config carried it and the class's own where it did not.
+        if (spec := built.models.get(str(saved))) is not None:
+            return dataclasses.replace(built, model=spec)
+        logger.warning("Saved model %r is in no registry this transport has; taking the default", saved)
+        return built
