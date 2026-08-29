@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 import pytest
 from aiohttp import web
+from axio.agent import Agent
 from axio.blocks import ImageBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.context import MemoryContextStore
 from axio.events import (
     BlockEnd,
     Citation,
@@ -28,9 +30,9 @@ from axio.events import (
 )
 from axio.exceptions import StreamError
 from axio.messages import Message
-from axio.testing import assert_stream_contract
+from axio.testing import StubTransport, assert_stream_contract, make_echo_tool
 from axio.tool import Tool
-from axio.types import StopReason
+from axio.types import StopReason, Usage
 from axio_sse import Event, UnknownEvent
 
 from axio_transport_anthropic import ANTHROPIC_MODELS, AnthropicTransport, Messages, _convert_messages
@@ -874,3 +876,32 @@ class TestAProofFromAnotherProviderIsNotSentHere:
         assert self._thinking(ReasoningBlock(text="hm", signature="sig")) == [
             {"type": "thinking", "thinking": "hm", "signature": "sig"}
         ]
+
+
+async def test_a_refused_call_reaches_the_next_request_with_its_reason() -> None:
+    """What the agent stored for a call it would not run has to survive the conversion.
+
+    The point of keeping the call is that the next request can tell it from a turn that called
+    nothing. Stored and then dropped here, the model is back to guessing.
+    """
+    transport = StubTransport(
+        [
+            [
+                ToolUseStart(index=0, tool_use_id="call_1", name="echo"),
+                ToolInputDelta(index=0, tool_use_id="call_1", partial_json='{"msg":"x"}'),
+                IterationEnd(1, StopReason.max_tokens, Usage(1, 1)),
+            ]
+        ]
+    )
+    context = MemoryContextStore()
+    async for _ in Agent(system="", tools=[make_echo_tool()], transport=transport).run_stream("hi", context):
+        pass
+
+    request = _convert_messages(await context.get_history())
+
+    calls = [p for m in request for p in m["content"] if p.get("type") == "tool_use"]
+    results = [p for m in request for p in m["content"] if p.get("type") == "tool_result"]
+    assert [p["id"] for p in calls] == ["call_1"]
+    assert [p["tool_use_id"] for p in results] == ["call_1"], "the API refuses a call nothing answered"
+    assert results[0]["is_error"] is True
+    assert "max_tokens" in results[0]["content"], "the reason is what the model reads to know why"

@@ -1128,3 +1128,60 @@ class TestAProviderHostedItemBecomesContent:
         block = ProviderBlock(provider="openai", kind="web_search_call", data=self.ITEM, id="ws_1")
 
         assert from_dict(to_dict(block)) == block
+
+
+class TestACorruptedStreamEndsTheTurn:
+    """A stream that lost data must not finish as though it carried all of it.
+
+    The transports raise where the loss happens — malformed JSON in a recognised event, an
+    undecodable byte, an event past the decoder's limit. What the agent owes the caller is that
+    none of the three ways a turn looks finished happen anyway.
+    """
+
+    @staticmethod
+    def _transport() -> StubTransport:
+        # Text and a complete call had already arrived when the stream broke.
+        return StubTransport(
+            [
+                [
+                    TextDelta(0, "half an ans"),
+                    ToolUseStart(0, "c1", "echo"),
+                    ToolInputDelta(0, "c1", '{"msg": "hi"}'),
+                    ValueError("event 'response.output_text.delta' carries data that is not JSON"),
+                ]
+            ]
+        )
+
+    async def test_it_does_not_end_as_a_finished_turn(self) -> None:
+        agent = Agent(system="", tools=[make_echo_tool()], transport=self._transport())
+
+        events = [e async for e in agent.run_stream("hi", MemoryContextStore())]
+
+        assert [e.stop_reason for e in events if isinstance(e, SessionEndEvent)] == [StopReason.error]
+        assert [type(e.exception).__name__ for e in events if isinstance(e, Error)] == ["ValueError"]
+        assert not [e for e in events if isinstance(e, IterationEnd)], "no iteration completed"
+
+    async def test_it_does_not_persist_the_half_turn(self) -> None:
+        # Stored, the partial text becomes the model's own answer on every later request.
+        context = MemoryContextStore()
+        agent = Agent(system="", tools=[make_echo_tool()], transport=self._transport())
+
+        async for _ in agent.run_stream("hi", context):
+            pass
+
+        assert [m.role for m in await context.get_history()] == ["user"]
+
+    async def test_it_does_not_run_the_calls_it_had_collected(self) -> None:
+        ran: list[str] = []
+
+        async def echo(msg: str) -> str:
+            ran.append(msg)
+            return msg
+
+        tool: Tool[Any] = Tool(name="echo", description="echo", handler=echo)
+        agent = Agent(system="", tools=[tool], transport=self._transport())
+
+        async for _ in agent.run_stream("hi", MemoryContextStore()):
+            pass
+
+        assert ran == [], "the stream never vouched for them"
