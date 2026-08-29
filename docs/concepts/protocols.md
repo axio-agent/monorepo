@@ -76,6 +76,14 @@ defaults to `"responses"` (`/v1/responses`). The OpenAI-compatible subclasses -
 The core `axio` package does not bundle any transport implementation. Install
 the appropriate package for your model provider.
 
+Every shipped transport reads its `text/event-stream` response through
+`axio-sse` rather than parsing SSE by hand. `axio-transport-openai` and
+`axio-transport-codex` also share `axio-responses`, which holds the Responses
+API's request builders and stream reader - the vocabulary those two
+transports speak. Neither package is a transport on its own; install them
+transitively as a transport's dependency, not directly. See {doc}`../api/sse`
+and {doc}`../api/responses`.
+
 A transport is also where two contracts outside the protocol are honoured. Every
 published provider stop reason is mapped onto a `StopReason`. An unmapped one
 becomes `StopReason.error`, which the agent's wildcard turns into a terminated
