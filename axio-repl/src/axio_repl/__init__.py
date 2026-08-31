@@ -19,7 +19,7 @@ import sys
 from collections.abc import Callable, Iterator
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import aiohttp
 from axio.agent import Agent
@@ -550,6 +550,13 @@ def _show_model(transport: Any) -> None:
     print(f"Available: {', '.join(transport.models.keys())}")
 
 
+def _resolve_model_arg(transport: Any, model_id: str) -> ModelSpec:
+    resolver = getattr(transport, "resolve_model", None)
+    if callable(resolver):
+        return cast(ModelSpec, resolver(model_id))
+    return cast(ModelSpec, transport.models[model_id])
+
+
 def _apply_model(
     transport: Any,
     agent: Agent,
@@ -558,7 +565,15 @@ def _apply_model(
     agents_text: str,
     arg: str,
 ) -> None:
-    matches = transport.models.search(arg)
+    try:
+        transport.model = _resolve_model_arg(transport, arg)
+    except KeyError:
+        matches = transport.models.search(arg)
+    else:
+        agent.system = build_system_prompt(root, transport.model, tools, agents_text)
+        print(f"Switched to {BOLD}{transport.model.id}{RESET}")
+        return
+
     if len(matches) == 1:
         transport.model = next(iter(matches.values()))
         agent.system = build_system_prompt(root, transport.model, tools, agents_text)
@@ -723,7 +738,12 @@ async def main() -> None:
         await transport.fetch_models()
 
         if args.model:
-            transport.model = transport.models[args.model]
+            try:
+                transport.model = _resolve_model_arg(transport, args.model)
+            except KeyError:
+                available_models = ", ".join(transport.models.keys())
+                print(f"No model matching {args.model!r}. Available: {available_models}", file=sys.stderr)
+                sys.exit(1)
 
         # Transport-level commands (available before agent creation).
         commands: dict[str, Command] = {

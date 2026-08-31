@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from axio.exceptions import StreamError
@@ -13,6 +13,8 @@ from axio.models import Capability, ModelSpec
 from axio_transport_openai import OpenAITransport, ThinkingMixin
 
 logger = logging.getLogger(__name__)
+
+_DYNAMIC_MODEL_VARIANTS = frozenset({"online", "nitro", "floor", "exacto"})
 
 
 @dataclass(slots=True)
@@ -24,6 +26,20 @@ class OpenRouterTransport(ThinkingMixin, OpenAITransport):
     base_url: str = "https://openrouter.ai/api/v1"
     model: ModelSpec = ModelSpec(id="google/gemini-2.5-pro-preview")
     thinking: bool = False
+
+    def resolve_model(self, model_id: str) -> ModelSpec:
+        """Resolve OpenRouter model IDs, including routed variants such as ``:nitro``."""
+        try:
+            return self.models[model_id]
+        except KeyError:
+            base_id, sep, variant = model_id.rpartition(":")
+            if not sep or not base_id or variant not in _DYNAMIC_MODEL_VARIANTS:
+                raise KeyError(model_id) from None
+            try:
+                base = self.models[base_id]
+            except KeyError:
+                raise KeyError(model_id) from None
+            return replace(base, id=model_id)
 
     async def fetch_models(self) -> None:
         """Fetch available models from OpenRouter ``/v1/models``."""
