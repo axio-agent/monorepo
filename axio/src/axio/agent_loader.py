@@ -123,7 +123,7 @@ class AgentLoader:
     def load(self, content: str) -> AgentSpec:
         """Parse *content* and return an :class:`AgentSpec`.
 
-        ``name`` defaults to ``""`` when not present; :meth:`load_file`
+        ``name`` defaults to ``""`` when not present.  :meth:`load_file`
         patches it from the file stem after calling this method.
         """
         raise NotImplementedError

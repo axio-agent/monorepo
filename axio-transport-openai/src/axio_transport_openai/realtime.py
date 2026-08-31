@@ -2,7 +2,7 @@
 
 Implements :class:`axio.transport.RealtimeTransport` against the OpenAI
 Realtime API (``wss://api.openai.com/v1/realtime``).  Provider events are
-mapped to axio :class:`StreamEvent` variants and the session's
+mapped to axio :class:`StreamEvent` variants.  The session's
 ``send`` / ``commit`` / ``interrupt`` / ``send_tool_result`` methods are
 mapped to the corresponding client events.
 """
@@ -59,7 +59,7 @@ def _convert_realtime_tools(tools: list[Tool[Any]]) -> list[dict[str, Any]]:
 def _flat_audio_format(media_type: str) -> str:
     """Translate axio audio media-type strings to OpenAI realtime v1 format strings.
 
-    realtime=v1 takes a flat string (``"pcm16"`` / ``"g711_ulaw"`` / ``"g711_alaw"``);
+    realtime=v1 takes a flat string (``"pcm16"`` / ``"g711_ulaw"`` / ``"g711_alaw"``).
     24 kHz PCM16 mono is the only sample rate the API currently supports.
     """
     if media_type.startswith("audio/pcm"):
@@ -77,8 +77,8 @@ class OpenAIRealtimeSession(RealtimeSession):
 
     ``ws`` may be any object that quacks like
     :class:`aiohttp.ClientWebSocketResponse` (``send_str``, async iteration
-    yielding :class:`aiohttp.WSMessage`-like objects, ``close``, ``closed``);
-    tests inject a stub.
+    yielding :class:`aiohttp.WSMessage`-like objects, ``close``, ``closed``).
+    Tests inject a stub.
     """
 
     ws: Any
@@ -120,7 +120,7 @@ class OpenAIRealtimeSession(RealtimeSession):
 
     async def commit(self) -> None:
         # OpenAI rejects input_audio_buffer.commit on an empty buffer
-        # ("input_audio_buffer_commit_empty"); skip it for text-only turns.
+        # ("input_audio_buffer_commit_empty").  Skip it for text-only turns.
         if self._audio_appended:
             await self._send_event({"type": "input_audio_buffer.commit"})
             self._audio_appended = False
@@ -178,7 +178,7 @@ class OpenAIRealtimeSession(RealtimeSession):
         out: list[StreamEvent] = []
         t = ev.get("type")
         # Both the v1 (realtime=v1) and the newer GA schemas appear on this
-        # endpoint depending on the model id; accept both event-name variants.
+        # endpoint depending on the model id.  Accept both event-name variants.
         if t in ("response.audio.delta", "response.output_audio.delta"):
             out.append(
                 AudioOutputDelta(
@@ -217,7 +217,7 @@ class OpenAIRealtimeSession(RealtimeSession):
             usage_data = resp.get("usage")
             usage: Usage | None = None
             if usage_data:
-                usage = Usage(
+                usage = Usage.reported(
                     input_tokens=usage_data.get("input_tokens", 0),
                     output_tokens=usage_data.get("output_tokens", 0),
                 )
@@ -248,7 +248,7 @@ class OpenAIRealtimeTransport(RealtimeTransport):
     Server-VAD knobs live here so callers can tune barge-in sensitivity
     without touching the transport internals.  When AEC is imperfect or
     the room is loud, the defaults can cause the model's own audio to
-    trip ``interrupt_response`` and cancel its response — bump
+    trip ``interrupt_response`` and cancel its response.  Bump
     ``vad_threshold`` higher, lengthen ``vad_silence_duration_ms``, or
     set ``vad_interrupt_response=False`` to require an explicit
     ``agent.interrupt()``.
@@ -306,8 +306,8 @@ class OpenAIRealtimeTransport(RealtimeTransport):
         # The realtime=v1 (gpt-4o-realtime / gpt-realtime) WebSocket schema is
         # flat — instructions / voice / *_audio_format / turn_detection / tools
         # live directly on session.  The nested {audio: {input, output}} shape
-        # belongs to the newer HTTP session-create REST endpoint and is rejected
-        # here with "Unknown parameter: 'session.audio'".
+        # belongs to the newer HTTP session-create REST endpoint.  Sent here it
+        # is rejected with "Unknown parameter: 'session.audio'".
         session_payload: dict[str, Any] = {
             "instructions": system,
             "input_audio_format": _flat_audio_format(input_audio_format),

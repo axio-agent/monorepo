@@ -15,9 +15,11 @@ from axio.agent import Agent
 from axio.compaction import compact_context
 from axio.context import ContextStore, MemoryContextStore, SessionInfo
 from axio.events import (
+    Citation,
     Error,
     IterationEnd,
     ReasoningDelta,
+    Refusal,
     SessionEndEvent,
     TextDelta,
     ToolFieldDelta,
@@ -33,8 +35,10 @@ from axio.permission import PermissionGuard
 from axio.selector import ToolSelector
 from axio.tool import Tool
 from axio.tool_args import ToolArgStream
+from axio.types import INCOMPLETE
 from axio_context_sqlite import SQLiteContextStore
 from pygments.token import Token  # type: ignore[import-untyped]
+from rich.markup import escape
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
@@ -119,6 +123,18 @@ class _Markdown(Markdown):
     BLOCKS = {**Markdown.BLOCKS, "fence": _MonokaiFence, "code_block": _MonokaiFence}
 
 
+def _citation_markdown(title: str | None, cited: str, url: str | None) -> str:
+    """Render one citation as a Markdown link.
+
+    A `]` in a provider's title or a `)` in its query string closes the link early and spills the
+    rest into the transcript, so the label is escaped and the target is encoded.
+    """
+    # The backslash goes first, or a title ending in one escapes the bracket that closes the label.
+    label = (title or cited or url or "source").replace("\\", r"\\").replace("[", r"\[").replace("]", r"\]")
+    target = (url or "").replace("(", "%28").replace(")", "%29").replace(" ", "%20")
+    return f" [{label}]({target})" if url else f" _[{label}]_"
+
+
 @dataclass
 class _ToolCallInfo:
     name: str = ""
@@ -126,6 +142,74 @@ class _ToolCallInfo:
     input: dict[str, Any] = field(default_factory=dict)
     content: str = ""
     live_args: dict[str, str] = field(default_factory=dict)  # live streaming args
+
+
+class _ThinkingWidget(Static):
+    """The model's reasoning while it lasts, and one line about it afterwards.
+
+    Kept out of the transcript. Left in, a model that reasons at length buries the answer it was
+    reasoning towards, and scrolling back through the conversation stops being useful.
+    """
+
+    #: How much of the reasoning stays on screen while it streams.
+    LINES = 6
+
+    DEFAULT_CSS = """
+    _ThinkingWidget {
+        height: auto;
+        margin: 0;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__("", classes="meta")
+        #: What was last drawn. Kept because Static gives no way to read it back.
+        self.shown = ""
+        #: Only the lines this widget shows. The whole reasoning was kept and split again on every
+        #: delta, so a model that reasons at length paid for its own output once per chunk.
+        self._tail: list[str] = [""]
+        #: How much reasoning arrived, which is all the two properties below need of it.
+        self._chars = 0
+        self._done = False
+        self._tokens = 0
+
+    def add(self, delta: str) -> None:
+        self._chars += len(delta)
+        lines = delta.split("\n")
+        self._tail[-1] += lines[0]
+        self._tail.extend(lines[1:])
+        del self._tail[: -self.LINES]
+        self._draw()
+
+    def collapse(self, tokens: int = 0) -> None:
+        """Fold to one line, which is what the answer arriving means."""
+        self._done, self._tokens = True, tokens or self._tokens
+        self._draw()
+
+    @property
+    def empty(self) -> bool:
+        """Nothing to show and nothing to report, so the marker would say nothing either."""
+        return not self._chars and not self._tokens
+
+    @property
+    def withheld(self) -> bool:
+        """The provider charged for reasoning and sent none of it.
+
+        Its own choice, not a fault here: OpenAI withholds reasoning summaries from an
+        unverified organisation. Worth saying, because the tokens are billed either way.
+        """
+        return bool(self._tokens) and not self._chars
+
+    def _draw(self) -> None:
+        if self._done:
+            cost = f" · {self._tokens:,} tokens" if self._tokens else ""
+            note = ", not sent by the provider" if self.withheld else ""
+            self.shown = f"[dim]✻ thinking{cost}{note}[/]"
+        else:
+            body = "\n".join(f"[dim]{escape(line)}[/]" for line in self._tail)
+            self.shown = f"[dim italic]✻ thinking…[/]\n{body}"
+        self.update(self.shown)
 
 
 class _ToolStatusWidget(Static):
@@ -375,6 +459,8 @@ class AgentApp(App[None]):
         self._guard_lock = asyncio.Lock()
         self._current_md: Markdown | None = None
         self._response_text = ""
+        self._declined = False
+        self._thinking: _ThinkingWidget | None = None
         self._text_dirty = False
         self._last_input_tokens = 0
         self._chat_model: ModelSpec | None = None
@@ -760,6 +846,51 @@ class AgentApp(App[None]):
         await self._current_md.update(self._response_text)
         scroll.scroll_end(animate=False)
 
+    async def _ensure_thinking(self) -> _ThinkingWidget:
+        """The widget this turn's reasoning goes to, mounted the first time there is any.
+
+        Reasoning arrives before the answer, so the answer being written is closed first.
+        """
+        if self._thinking is None:
+            await self._flush_text()
+            self._current_md = None
+            self._response_text = ""
+            await self._mount_thinking()
+        assert self._thinking is not None
+        return self._thinking
+
+    async def _mount_thinking(self, *, before_answer: bool = False) -> _ThinkingWidget:
+        """A thinking widget in the log, in front of the answer where the answer came first.
+
+        Reasoning happens before the answer. The marker for reasoning a provider withheld is
+        mounted once the answer is rendered, so it goes in front of that widget, not below it.
+        """
+        self._thinking = _ThinkingWidget()
+        scroll = self.query_one("#log", VerticalScroll)
+        if not scroll.is_attached:
+            return self._thinking
+        answer = self._current_md
+        if before_answer and answer is not None and answer.is_attached:
+            await scroll.mount(self._thinking, before=answer)
+        else:
+            await scroll.mount(self._thinking)
+            scroll.scroll_end(animate=False)
+        return self._thinking
+
+    async def _close_thinking(self, tokens: int = 0) -> None:
+        """Fold the reasoning pane and let go of it, which is the only way to let go of it.
+
+        Cleared without folding, an expanded pane was stranded in the transcript.
+        """
+        if self._thinking is None:
+            return
+        self._thinking.collapse(tokens)
+        if self._thinking.empty:
+            # An iteration that neither reasoned nor was billed for it. A bare marker there says
+            # nothing and reads as a second turn.
+            await self._thinking.remove()
+        self._thinking = None
+
     async def _ensure_md(self) -> Markdown:
         if self._current_md is None:
             scroll = self.query_one("#log", VerticalScroll)
@@ -775,6 +906,7 @@ class AgentApp(App[None]):
         await self._flush_text()
         self._current_md = None
         self._response_text = ""
+        self._declined = False
         scroll = self.query_one("#log", VerticalScroll)
         if not scroll.is_attached:
             return
@@ -786,6 +918,7 @@ class AgentApp(App[None]):
         await self._flush_text()
         self._current_md = None
         self._response_text = ""
+        self._declined = False
         scroll = self.query_one("#log", VerticalScroll)
         if not scroll.is_attached:
             return
@@ -797,6 +930,7 @@ class AgentApp(App[None]):
             await self._flush_text()
             self._current_md = None
             self._response_text = ""
+            self._declined = False
             self._tool_status = _ToolStatusWidget()
             scroll = self.query_one("#log", VerticalScroll)
             if scroll.is_attached:
@@ -1346,14 +1480,31 @@ class AgentApp(App[None]):
                             case ReasoningDelta(delta=delta):
                                 self._tool_status = None
                                 self._agent_emoji = "🤔"
-                                await self._ensure_md()
-                                self._response_text += delta
-                                self._text_dirty = True
+                                (await self._ensure_thinking()).add(delta)
                             case TextDelta(delta=delta):
                                 self._tool_status = None
                                 self._agent_emoji = "💬"
+                                if self._thinking is not None:
+                                    self._thinking.collapse()
                                 await self._ensure_md()
                                 self._response_text += delta
+                                self._text_dirty = True
+                            case Refusal(text=text, category=category, blocked_input=blocked):
+                                # Rendered, and not as ordinary text: a declined turn otherwise looked like the model
+                                # answering with nothing. The banner goes once, because a refusal arrives in fragments.
+                                self._tool_status = None
+                                self._agent_emoji = "🚫"
+                                await self._ensure_md()
+                                if not self._declined:
+                                    self._declined = True
+                                    what = "Prompt blocked" if blocked else "Declined"
+                                    tail = f" ({category})" if category else ""
+                                    self._response_text += f"\n\n**{what}{tail}.** "
+                                self._response_text += text
+                                self._text_dirty = True
+                            case Citation(cited_text=cited, title=title, url=url):
+                                await self._ensure_md()
+                                self._response_text += _citation_markdown(title, cited, url)
                                 self._text_dirty = True
                             case ToolUseStart(tool_use_id=tid, name=name) if name != "status_line":
                                 self._agent_emoji = "🔧"
@@ -1377,13 +1528,25 @@ class AgentApp(App[None]):
                                 w = await self._ensure_tool_status()
                                 w.complete(tid, is_error=is_error, content=content, tool_input=inp)
                             case IterationEnd(usage=usage):
+                                # One arm, or a turn that reasoned skips the status update below.
+                                if self._thinking is None and usage.reasoning_tokens:
+                                    # Billed for reasoning and none streamed: the provider
+                                    # withheld it. The answer is already on screen.
+                                    await self._mount_thinking(before_answer=True)
+                                await self._close_thinking(usage.reasoning_tokens)
                                 self._agent_emoji = "✅"
                                 self._last_input_tokens = usage.input_tokens
                                 await self._update_status()
-                            case SessionEndEvent():
-                                await self._flush_text()
-                                self._current_md = None
-                                self._response_text = ""
+                            case SessionEndEvent(stop_reason=reason):
+                                await self._close_thinking()
+                                if reason in INCOMPLETE:
+                                    # Nothing else says so, and the answer reads as a whole one.
+                                    await self._write_meta(f"[red]Incomplete: {reason}[/]")
+                                else:
+                                    await self._flush_text()
+                                    self._current_md = None
+                                    self._response_text = ""
+                                    self._declined = False
                                 self._tool_status = None
                             case Error(exception=exc):
                                 await self._write_meta(f"[red]Error: {exc}[/]")
@@ -1407,11 +1570,13 @@ class AgentApp(App[None]):
             while not self._pending_input.empty():
                 self._pending_input.get_nowait()
             self._tool_status = None
+            await self._close_thinking()
             await self._update_status()
             if cancelled:
                 await self._flush_text()
                 self._current_md = None
                 self._response_text = ""
+                self._declined = False
                 await self._write_meta("[yellow]--- Cancelled ---[/]")
             self.query_one("#input", Input).focus()
 
@@ -1489,7 +1654,11 @@ class AgentApp(App[None]):
         await self.query_one("#log", VerticalScroll).remove_children()
         self._current_md = None
         self._response_text = ""
+        self._declined = False
         self._tool_status = None
+        # Removed with every other child, so what is left here is a detached widget. Dropped
+        # rather than folded, because the pane it pointed at is gone with the rest of the log.
+        self._thinking = None
         self._nav_index = None
 
     def action_quit(self) -> None:  # type: ignore[override]

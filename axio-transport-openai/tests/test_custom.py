@@ -146,6 +146,19 @@ def test_roundtrip_to_dict_from_dict() -> None:
     assert t3.session is None
 
 
+def test_roundtrip_explicit_empty_connection_fields_do_not_use_openai_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-openai-credential")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://unrelated.example/v1")
+    data = _make_provider(name="local", base_url="", api_key="").to_dict()
+
+    restored = OpenAICompatibleTransport.from_dict(data)
+
+    assert restored.api_key == ""
+    assert restored.base_url == ""
+
+
 def test_roundtrip_unknown_capability_dropped(tmp_path: Path) -> None:
     cfg_path = tmp_path / "cfg.json"
     raw = [

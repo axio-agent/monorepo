@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .blocks import AudioMediaType, ImageMediaType, VideoMediaType
+from .exceptions import StreamError
 from .types import StopReason, ToolCallID, ToolName, Usage
 
 
@@ -26,6 +27,15 @@ class ToolUseStart:
     index: int
     tool_use_id: ToolCallID
     name: ToolName
+
+    signature: str = ""
+    """Opaque proof that this call is the model's own, where the provider issues one for the call
+    rather than for the reasoning beside it. Replayed on the call itself: attached to a reasoning
+    block instead, the call comes back unsigned and the provider refuses the turn."""
+
+    provider: str = ""
+    """Which protocol issued ``signature``, in the names :class:`ProviderEvent` uses. Stored with
+    the proof so a session that changes transport does not replay it to one that never made it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +116,18 @@ class IterationEnd:
     iteration: int
     stop_reason: StopReason
     usage: Usage
+    #: The provider's own word for why it stopped, where it differs from what axio calls it. Kept
+    #: so a caller can act on a reason this vocabulary has no name for.
+    raw: str = ""
+
+    def __post_init__(self) -> None:
+        """Refuse ``StopReason.error``, which the agent can only report as a bare RuntimeError.
+
+        The rule was a habit each transport had to acquire, and the shared reader every OpenAI
+        turn goes through never acquired it. Raise ``StreamError`` with the provider's own message.
+        """
+        if self.stop_reason is StopReason.error:
+            raise StreamError("IterationEnd cannot carry StopReason.error; raise StreamError instead")
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,9 +181,214 @@ class TurnComplete:
     usage: Usage | None = None
 
 
+# ── Provider passthrough ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderEvent:
+    """A provider payload axio does not model, forwarded verbatim.
+
+    ``data`` is the provider's own JSON object exactly as it was parsed: no renaming, no coercion,
+    no filtering.
+
+    How completely a transport forwards depends on what its stream names. A stream that names each
+    event has a reader. That reader forwards every payload it does not interpret, so nothing is
+    dropped. A stream with no discriminator — one shape per payload, read field by field — has no
+    such catch. Those transports forward the parts they know how to name. A field the provider adds
+    inside a payload reaches nobody until someone reads it.
+
+    A consumer that does not recognise ``(provider, kind)`` ignores it.
+    """
+
+    provider: str
+    """Which transport produced it: ``"anthropic"``, ``"openai"``, ``"google"``. The Codex
+    transport reads its stream through the shared Responses reader, so its events say
+    ``"openai"`` rather than naming a fourth provider."""
+
+    kind: str
+    """The provider's own discriminator, verbatim, never a name axio invented: matching on it is
+    matching the vocabulary the provider publishes."""
+
+    data: dict[str, Any]
+
+    index: int | None = None
+    """The content-block or output index, where the payload carries one."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderOutput:
+    """One output item of this turn that the next request has to send back unread.
+
+    :class:`ProviderEvent` forwards what a caller may want to watch; this one names what the turn
+    is not complete without. An endpoint that keeps no history of its own — ``store=False`` on the
+    Responses API — expects every item it produced back on the next request, including those from
+    the tools it ran itself: a web search, a file search, a code interpreter, and item types that
+    do not exist yet. Read as news rather than as content, they were watched and dropped, and the
+    next request was missing what the model had answered from.
+
+    The agent stores it as a :class:`~axio.blocks.ProviderBlock`, and the transport that speaks the
+    same protocol replays ``data`` verbatim.
+    """
+
+    provider: str
+    """Which protocol produced it, in the names :class:`ProviderEvent` uses."""
+    kind: str
+    """The item's own type, verbatim."""
+    data: dict[str, Any]
+    """The item exactly as it arrived, never interpreted here."""
+    index: int
+    """The output index this item occupied. Declared in the same position as on
+    :class:`ProviderEvent`, whose first three fields these are: with the two orders crossed, one
+    built positionally in the shape of the other assigned every field to the wrong name."""
+    id: str = ""
+
+
+# ── Block lifecycle ─────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class BlockEnd:
+    """The content block at ``index`` is complete.
+
+    The point at which accumulated :class:`ToolInputDelta` fragments are guaranteed to parse. Every
+    provider marks it and axio has had no terminator for it until now.
+    """
+
+    index: int
+
+
+# ── Attribution and refusal ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class Citation:
+    """A span of generated text attributed to a source.
+
+    What Anthropic's citation shapes, OpenAI's annotations and Google's grounding metadata have in
+    common. ``raw`` keeps the provider's whole object for the fields that differ.
+    """
+
+    index: int
+    cited_text: str = ""
+    title: str | None = None
+    url: str | None = None
+
+    source_id: str | None = None
+    """Whatever identifies the source inside this request: a file id, a document index, a chunk id."""
+
+    start: int | None = None
+    end: int | None = None
+    unit: Literal["char", "byte", "page", "block", "unknown"] = "unknown"
+    """What ``start`` and ``end`` count. Stated because the providers disagree — OpenAI counts
+    characters and Google counts bytes — so offsets from different units must never be compared."""
+
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    """The model declined, or the provider blocked the turn.
+
+    This is deliberately not a :class:`TextDelta`. As ordinary assistant text, or as an empty turn
+    that succeeded, a refusal is indistinguishable from an answer and no consumer can act on it.
+    """
+
+    index: int
+    text: str = ""
+
+    spoken: bool = True
+    """Whether ``text`` is the model's own words.
+
+    True on the endpoints that stream a refusal as output content, which is what OpenAI and the
+    Responses API do. False where the text is the provider explaining why it stopped: Anthropic
+    sends `stop_details.explanation`, which its own schema documents as unstable and not to be
+    parsed, and the model generated nothing at all.
+
+    The agent stores either kind as the turn's text, because a stored turn with no content is
+    refused by the next request and the explanation is the only account of the decline there is.
+    A consumer that renders the two differently — the model declining, against the provider
+    reporting a block — reads this."""
+
+    category: str | None = None
+    """The provider's own category, verbatim. Not normalised: the taxonomies do not overlap, and a
+    mapping between them would state something no provider says."""
+
+    blocked_input: bool = False
+    """True where the provider rejected the prompt rather than the answer, so nothing was generated
+    and sending the same prompt again cannot succeed."""
+
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+# ── Provenance ──────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningSignature:
+    """Opaque proof that a reasoning block is the provider's own, to be replayed unaltered.
+
+    Anthropic refuses a returned ``thinking`` block whose signature is missing or changed, and
+    Google publishes a ``MISSING_THOUGHT_SIGNATURE`` finish reason for the same failure. Never
+    inspect, decode, re-encode or truncate ``data``.
+    """
+
+    index: int
+    signature: str
+
+    redacted: bool = False
+    """True where the payload replaces the reasoning text instead of accompanying it."""
+
+    id: str = ""
+    """How the provider names the block this proves, where it names them. Replayed beside the
+    proof, because a provider that identifies reasoning by id refuses the pair without it."""
+
+    provider: str = ""
+    """Which protocol issued this proof, in the names :class:`ProviderEvent` uses."""
+
+
+@dataclass(frozen=True, slots=True)
+class TextSignature:
+    """Opaque proof that a block of answer text is the provider's own, to be replayed unaltered.
+
+    Google signs the part it issued the proof for, and answer text is one such part. The proof
+    belongs to the text block, not to the reasoning or the call beside it: replayed on another part
+    it proves nothing, and the turn fails with ``MISSING_THOUGHT_SIGNATURE``. Never inspect, decode,
+    re-encode or truncate ``data``.
+
+    Emitted after the text it signs, never before.
+    """
+
+    index: int
+    signature: str
+
+    provider: str = ""
+    """Which protocol issued this proof, in the names :class:`ProviderEvent` uses."""
+
+
+# ── Iteration lifecycle ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class IterationStart:
+    """One provider request has begun.
+
+    ``model`` is the model that actually served the turn, which need not be the one asked for.
+    Server-side fallback, sticky routing and dated-snapshot resolution all substitute a different
+    model at a different price. A cost lookup therefore keys off this rather than off the request.
+    """
+
+    iteration: int
+    id: str | None = None
+    model: str | None = None
+
+
 type StreamEvent = (
     ReasoningDelta
+    | ReasoningSignature
     | TextDelta
+    | TextSignature
+    | Refusal
+    | Citation
     | ImageOutput
     | AudioOutput
     | VideoOutput
@@ -172,8 +399,12 @@ type StreamEvent = (
     | ToolFieldEnd
     | ToolOutputDelta
     | ToolResult
+    | BlockEnd
+    | IterationStart
     | IterationEnd
     | Error
+    | ProviderEvent
+    | ProviderOutput
     | SessionEndEvent
     | AudioOutputDelta
     | TranscriptDelta

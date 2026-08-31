@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 
 import pytest
 
-from axio.events import Error, SessionEndEvent, StreamEvent, TextDelta
+from axio.agent import Agent
+from axio.context import MemoryContextStore
+from axio.events import Error, IterationEnd, Refusal, SessionEndEvent, StreamEvent, TextDelta
 from axio.exceptions import StreamError
 from axio.stream import AgentStream
+from axio.testing import StubTransport
 from axio.types import StopReason, Usage
 
 
@@ -85,3 +89,55 @@ class TestMultipleLoops:
         _ = [e async for e in stream]
         second = [e async for e in stream]
         assert second == []
+
+
+class TestRefusalReachesTheResult:
+    async def test_run_returns_the_refusal_text(self) -> None:
+        # A refusal arrives instead of the answer, never beside it. Collected nowhere, the public
+        # run() API returned an empty string for a turn that had text the caller needed to see.
+        transport = StubTransport(
+            [
+                [
+                    Refusal(index=0, text="I cannot help with that"),
+                    IterationEnd(1, StopReason.refusal, Usage(10, 5)),
+                ]
+            ]
+        )
+        agent = Agent(system="", tools=[], transport=transport)
+        assert await agent.run("hi", MemoryContextStore()) == "I cannot help with that"
+
+    async def test_a_refusal_that_arrives_in_fragments_is_joined(self) -> None:
+        transport = StubTransport(
+            [
+                [
+                    Refusal(index=0, text="I cannot "),
+                    Refusal(index=0, text="help with that"),
+                    IterationEnd(1, StopReason.refusal, Usage(10, 5)),
+                ]
+            ]
+        )
+        agent = Agent(system="", tools=[], transport=transport)
+        assert await agent.run("hi", MemoryContextStore()) == "I cannot help with that"
+
+
+async def test_a_truncated_answer_is_returned_and_reported(caplog: pytest.LogCaptureFixture) -> None:
+    # A `str` has nowhere to put the reason, so the answer comes back as it is and the run says
+    # what it was. Silent, a truncated answer reads exactly like one the model finished.
+    transport = StubTransport([[TextDelta(0, "half an ans"), IterationEnd(1, StopReason.max_tokens, Usage(1, 1))]])
+    agent = Agent(system="", transport=transport)
+
+    with caplog.at_level(logging.WARNING, logger="axio.stream"):
+        said = await agent.run("go", MemoryContextStore())
+
+    assert said == "half an ans"
+    assert any("did not finish" in record.getMessage() for record in caplog.records)
+
+
+async def test_a_run_that_hit_max_iterations_raises_rather_than_answering() -> None:
+    # It ends on StopReason.error like any other failure, and `get_final_text` raises on the Error
+    # beside it. Yielded bare, the half-finished text came back as the answer.
+    transport = StubTransport([[TextDelta(0, "looping"), IterationEnd(1, StopReason.tool_use, Usage(1, 1))]])
+    agent = Agent(system="", transport=transport, max_iterations=2)
+
+    with pytest.raises(StreamError, match="max_iterations"):
+        await agent.run("go", MemoryContextStore())

@@ -66,8 +66,8 @@ assert "limit" not in schema.get("required", [])
 ```
 
 Parameters with a `default` value are omitted from `required` in the schema.
-When the LLM omits an optional parameter, the default is applied automatically
-before the handler is called - no `None` check needed.
+When the LLM omits an optional parameter, the default is applied
+automatically before the handler is called. No `None` check is needed.
 
 ### Numeric constraints
 
@@ -200,7 +200,7 @@ tool = Tool(
 
 ## Error handling
 
-If your handler raises an exception, Axio wraps it in `HandlerError` and
+If your handler raises an exception, Axio wraps it in `HandlerError`. It
 sends the error message back to the model as a `ToolResultBlock` with
 `is_error=True`. The model sees the error and can adjust its approach.
 

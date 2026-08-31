@@ -21,3 +21,13 @@ Axio `Tool` definitions.
 .. autoclass:: axio_tools_mcp.MCPRegistry
    :members:
 ```
+
+## Plugin
+
+`MCPPlugin` is what the `axio.tools.settings` entry point resolves to, so a host
+application can offer MCP server configuration without importing this package.
+
+```{eval-rst}
+.. autoclass:: axio_tools_mcp.MCPPlugin
+   :members:
+```

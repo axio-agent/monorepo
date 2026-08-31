@@ -1,32 +1,38 @@
 # Core Concepts
 
 Axio is assembled from a small set of well-defined building blocks. Each one
-has a single responsibility and a stable interface - swap any of them without
+has a single responsibility and a stable interface. Swap any of them without
 touching the rest.
 
 ## Building blocks
 
 ### Agent
 
-The {doc}`Agent <agent>` is the central orchestrator. It is a frozen dataclass
-that wires a transport, a context store, and a set of tools into a loop:
+The {doc}`Agent <agent>` is the central orchestrator. It is a `slots=True`
+dataclass that wires a transport, a context store, and a set of tools into a
+loop:
 
 1. Send conversation history to the transport.
-2. Collect `StreamEvent` values as they arrive.
+2. Collect `StreamEvent` values as they arrive, forwarding every one of them to
+   the consumer and folding text, refusals and reasoning into the turn.
 3. When the model issues tool calls - dispatch all of them **concurrently** via
    `asyncio.gather`, append the results, and loop.
-4. When the model produces a final text response - emit `SessionEndEvent` and
-   return.
+4. Otherwise store the turn and let the stop reason decide. `end_turn` and
+   `refusal` end the run, `pause_turn` resumes it, and anything else ends it
+   with an `Error`.
+
+Derive a configured agent with `agent.copy(**overrides)` rather than mutating
+one.
 
 The agent is deliberately thin. It has no opinions about retries, rate limits,
-or logging - those belong to the transport or the application layer.
+or logging. Those belong to the transport or the application layer.
 
 ### Transport
 
 A {doc}`transport <protocols>` is any object that implements the
 `CompletionTransport` protocol - a single `stream()` method that takes the
 conversation history and yields `StreamEvent` values. The core package ships no
-transport of its own; install the one that matches your model provider:
+transport of its own. Install the one that matches your model provider:
 
 | Package | Provider |
 |---|---|
@@ -36,12 +42,14 @@ transport of its own; install the one that matches your model provider:
 | `axio-transport-google` | Google Gemini (Developer API and Vertex AI) |
 
 Because a transport is just a protocol, you can implement your own with nothing
-more than `aiohttp` - no SDK required.
+more than `aiohttp`. No SDK is required. The shipped transports read their
+`text/event-stream` responses through `axio-sse` rather than parsing SSE by
+hand. See {doc}`../guides/writing-transports`.
 
 ### Tools
 
 A plain `async def` function is a tool handler. The {doc}`Tool <tools>`
-dataclass is the glue that declares it as an agent tool: it attaches a stable
+dataclass is the glue that declares it as an agent tool. It attaches a stable
 name, generated input schema, description, guards, and an optional concurrency
 limit. A tool call is one concrete model request to invoke that definition.
 

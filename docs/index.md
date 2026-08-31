@@ -20,8 +20,8 @@ deployment.
 :link: quick-start
 :link-type: doc
 
-The canonical tutorial: build a REPL, make it persistent, then turn it into a
-multi-session cloud harness with a Docker sandbox per session.
+The canonical course. Each lesson fixes the next failure, from a text-only
+assistant to a tested multi-session harness with isolated execution.
 :::
 
 :::{grid-item-card} Core Concepts
@@ -64,14 +64,13 @@ consumes those events, executes requested tools, appends results to context,
 and calls the transport again. Your harness consumes the same event stream and
 turns it into application behavior.
 
-Start with {doc}`quick-start`. It develops this entire flow as one program:
+Start with {doc}`quick-start`. One small harness grows through four causal
+stages:
 
-1. define a tool contract;
-2. stream one agent turn in a terminal REPL;
-3. replace memory context with SQLite;
-4. separate sessions and serialize turns;
-5. bind a distinct Docker sandbox to every session;
-6. adapt typed events to an HTTP or WebSocket protocol.
+1. give a text-only agent useful tools and enforce their boundaries;
+2. make every action visible, persistent, and bounded in context;
+3. isolate generated code and separate concurrent user sessions;
+4. add runtime integrations, a product event protocol, and deterministic tests.
 
 ## Design principles
 
@@ -84,16 +83,18 @@ Provider isolation
   reasons stay behind CompletionTransport.
 
 Typed streaming
-: Text, tool requests, tool results, usage, and failures are observable while
-  the turn runs.
+: Text, reasoning, refusals, citations, tool requests, tool results, usage, and
+  failures are observable while the turn runs. A payload axio has no type for is
+  forwarded rather than dropped, so nothing a provider sends disappears on the way
+  through.
 
 Application-owned state
 : Context is supplied by the caller. The same agent definition can serve many
   isolated sessions.
 
 Plain async tools
-: Tool handlers are async functions. Annotations become the input schema;
-  guards, runtime context, and concurrency limits are explicit.
+: Tool handlers are async functions. Annotations become the input schema.
+  Guards, runtime context, and concurrency limits are explicit.
 
 ```{toctree}
 :maxdepth: 2

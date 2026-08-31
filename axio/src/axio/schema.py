@@ -143,3 +143,55 @@ def build_tool_schema(
     if required:
         schema["required"] = required
     return schema
+
+
+#: Keys whose value maps names to schemas. A key inside one of these is the caller's own name, so
+#: ``title`` there is a tool argument rather than the JSON Schema keyword.
+_NAMED_SCHEMAS = frozenset({"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"})
+
+#: Keys whose value is one schema, or a list of them.
+_NESTED_SCHEMAS = frozenset(
+    {
+        "items",
+        "prefixItems",
+        "unevaluatedItems",
+        "contentSchema",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "contains",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+        "allOf",
+        "anyOf",
+        "oneOf",
+    }
+)
+
+
+def strip_title(schema: dict[str, Any]) -> dict[str, Any]:
+    """The schema without its ``title`` keywords, at every depth.
+
+    ``build_tool_schema`` writes none, so this is for a schema that came from somewhere else: a
+    pydantic model names every model and field, no provider reads those names, and a large tool set
+    pays for them on every request.
+
+    Only the keywords that hold schemas are walked. ``const``, ``default``, ``enum`` and
+    ``examples`` hold values the caller declared, so a value with a ``title`` field of its own
+    survives: walked as schemas, an ``enum`` of objects came out as a list of empty ones.
+    """
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "title":
+            continue
+        if key in _NAMED_SCHEMAS and isinstance(value, dict):
+            out[key] = {name: strip_title(sub) if isinstance(sub, dict) else sub for name, sub in value.items()}
+        elif key in _NESTED_SCHEMAS and isinstance(value, dict):
+            out[key] = strip_title(value)
+        elif key in _NESTED_SCHEMAS and isinstance(value, list):
+            out[key] = [strip_title(item) if isinstance(item, dict) else item for item in value]
+        else:
+            out[key] = value
+    return out

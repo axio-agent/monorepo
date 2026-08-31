@@ -122,7 +122,7 @@ async def probe_nearest_live_region(
     """Probe each candidate Vertex Live region and return the fastest.
 
     Hits the regional ``aiplatform.googleapis.com`` HTTPS endpoint with a
-    HEAD request — TLS handshake + first byte is a fair approximation of
+    HEAD request.  TLS handshake + first byte is a fair approximation of
     WebSocket connect latency from this network.  Probes run in parallel
     so the worst-case startup cost is ``timeout`` seconds, not the sum.
 
@@ -404,8 +404,8 @@ class GeminiLiveSession(RealtimeSession):
                 call_id = fc.get("id") or ""
                 fname = fc["name"]
                 out.append(ToolUseStart(index=idx, tool_use_id=call_id, name=fname))
-                # Gemini delivers args atomically — emit one ToolInputDelta with
-                # the serialized JSON so downstream consumers can use the same
+                # Gemini delivers args atomically.  Emit one ToolInputDelta with
+                # the serialized JSON, so downstream consumers can use the same
                 # ToolInputDelta → ToolUseBlock pipeline.
                 out.append(
                     ToolInputDelta(
@@ -434,7 +434,7 @@ class GeminiLiveSession(RealtimeSession):
 def _build_usage(meta: dict[str, Any] | None) -> Usage | None:
     if not meta:
         return None
-    return Usage(
+    return Usage.reported(
         input_tokens=int(meta.get("promptTokenCount", 0) or 0),
         output_tokens=int(meta.get("responseTokenCount", meta.get("candidatesTokenCount", 0)) or 0),
     )
@@ -519,9 +519,9 @@ class GeminiLiveTransport(RealtimeTransport):
         if self.vertexai:
             if not self.project:
                 raise RuntimeError("vertexai=True requires `project` (or env GOOGLE_CLOUD_PROJECT).")
-            # Vertex Live is region-specific — the global endpoint
+            # Vertex Live is region-specific.  The global endpoint
             # (`aiplatform.googleapis.com` with no prefix) returns 404 for
-            # Live BidiGenerateContent, and most regions don't yet expose
+            # Live BidiGenerateContent.  Most regions don't yet expose
             # the BidiGenerateContent service.  Coerce the requested location
             # to the closest known-supported Live region so the demo just
             # works instead of erroring on the handshake.

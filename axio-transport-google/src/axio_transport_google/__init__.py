@@ -7,19 +7,40 @@ import base64
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections import deque
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 import aiohttp
-from axio.blocks import AudioBlock, ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock, VideoBlock
+from axio.blocks import (
+    AudioBlock,
+    AudioMediaType,
+    ImageBlock,
+    ImageMediaType,
+    ProviderBlock,
+    ReasoningBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    VideoBlock,
+    VideoMediaType,
+    proof,
+    replayable,
+)
 from axio.events import (
     AudioOutput,
     ImageOutput,
     IterationEnd,
+    IterationStart,
+    ProviderEvent,
+    ProviderOutput,
     ReasoningDelta,
+    ReasoningSignature,
+    Refusal,
     StreamEvent,
     TextDelta,
+    TextSignature,
     ToolInputDelta,
     ToolUseStart,
     VideoOutput,
@@ -27,9 +48,12 @@ from axio.events import (
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
+from axio.retry import is_retryable, retry_delay
+from axio.schema import strip_title
 from axio.tool import Tool
 from axio.transport import CompletionTransport, ImageGenTransport, VideoGenTransport
-from axio.types import StopReason, Usage
+from axio.types import StopReason, Usage, stop_reason_from
+from axio_sse import Payload, Wire, payloads
 
 from axio_transport_google._generated_types import (
     Content,
@@ -47,6 +71,10 @@ from axio_transport_google._generated_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: What this protocol is called wherever its name is written: on the proofs it issues and on the
+#: events it forwards. Vertex AI serves the same protocol, so it says this too.
+PROVIDER: Final = "google"
 
 
 class _RefreshableCredentials(Protocol):
@@ -161,23 +189,37 @@ def _get_anthropic_models() -> ModelRegistry:
     )
 
 
+#: Reasons that say the turn failed. A call streamed inside one is not a request to run it.
+_BLOCKED = frozenset({StopReason.refusal, StopReason.error, StopReason.cancelled})
+
+#: Every ``finishReason`` both surfaces publish: 21 on the developer API, 17 on Vertex.
+#: One left out is read as an error.
 _FINISH_REASON_MAP: dict[str, StopReason] = {
     "STOP": StopReason.end_turn,
     "MAX_TOKENS": StopReason.max_tokens,
-    "SAFETY": StopReason.error,
-    "RECITATION": StopReason.error,
+    # Blocked, not broken. The same prompt sent again cannot succeed.
+    "SAFETY": StopReason.refusal,
+    "RECITATION": StopReason.refusal,
+    "LANGUAGE": StopReason.refusal,
+    "BLOCKLIST": StopReason.refusal,
+    "PROHIBITED_CONTENT": StopReason.refusal,
+    "SPII": StopReason.refusal,
+    "MODEL_ARMOR": StopReason.refusal,
+    "IMAGE_SAFETY": StopReason.refusal,
+    "IMAGE_PROHIBITED_CONTENT": StopReason.refusal,
+    "IMAGE_RECITATION": StopReason.refusal,
+    # The API could not use the call. Read as tool_use so the agent prompts again.
     "MALFORMED_FUNCTION_CALL": StopReason.tool_use,
     "UNEXPECTED_TOOL_CALL": StopReason.tool_use,
-    "OTHER": StopReason.error,
-    "BLOCKLIST": StopReason.error,
-    "PROHIBITED_CONTENT": StopReason.error,
-    "SPII": StopReason.error,
-    "MODEL_ARMOR": StopReason.error,
-    "IMAGE_SAFETY": StopReason.error,
-    "IMAGE_PROHIBITED_CONTENT": StopReason.error,
-    "IMAGE_RECITATION": StopReason.error,
+    # Failures that prompting again does not fix.
+    "TOO_MANY_TOOL_CALLS": StopReason.error,
+    "MISSING_THOUGHT_SIGNATURE": StopReason.error,
+    "MALFORMED_RESPONSE": StopReason.error,
     "IMAGE_OTHER": StopReason.error,
     "NO_IMAGE": StopReason.error,
+    "OTHER": StopReason.error,
+    "ESCALATION": StopReason.error,
+    "FINISH_REASON_UNSPECIFIED": StopReason.error,
 }
 
 _DEVELOPER_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -187,57 +229,111 @@ _DEVELOPER_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 #   https://aiplatform.googleapis.com/$discovery/rest?version=v1beta1
 
 
-async def _iter_sse(resp: aiohttp.ClientResponse) -> AsyncIterator[dict[str, Any]]:
-    """Parse SSE stream, yielding JSON objects.
+# ── The payload shapes streamGenerateContent sends ───────────────────────────────────────────
 
-    Uses manual buffering instead of aiohttp readline() which has a 128KB
-    line limit — too small for inline image/audio data.
+
+@dataclass(frozen=True, slots=True)
+class InlineData(Wire):
+    mimeType: str = ""
+    data: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionCall(Wire):
+    id: str = ""
+    name: str = ""
+    args: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class ContentPart(Wire):
+    """One piece of a candidate's content. Which field is filled says what it is."""
+
+    text: str = ""
+    #: True where ``text`` is the model thinking rather than answering.
+    thought: bool = False
+    #: Opaque proof that the reasoning is the model's own. Altered or missing, the next request
+    #: fails with ``MISSING_THOUGHT_SIGNATURE``.
+    thoughtSignature: str = ""
+    inlineData: InlineData = field(default_factory=InlineData)
+    functionCall: FunctionCall = field(default_factory=FunctionCall)
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateContent(Wire):
+    role: str = ""
+    parts: list[ContentPart] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate(Wire):
+    content: CandidateContent = field(default_factory=CandidateContent)
+    finishReason: str = ""
+    citationMetadata: Payload = field(default_factory=Payload)
+    groundingMetadata: Payload = field(default_factory=Payload)
+    raw: Payload = field(default_factory=Payload)
+
+
+@dataclass(frozen=True, slots=True)
+class UsageMetadata(Wire):
+    """Two of these stand outside the headline number. One is already inside it.
+
+    ``cachedContentTokenCount`` is part of ``promptTokenCount``. ``toolUsePromptTokenCount`` and
+    ``thoughtsTokenCount`` are not part of anything and have to be added.
     """
-    buf = b""
-    async for raw_chunk in resp.content.iter_any():
-        buf += raw_chunk
-        while b"\n" in buf:
-            raw_line, buf = buf.split(b"\n", 1)
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line or not line.startswith("data: "):
-                continue
-            try:
-                yield json.loads(line[6:])
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse SSE chunk: %.200s", line)
-    # Process any remaining data after stream ends
-    if buf:
-        line = buf.decode("utf-8", errors="replace").strip()
-        if line.startswith("data: "):
-            try:
-                yield json.loads(line[6:])
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse final SSE chunk: %.200s", line)
+
+    promptTokenCount: int = 0
+    candidatesTokenCount: int = 0
+    toolUsePromptTokenCount: int = 0
+    thoughtsTokenCount: int = 0
+    cachedContentTokenCount: int = 0
+    totalTokenCount: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GenerateContentChunk(Wire):
+    """One SSE payload. The stream names no event, so every payload is this one shape."""
+
+    candidates: list[Candidate] = field(default_factory=list)
+    usageMetadata: UsageMetadata = field(default_factory=UsageMetadata)
+    promptFeedback: Payload = field(default_factory=Payload)
+    modelVersion: str = ""
+    responseId: str = ""
+
+
+def _usage(um: UsageMetadata, *, final: bool = False) -> Usage:
+    """Gemini's token counts, converted to inclusive totals.
+
+    Two of these stand outside the headline number and have to be added. Tool-use prompt tokens are
+    not in ``promptTokenCount``. Thinking is not in ``candidatesTokenCount``. Cached content is the
+    other way round and is already inside the prompt count. Read as reported, a thinking model
+    billed its reasoning to nobody.
+    """
+    usage = Usage.reported(
+        input_tokens=um.promptTokenCount + um.toolUsePromptTokenCount,
+        output_tokens=um.candidatesTokenCount + um.thoughtsTokenCount,
+        cache_read_tokens=um.cachedContentTokenCount,
+        # Gemini publishes no counter for what a cache write cost.
+        cache_write_tokens=0,
+        reasoning_tokens=um.thoughtsTokenCount,
+    )
+    # Only where the counts are final. Gemini attaches usageMetadata to every chunk, and a
+    # mid-stream one totals parts that have not all arrived.
+    if final and um.totalTokenCount is not None and um.totalTokenCount != usage.total_tokens:
+        # The provider publishes the sum it expects, so this catches the day it changes the rule.
+        logger.warning("usageMetadata total is %d, the parts add to %d", um.totalTokenCount, usage.total_tokens)
+    return usage
 
 
 # ── JSON payload builders (no SDK dependency) ───────────────────────
-
-
-def _strip_title(schema: dict[str, Any]) -> dict[str, Any]:
-    """Remove pydantic 'title' keys from a JSON schema recursively."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "title":
-            continue
-        if isinstance(value, dict):
-            out[key] = _strip_title(value)
-        elif isinstance(value, list):
-            out[key] = [_strip_title(item) if isinstance(item, dict) else item for item in value]
-        else:
-            out[key] = value
-    return out
 
 
 def _build_tools_json(tools: list[Tool[Any]]) -> list[ToolDict]:
     """Convert axio Tool list to Gemini REST API tool declarations."""
     declarations: list[FunctionDeclaration] = []
     for tool in tools:
-        schema = _strip_title(tool.input_schema)
+        schema = strip_title(tool.input_schema)
         declarations.append(
             {
                 "name": tool.name,
@@ -257,6 +353,107 @@ def _inline_data_part(block: ImageBlock | AudioBlock | VideoBlock) -> Part:
     }
 
 
+def _tool_result_parts(results: list[ToolResultBlock], messages: list[Message]) -> list[Part]:
+    """One functionResponse per result, with any media it carried beside it."""
+    parts: list[Part] = []
+    for result in results:
+        if isinstance(result.content, str):
+            answer: dict[str, Any] = {"result": result.content}
+        else:
+            text = "\n".join(b.text for b in result.content if isinstance(b, TextBlock))
+            answer = {"result": text}
+        if result.is_error:
+            answer = {"error": answer["result"]}
+        parts.append(
+            {
+                "functionResponse": {
+                    "name": _tool_name_from_id(result.tool_use_id, messages),
+                    "response": answer,
+                    "id": result.tool_use_id,
+                }
+            }
+        )
+        if not isinstance(result.content, str):
+            # Media travels as a sibling inlineData part: functionResponse takes only JSON.
+            parts.extend(
+                _inline_data_part(b) for b in result.content if isinstance(b, (ImageBlock, AudioBlock, VideoBlock))
+            )
+    return parts
+
+
+def _user_parts(msg: Message, messages: list[Message]) -> list[Part]:
+    """What one user turn sends, which is either its tool results or its own content."""
+    results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
+    parts: list[Part] = _tool_result_parts(results, messages) if results else []
+    for block in msg.content:
+        if isinstance(block, TextBlock):
+            parts.append({"text": block.text})
+        elif isinstance(block, (ImageBlock, AudioBlock, VideoBlock)):
+            parts.append(_inline_data_part(block))
+    return parts
+
+
+def _assistant_parts(msg: Message, thought_signatures: dict[str, str] | None) -> list[Part]:
+    """What one assistant turn sends back, each proof on the part Gemini issued it for."""
+    parts: list[Part] = []
+    # Proofs from parts that carried no text of their own. They belong to the calls that follow,
+    # in arrival order.
+    unplaced: deque[str] = deque()
+    for block in msg.content:
+        if isinstance(block, TextBlock):
+            parts.append(_text_part(block))
+        elif isinstance(block, ReasoningBlock):
+            # `proof` leaves out one another provider issued: sent here it is not a thoughtSignature
+            # at all, and Gemini reads whatever it is as its own.
+            signed = proof(block, PROVIDER)
+            if block.text:
+                thought: Part = {"text": block.text, "thought": True}
+                if signed:
+                    thought["thoughtSignature"] = signed
+                parts.append(thought)
+            elif signed:
+                # Gemini puts the proof on the part it signed, and a thought with no text is not it.
+                unplaced.append(signed)
+        elif isinstance(block, (ImageBlock, AudioBlock, VideoBlock)):
+            parts.append(_inline_data_part(block))
+        elif isinstance(block, ProviderBlock):
+            # Back exactly as it arrived, proof included. Rebuilt from what we understood of it,
+            # a part this vocabulary has no type for would go back as something else.
+            if replayable(block, PROVIDER):
+                parts.append(cast("Part", dict(block.data)))
+        elif isinstance(block, ToolUseBlock):
+            parts.append(_call_part(block, unplaced, thought_signatures))
+    return parts
+
+
+def _text_part(block: TextBlock) -> Part:
+    """One answer-text part, carrying the proof Gemini issued for that text.
+
+    Sent without it, a turn whose text Gemini signed fails with ``MISSING_THOUGHT_SIGNATURE``.
+    """
+    part: Part = {"text": block.text}
+    if signed := proof(block, PROVIDER):
+        part["thoughtSignature"] = signed
+    return part
+
+
+def _call_part(block: ToolUseBlock, unplaced: deque[str], from_transport: dict[str, str] | None) -> Part:
+    """One functionCall, carrying whichever proof is most likely to be its own.
+
+    The call's own signature comes first because it survives a restart, which the map held on the
+    transport does not.
+    """
+    part: Part = {"functionCall": {"name": block.name, "args": block.input, "id": block.id}}
+    # The other two are this session's own, held by this transport, so only the stored one can
+    # have come from somewhere else.
+    signed = (
+        proof(block, PROVIDER) or (unplaced.popleft() if unplaced else "") or (from_transport or {}).get(block.id, "")
+    )
+    if signed:
+        part["thoughtSignature"] = signed
+    return part
+
+
 def _build_contents_json(
     messages: list[Message],
     thought_signatures: dict[str, str] | None = None,
@@ -266,74 +463,22 @@ def _build_contents_json(
     thought_signatures values are base64-encoded strings ready for JSON.
     """
     contents: list[Content] = []
-
     for msg in messages:
         if msg.role == "user":
-            tool_results = [b for b in msg.content if isinstance(b, ToolResultBlock)]
-            if tool_results and len(tool_results) == len(msg.content):
-                tool_result_parts: list[Part] = []
-                for tr in tool_results:
-                    if isinstance(tr.content, str):
-                        response_dict: dict[str, Any] = {"result": tr.content}
-                    else:
-                        text_parts = [b.text for b in tr.content if isinstance(b, TextBlock)]
-                        response_dict = {"result": "\n".join(text_parts)} if text_parts else {"result": ""}
-                    if tr.is_error:
-                        response_dict = {"error": response_dict.get("result", "")}
-                    tool_result_parts.append(
-                        {
-                            "functionResponse": {
-                                "name": _tool_name_from_id(tr.tool_use_id, messages),
-                                "response": response_dict,
-                                "id": tr.tool_use_id,
-                            }
-                        }
-                    )
-                    # Media from tool results as sibling inlineData parts
-                    if not isinstance(tr.content, str):
-                        for content_block in tr.content:
-                            if isinstance(content_block, (ImageBlock, AudioBlock, VideoBlock)):
-                                tool_result_parts.append(_inline_data_part(content_block))
-                contents.append({"role": "user", "parts": tool_result_parts})
-            else:
-                user_parts: list[Part] = []
-                for message_block in msg.content:
-                    if isinstance(message_block, TextBlock):
-                        user_parts.append({"text": message_block.text})
-                    elif isinstance(message_block, (ImageBlock, AudioBlock, VideoBlock)):
-                        user_parts.append(_inline_data_part(message_block))
-                if user_parts:
-                    contents.append({"role": "user", "parts": user_parts})
-
+            if parts := _user_parts(msg, messages):
+                contents.append({"role": "user", "parts": parts})
         elif msg.role == "assistant":
-            assistant_parts: list[Part] = []
-            for assistant_block in msg.content:
-                if isinstance(assistant_block, TextBlock):
-                    assistant_parts.append({"text": assistant_block.text})
-                elif isinstance(assistant_block, (ImageBlock, AudioBlock, VideoBlock)):
-                    assistant_parts.append(_inline_data_part(assistant_block))
-                elif isinstance(assistant_block, ToolUseBlock):
-                    part: Part = {
-                        "functionCall": {
-                            "name": assistant_block.name,
-                            "args": assistant_block.input,
-                            "id": assistant_block.id,
-                        }
-                    }
-                    if thought_signatures and assistant_block.id in thought_signatures:
-                        part["thoughtSignature"] = thought_signatures[assistant_block.id]
-                    assistant_parts.append(part)
-            if assistant_parts:
-                contents.append({"role": "model", "parts": assistant_parts})
+            if parts := _assistant_parts(msg, thought_signatures):
+                contents.append({"role": "model", "parts": parts})
 
-    # Gemini requires alternating user/model roles.  Merge consecutive
-    # same-role contents (e.g. tool-result message + "Proceed." nudge).
+    # Gemini requires alternating user/model roles, so consecutive same-role turns merge. A tool
+    # result followed by a "Proceed." nudge is one such pair.
     merged: list[Content] = []
-    for c in contents:
-        if merged and merged[-1]["role"] == c["role"]:
-            merged[-1]["parts"].extend(c["parts"])
+    for content in contents:
+        if merged and merged[-1]["role"] == content["role"]:
+            merged[-1]["parts"].extend(content["parts"])
         else:
-            merged.append(c)
+            merged.append(content)
     return merged
 
 
@@ -345,6 +490,58 @@ def _tool_name_from_id(tool_use_id: str, messages: list[Message]) -> str:
                 if isinstance(b, ToolUseBlock) and b.id == tool_use_id:
                     return b.name or "unknown"
     return "unknown"
+
+
+@dataclass
+class _Turn:
+    """What one streaming attempt accumulates as its chunks arrive."""
+
+    #: The part counter, which runs across the whole turn including its retries.
+    at: int = -1
+    #: Which stream this is, so a synthesized call id is unique for the life of the transport.
+    seq: int = 0
+    usage: Usage = Usage(0, 0)
+    #: The counts the turn ended with. Gemini attaches usageMetadata to every chunk, and a
+    #: mid-stream one totals parts that have not all arrived.
+    counts: UsageMetadata | None = None
+    stop_reason: StopReason = StopReason.end_turn
+    finished: bool = False
+    has_tool_calls: bool = False
+    served_by: str | None = None
+    #: The provider's own word for why it stopped, kept for the message when it means an error.
+    reason: str = ""
+    #: Whether this turn has already announced its refusal. The prompt-level block and a blocked
+    #: candidate are one refusal, and two events disagreeing about `blocked_input` is not.
+    refused: bool = False
+
+    def restart(self) -> None:
+        """Forget the attempt that failed, but not the part counter it advanced."""
+        self.usage = Usage(0, 0)
+        self.counts = None
+        self.stop_reason = StopReason.end_turn
+        # The provider's own word for why the failed attempt stopped. Left behind, it was reported
+        # as the reason for the attempt that replaced it.
+        self.reason = ""
+        self.refused = False
+        self.finished = False
+        self.has_tool_calls = False
+        self.served_by = None
+
+
+def _media_event(part: ContentPart, at: int) -> StreamEvent:
+    """One inlineData part as the event its media type calls for.
+
+    The prefix is all the wire guarantees, so each cast says the narrower type is unproven.
+    """
+    mime = part.inlineData.mimeType
+    raw = base64.b64decode(part.inlineData.data)
+    if mime.startswith("image/"):
+        return ImageOutput(index=at, data=raw, media_type=cast(ImageMediaType, mime))
+    if mime.startswith("audio/"):
+        return AudioOutput(index=at, data=raw, media_type=cast(AudioMediaType, mime))
+    if mime.startswith("video/"):
+        return VideoOutput(index=at, data=raw, media_type=cast(VideoMediaType, mime))
+    return ProviderEvent(provider="google", kind="inlineData", data=dict(part.raw), index=at)
 
 
 # ── Transport ───────────────────────────────────────────────────────
@@ -361,6 +558,8 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
     models: ModelRegistry = field(default_factory=lambda: ModelRegistry(GENAI_MODELS.values()))
     session: aiohttp.ClientSession | None = field(default=None, repr=False, compare=False)
     max_retries: int = 5
+    #: Seconds before the first retry, doubling after that. The other transports name it too.
+    retry_base_delay: float = 5.0
     temperature: float | None = field(default=None, repr=False)
     top_p: float | None = field(default=None, repr=False)
     top_k: float | None = field(default=None, repr=False)
@@ -375,6 +574,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
     media_resolution: str | None = field(default=None, repr=False)
     # thought_signature values stored as base64 strings for direct JSON embedding
     _thought_signatures: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
+    _streams: int = field(default=0, repr=False, compare=False)
     last_usage: Usage | None = field(default=None, repr=False, compare=False)
     # Vertex AI credentials (lazily initialised)
     _credentials: Any = field(default=None, repr=False, compare=False)
@@ -520,128 +720,102 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             location=self.location,
             model=model_spec,
             max_retries=self.max_retries,
+            # Both halves of the policy, or a deliberately patient retry became the Anthropic
+            # transport's own default of five seconds.
+            retry_base_delay=self.retry_base_delay,
             temperature=self.temperature,
             top_p=self.top_p,
             top_k=int(self.top_k) if self.top_k is not None else None,
             thinking_budget=self.thinking_budget,
             session=self.session,
         )
+        # This transport is the one the agent asks, and the proxy reports nothing here. Left at
+        # the last Gemini turn's figure, a Claude turn cut short reported the numbers of a response
+        # served by another provider entirely; left at None, the agent says the figure is missing.
+        self.last_usage = None
         async for event in proxy.stream(messages, tools, system):
             yield event
+
+    def _build_request_body(
+        self, messages: list[Message], tools: list[Tool[Any]], system: str
+    ) -> GenerateContentRequest:
+        """The whole streamGenerateContent request for this turn."""
+        body: GenerateContentRequest = {"contents": _build_contents_json(messages, self._thought_signatures)}
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        if tools and Capability.image_generation not in self.model.capabilities:
+            # An image model takes no tools, and sending them is a 400.
+            body["tools"] = _build_tools_json(tools)
+        body["generationConfig"] = self._build_generation_config_json()
+        if self.safety_settings:
+            body["safetySettings"] = self.safety_settings
+        return body
 
     async def _do_stream(
         self, messages: list[Message], tools: list[Tool[Any]], system: str
     ) -> AsyncIterator[StreamEvent]:
         assert self.session is not None, "aiohttp session required"
 
-        contents = _build_contents_json(messages, self._thought_signatures)
-
-        body: GenerateContentRequest = {"contents": contents}
-        if system:
-            body["systemInstruction"] = {"parts": [{"text": system}]}
-
-        is_image_model = Capability.image_generation in self.model.capabilities
-        if tools and not is_image_model:
-            body["tools"] = _build_tools_json(tools)
-
-        body["generationConfig"] = self._build_generation_config_json()
-
-        if self.safety_settings:
-            body["safetySettings"] = self.safety_settings
-
+        body = self._build_request_body(messages, tools, system)
         model_path = f"publishers/google/models/{self.model.id}" if self.vertexai else f"models/{self.model.id}"
         url = self._build_url(f"{model_path}:streamGenerateContent", "alt=sse")
         headers = await self._get_headers()
 
-        logger.info(
-            "Gemini stream: model=%s, contents=%d, tools=%d",
-            self.model.id,
-            len(contents),
-            len(tools),
-        )
+        logger.info("Gemini stream: model=%s, contents=%d, tools=%d", self.model.id, len(body["contents"]), len(tools))
         if self.debug:
             logger.warning("DEBUG request body:\n%s", json.dumps(_redact_body(body), indent=2, ensure_ascii=False))
-        elif logger.getEffectiveLevel() <= logging.DEBUG:
-            for i, c in enumerate(contents):
-                logger.debug("  content[%d] role=%s parts=%d", i, c.get("role"), len(c.get("parts", [])))
 
-        usage = Usage(0, 0)
-        stop_reason = StopReason.end_turn
-        has_tool_calls = False
+        self._streams += 1
+        turn = _Turn(seq=self._streams)
 
+        sent = False
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
+            turn.restart()
+            # Per attempt, not per turn: read when a turn ends with no IterationEnd, a figure the
+            # failed attempt reported was handed to the caller and the store as this one's.
+            self.last_usage = None
+            wait: float | None = None
             try:
                 async with self.session.post(url, json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
-                        if resp.status in (429, 500, 503) and attempt < self.max_retries:
-                            logger.warning(
-                                "Gemini HTTP %d (attempt %d/%d): %.200s",
-                                resp.status,
-                                attempt,
-                                self.max_retries,
-                                error_text,
-                            )
-                            await asyncio.sleep(2.0 * (2 ** (attempt - 1)))
-                            continue
-                        raise StreamError(f"{resp.status} {resp.reason}: {error_text[:1000]}")
+                        if not (is_retryable(resp.status) and attempt < self.max_retries and not sent):
+                            raise StreamError(f"{resp.status} {resp.reason}: {error_text[:1000]}")
+                        logger.warning(
+                            "Gemini HTTP %d (attempt %d/%d): %.200s",
+                            resp.status,
+                            attempt,
+                            self.max_retries,
+                            error_text,
+                        )
+                        # Read here, because only the response carries Retry-After. Slept here too,
+                        # the connection and its unread body stayed open for the whole backoff.
+                        wait = retry_delay(resp, attempt, base=self.retry_base_delay)
+                    else:
+                        async for payload in payloads(resp.content.iter_any()):
+                            if self.debug:
+                                logger.warning(
+                                    "DEBUG response chunk:\n%s",
+                                    json.dumps(_redact_body(dict(payload)), indent=2, ensure_ascii=False),
+                                )
+                            for event in self._chunk_events(GenerateContentChunk.read(payload), turn):
+                                sent = True
+                                yield event
 
-                    async for chunk in _iter_sse(resp):
-                        if self.debug:
-                            logger.warning(
-                                "DEBUG response chunk:\n%s",
-                                json.dumps(_redact_body(chunk), indent=2, ensure_ascii=False),
-                            )
-                        um = chunk.get("usageMetadata")
-                        if um and "promptTokenCount" in um:
-                            usage = Usage(
-                                input_tokens=um["promptTokenCount"],
-                                output_tokens=um.get("candidatesTokenCount", 0),
-                            )
-                            self.last_usage = usage
+                if wait is not None:
+                    await asyncio.sleep(wait)
+                    continue
 
-                        candidates = chunk.get("candidates")
-                        if not candidates:
-                            continue
-                        candidate = candidates[0]
+                usage = _usage(turn.counts, final=True) if turn.counts is not None else turn.usage
+                stop_reason, candidate_reason = turn.stop_reason, turn.reason
 
-                        fr = candidate.get("finishReason")
-                        if fr:
-                            stop_reason = _FINISH_REASON_MAP.get(fr, StopReason.error)
-                            if fr not in _FINISH_REASON_MAP:
-                                logger.warning("Unknown finishReason %r", fr)
+                if not turn.finished:
+                    # Every Gemini stream ends on a finishReason. Without one the connection was cut.
+                    raise StreamError("Gemini stream ended without a finishReason")
 
-                        content = candidate.get("content")
-                        if not content:
-                            continue
-                        for part in content.get("parts", []):
-                            if part.get("thought") and part.get("text"):
-                                yield ReasoningDelta(index=0, delta=part["text"])
-                            elif "text" in part and not part.get("thought"):
-                                yield TextDelta(index=0, delta=part["text"])
-                            elif "inlineData" in part:
-                                idata = part["inlineData"]
-                                mt = idata.get("mimeType", "")
-                                raw = base64.b64decode(idata.get("data", ""))
-                                if mt.startswith("image/"):
-                                    yield ImageOutput(index=0, data=raw, media_type=mt)
-                                elif mt.startswith("audio/"):
-                                    yield AudioOutput(index=0, data=raw, media_type=mt)
-                                elif mt.startswith("video/"):
-                                    yield VideoOutput(index=0, data=raw, media_type=mt)
-                            elif "functionCall" in part:
-                                fc = part["functionCall"]
-                                call_id = fc.get("id") or f"genai_{fc.get('name')}_{id(fc)}"
-                                ts = part.get("thoughtSignature")
-                                if ts:
-                                    self._thought_signatures[call_id] = ts
-                                yield ToolUseStart(index=0, tool_use_id=call_id, name=fc.get("name", ""))
-                                args_json = json.dumps(fc.get("args")) if fc.get("args") else "{}"
-                                yield ToolInputDelta(index=0, tool_use_id=call_id, partial_json=args_json)
-                                has_tool_calls = True
-
-                if has_tool_calls:
+                if turn.has_tool_calls and stop_reason not in _BLOCKED:
+                    # Never over a blocked or failed turn.
                     stop_reason = StopReason.tool_use
 
                 logger.info(
@@ -650,6 +824,10 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
                     usage.input_tokens,
                     usage.output_tokens,
                 )
+                if stop_reason is StopReason.error:
+                    # The caller is told only `Transport stopped with: error` if this is yielded,
+                    # and MISSING_THOUGHT_SIGNATURE is a reason they can act on.
+                    raise StreamError(f"Gemini stopped with {candidate_reason or 'an error'}")
                 yield IterationEnd(iteration=0, stop_reason=stop_reason, usage=usage)
                 return
 
@@ -658,15 +836,146 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             except Exception as exc:
                 last_exc = exc
                 status = getattr(exc, "status", getattr(exc, "status_code", None))
-                if status in (429, 500, 503) or "ResourceExhausted" in str(exc):
+                # A connection error carries no status, and every other transport retries one.
+                # Tested on status alone, a disconnect before the first byte failed the turn here.
+                worth_retrying = isinstance(exc, aiohttp.ClientError) or (
+                    isinstance(status, int) and is_retryable(status)
+                )
+                if not sent and (worth_retrying or "ResourceExhausted" in str(exc)):
+                    # Not once the caller has seen events: going round again re-POSTs and replays
+                    # them, so a tool runs twice and its text is stored twice.
                     logger.warning("Gemini retryable error (attempt %d/%d): %s", attempt, self.max_retries, exc)
                     if attempt < self.max_retries:
-                        await asyncio.sleep(2.0 * (2 ** (attempt - 1)))
+                        await asyncio.sleep(retry_delay(None, attempt, base=self.retry_base_delay))
                         continue
                 logger.error("Gemini stream error: %s", exc, exc_info=True)
                 raise StreamError(str(exc)) from exc
 
+        # Chained, not flattened: the transports that kept the original exception let a caller see
+        # what actually failed after the last attempt.
         raise StreamError(str(last_exc)) from last_exc
+
+    def _chunk_events(self, chunk: GenerateContentChunk, turn: _Turn) -> Iterator[StreamEvent]:
+        """Every event one streamGenerateContent chunk produces, advancing the turn's state."""
+        if chunk.usageMetadata.promptTokenCount:
+            turn.counts = chunk.usageMetadata
+            turn.usage = _usage(chunk.usageMetadata)
+            self.last_usage = turn.usage
+
+        if turn.served_by is None and chunk.modelVersion:
+            # The model that answered, which need not be the one asked for.
+            turn.served_by = chunk.modelVersion
+            yield IterationStart(iteration=0, id=chunk.responseId or None, model=turn.served_by)
+
+        if block_reason := chunk.promptFeedback.string("blockReason"):
+            # blockReason, not presence: promptFeedback rides along with healthy answers too.
+            # A blocked prompt is a finished turn, so no candidate and no finishReason follow.
+            turn.finished = True
+            turn.stop_reason = StopReason.refusal
+            turn.refused = True
+            # Nothing spoken: this API rejects the prompt and generates nothing. The text is this
+            # transport's own account, and the agent stores it — a turn kept with no content at
+            # all leaves the conversation no record that the block happened.
+            yield Refusal(
+                index=0,
+                spoken=False,
+                text=f"The provider blocked this prompt: {block_reason}.",
+                category=block_reason,
+                blocked_input=True,
+                raw=dict(chunk.promptFeedback),
+            )
+
+        if not chunk.candidates:
+            return
+        candidate = chunk.candidates[0]
+
+        if candidate.finishReason:
+            turn.finished = True
+            turn.reason = candidate.finishReason
+            turn.stop_reason = stop_reason_from(candidate.finishReason, _FINISH_REASON_MAP, provider="Gemini")
+
+        # Grounding travels whole. Four providers shape it four incompatible ways.
+        for kind, metadata in (
+            ("citationMetadata", candidate.citationMetadata),
+            ("groundingMetadata", candidate.groundingMetadata),
+        ):
+            if metadata:
+                yield ProviderEvent(provider="google", kind=kind, data=dict(metadata), index=0)
+
+        for part in candidate.content.parts:
+            turn.at += 1
+            if part.functionCall.name:
+                turn.has_tool_calls = True
+            yield from self._part_events(part, turn)
+
+        if turn.stop_reason is StopReason.refusal and not turn.refused:
+            # Eleven finish reasons map to a refusal, and only a blocked prompt announced it,
+            # so a blocked answer reached the caller as an empty turn that succeeded. After the
+            # parts, which came before the block; once per turn, or the two events disagree.
+            turn.refused = True
+            yield Refusal(
+                index=0,
+                spoken=False,
+                text=f"The provider stopped this answer: {turn.reason}.",
+                category=turn.reason,
+                raw=dict(candidate.raw),
+            )
+
+    def _part_events(self, part: ContentPart, turn: _Turn) -> Iterator[StreamEvent]:
+        """Every event one part of a candidate produces."""
+        at = turn.at
+        if part.functionCall.name:
+            yield from self._call_events(part, turn)
+            return
+
+        carried, kept = True, False
+        if part.text and part.thought:
+            yield ReasoningDelta(index=at, delta=part.text)
+        elif part.text:
+            yield TextDelta(index=at, delta=part.text)
+        elif part.inlineData.data:
+            yield _media_event(part, at)
+        elif set(part.raw) - {"thought", "thoughtSignature"}:
+            # executableCode, codeExecutionResult, fileData and whatever comes next: content
+            # this vocabulary has no type for. The API is stateless, so a part only watched is one
+            # the next request does not carry. Its proof rides inside the part.
+            kept = True
+            yield ProviderOutput(index=at, provider=PROVIDER, kind="part", data=dict(part.raw))
+        else:
+            carried = False
+
+        if not part.thoughtSignature or kept:
+            return
+        if part.thought or not carried:
+            # It signs reasoning, or it is the bare proof of a call that follows. Emitted after
+            # the reasoning, never before: the agent signs the block it has just built.
+            yield ReasoningSignature(index=at, signature=part.thoughtSignature, provider=PROVIDER)
+        elif part.text:
+            # The proof signs answer text, so it rides on that text block. Emitted after the text,
+            # never before, for the same reason as reasoning.
+            yield TextSignature(index=at, signature=part.thoughtSignature, provider=PROVIDER)
+        else:
+            # Media: axio's block for it has nowhere to hold a proof, so it travels raw rather than
+            # attaching to a block the provider did not sign.
+            yield ProviderEvent(provider=PROVIDER, kind="thoughtSignature", data=dict(part.raw), index=at)
+
+    def _call_events(self, part: ContentPart, turn: _Turn) -> Iterator[StreamEvent]:
+        """The start and the arguments of one function call."""
+        at = turn.at
+        call = part.functionCall
+        # By position and by stream, never by id(): the part is a temporary whose address CPython
+        # reuses, and a position alone repeats every turn while _thought_signatures does not.
+        call_id = call.id or f"genai_{call.name}_{turn.seq}_{at}"
+        if part.thoughtSignature:
+            self._thought_signatures[call_id] = part.thoughtSignature
+        # The signature goes on the call, not beside it. Sent bare it attaches to whatever block
+        # is still unsigned.
+        yield ToolUseStart(
+            index=at, tool_use_id=call_id, name=call.name, signature=part.thoughtSignature, provider=PROVIDER
+        )
+        yield ToolInputDelta(
+            index=at, tool_use_id=call_id, partial_json=json.dumps(dict(call.args)) if call.args else "{}"
+        )
 
     # ── Image / Veo generation ──
 

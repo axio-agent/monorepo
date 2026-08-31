@@ -5,11 +5,15 @@ import pytest
 from axio.blocks import (
     ContentBlock,
     ImageBlock,
+    ProviderBlock,
+    ReasoningBlock,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     VideoBlock,
     from_dict,
+    proof,
+    replayable,
     to_dict,
 )
 from axio.messages import Message
@@ -29,6 +33,16 @@ class TestTextBlock:
     def test_equality(self) -> None:
         assert TextBlock(text="a") == TextBlock(text="a")
         assert TextBlock(text="a") != TextBlock(text="b")
+
+    def test_a_signed_block_is_still_frozen_and_hashable(self) -> None:
+        block = TextBlock(text="42", signature="SIG")
+        with pytest.raises(AttributeError):
+            block.signature = "OTHER"  # type: ignore[misc]
+        assert {block, TextBlock(text="42")} == {block, TextBlock(text="42")}
+
+    def test_two_blocks_with_the_same_text_and_different_proofs_are_not_equal(self) -> None:
+        # The proof is part of what the turn replays, so a block that lost it is a different block.
+        assert TextBlock(text="42", signature="SIG") != TextBlock(text="42")
 
 
 class TestImageBlock:
@@ -126,6 +140,8 @@ class TestToDict:
 
     def test_tool_use(self) -> None:
         d = to_dict(ToolUseBlock(id="c1", name="echo", input={"x": 1}))
+        # No empty signature and no empty provider: an unsigned call is the common one, and a key
+        # for each on every stored call grows a session for nothing.
         assert d == {"type": "tool_use", "id": "c1", "name": "echo", "input": {"x": 1}}
 
     def test_tool_result_str(self) -> None:
@@ -150,6 +166,11 @@ class TestToDict:
 class TestFromDict:
     def test_text(self) -> None:
         assert from_dict({"type": "text", "text": "hi"}) == TextBlock(text="hi")
+
+    def test_a_text_block_keeps_the_proof_the_provider_signed_it_with(self) -> None:
+        block = TextBlock(text="42", signature="SIG")
+        restored = from_dict(to_dict(block))
+        assert restored == block and restored.signature == "SIG"
 
     def test_image(self) -> None:
         block = ImageBlock(media_type="image/png", data=b"\x89PNG")
@@ -202,3 +223,96 @@ class TestMessageSerialization:
     def test_empty_content(self) -> None:
         msg = Message(role="user")
         assert Message.from_dict(msg.to_dict()) == msg
+
+
+class TestReasoningBlock:
+    def test_a_reasoning_block_survives_the_round_trip(self) -> None:
+        # from_dict raises on a type it does not know, so a block that serialises without a reader
+        # makes every saved session fail to load.
+        block = ReasoningBlock(text="weighing the options", signature="ErUBCkYIBRgCIkD...")
+        assert from_dict(to_dict(block)) == block
+
+    def test_a_redacted_block_keeps_its_signature(self) -> None:
+        # The reasoning is withheld but the proof still has to travel, or the replay is refused.
+        block = ReasoningBlock(text="", signature="EroBCkYIBRgC...", redacted=True)
+        restored = from_dict(to_dict(block))
+        assert restored == block and restored.signature == block.signature
+
+    def test_a_session_saved_before_these_fields_existed_still_loads(self) -> None:
+        assert from_dict({"type": "reasoning", "text": "old"}) == ReasoningBlock(text="old")
+
+
+def test_a_reasoning_block_keeps_the_id_a_provider_names_it_by() -> None:
+    # One provider identifies reasoning by id and refuses the proof without it, so a stored turn
+    # that dropped the id cannot be replayed even though it kept the proof.
+    block = ReasoningBlock(text="", signature="gAAAAAB...", id="rs_1")
+    restored = from_dict(to_dict(block))
+    assert restored == block and restored.id == "rs_1"
+
+
+class TestSignedText:
+    """A provider that signs its answer text needs that proof back on the next request."""
+
+    def test_an_unsigned_block_writes_no_signature_key(self) -> None:
+        # Text is the commonest block, so an empty key on each one grows every stored session.
+        assert to_dict(TextBlock(text="hi")) == {"type": "text", "text": "hi"}
+
+    def test_a_signed_block_writes_it_and_reads_it_back(self) -> None:
+        block = TextBlock(text="42", signature="SIG", provider="google")
+
+        stored = to_dict(block)
+
+        # The provider travels beside the proof: a signature restored with nothing saying which
+        # protocol issued it is one no converter can judge.
+        assert stored == {"type": "text", "text": "42", "signature": "SIG", "provider": "google"}
+        assert from_dict(stored) == block
+
+    def test_an_unsigned_block_still_round_trips_the_provider_it_carries(self) -> None:
+        # Written only beside a proof, this one came back without its provider, and text alone
+        # failed the round-trip identity the other two proof-carrying blocks keep.
+        block = TextBlock(text="42", provider="google")
+
+        assert from_dict(to_dict(block)) == block
+
+    def test_the_proof_is_part_of_what_makes_two_blocks_differ(self) -> None:
+        assert TextBlock(text="42", signature="A") != TextBlock(text="42", signature="B")
+
+
+class TestReplayingOpaqueData:
+    """One rule for every converter: a proof goes back only to the protocol that issued it."""
+
+    def test_a_proof_from_another_provider_is_not_handed_over(self) -> None:
+        block = ReasoningBlock(text="hm", signature="SIG", provider="anthropic")
+
+        assert proof(block, "google") == ""
+
+    def test_the_issuing_provider_gets_its_own_proof(self) -> None:
+        block = ReasoningBlock(text="hm", signature="SIG", provider="anthropic")
+
+        assert proof(block, "anthropic") == "SIG"
+
+    def test_a_proof_nobody_attributed_is_still_replayed(self) -> None:
+        # Stored before the field existed, by a transport that is almost always the one reading it.
+        # Dropped, existing sessions lose proofs that are valid and the provider refuses the turn.
+        assert proof(ReasoningBlock(text="hm", signature="SIG"), "google") == "SIG"
+
+    def test_an_unattributed_item_is_not_replayed(self) -> None:
+        # Unlike a proof: every one of these was made by a reader that names itself, so an empty
+        # name is a block from somewhere else entirely.
+        assert not replayable(ProviderBlock(provider="", kind="web_search_call", data={}), "openai")
+
+    def test_an_item_goes_back_to_the_protocol_that_made_it(self) -> None:
+        item = ProviderBlock(provider="openai", kind="web_search_call", data={})
+
+        assert replayable(item, "openai")
+        assert not replayable(item, "google")
+
+    def test_an_opaque_proof_is_not_printed_by_a_debug_log(self) -> None:
+        # The one field documented as never to be inspected. In `repr` it was printed in full
+        # beside everything else, wherever a block reached a log.
+        shown = repr(ReasoningBlock(text="hm", signature="SECRET", provider="anthropic"))
+
+        assert "SECRET" not in shown
+        assert "anthropic" in shown, "which protocol issued it is what a reader actually needs"
+        assert "SECRET" not in repr(TextBlock(text="hi", signature="SECRET"))
+        assert "SECRET" not in repr(ToolUseBlock(id="c", name="n", input={}, signature="SECRET"))

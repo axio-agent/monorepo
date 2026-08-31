@@ -112,35 +112,85 @@ async def main():
     print(final_result)
 ```
 
-## Custom transport with retry
+## Retrying another transport
 
-Transport with exponential backoff:
+A transport that wraps another one and retries it. Retrying is only safe before the first event
+reaches the caller. Once a delta has been yielded the turn is half-delivered, and starting over
+repeats it.
 
 <!-- name: test_retry_transport -->
 ```python
-from typing import AsyncIterator
-from axio import Tool, StreamEvent, TextDelta, IterationEnd, StopReason, Usage
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Any
+from axio import Agent, MemoryContextStore, StopReason, StreamEvent, TextDelta, Tool, Usage
+from axio.events import IterationEnd
+from axio.exceptions import StreamError
 from axio.messages import Message
 
 
 class RetryTransport:
-    """Transport with retry logic."""
-    max_retries = 3
-    base_delay = 0.01
+    """Retries the wrapped transport on StreamError, with exponential backoff."""
+
+    def __init__(self, inner: Any, max_retries: int = 3, base_delay: float = 0.01) -> None:
+        self.inner = inner
+        self.max_retries = max_retries
+        self.base_delay = base_delay
 
     async def stream(
         self,
         messages: list[Message],
-        tools: list[Tool],
+        tools: list[Tool[Any]],
         system: str,
     ) -> AsyncIterator[StreamEvent]:
-        yield TextDelta(index=0, delta="response")
-        yield IterationEnd(
-            iteration=1,
-            stop_reason=StopReason.end_turn,
-            usage=Usage(0, 0),
-        )
+        for attempt in range(1, self.max_retries + 1):
+            delivered = False
+            try:
+                async for event in self.inner.stream(messages, tools, system):
+                    delivered = True
+                    yield event
+                return
+            except StreamError:
+                # Nothing to retry once the caller has seen part of the turn.
+                if delivered or attempt == self.max_retries:
+                    raise
+                await asyncio.sleep(self.base_delay * 2 ** (attempt - 1))
+
+
+class Flaky:
+    """Fails twice, then answers."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream(
+        self,
+        messages: list[Message],
+        tools: list[Tool[Any]],
+        system: str,
+    ) -> AsyncIterator[StreamEvent]:
+        self.calls += 1
+        return self._answer()
+
+    async def _answer(self) -> AsyncIterator[StreamEvent]:
+        if self.calls < 3:
+            raise StreamError("503 Service Unavailable")
+        yield TextDelta(index=0, delta="ok")
+        yield IterationEnd(iteration=0, stop_reason=StopReason.end_turn, usage=Usage(1, 1))
+
+
+async def main() -> None:
+    flaky = Flaky()
+    agent = Agent(system="", transport=RetryTransport(flaky))
+    assert await agent.run("hi", MemoryContextStore()) == "ok"
+    assert flaky.calls == 3
+
+asyncio.run(main())
 ```
+
+The shipped transports retry inside themselves rather than through a wrapper. They prefer the
+`Retry-After` header over their own backoff when the response carries one. See
+{doc}`writing-transports` for what a transport is expected to do with errors.
 
 ## Rate limiting tool
 

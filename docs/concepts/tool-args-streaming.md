@@ -9,7 +9,7 @@ enabling real-time display of tool inputs as they stream in.
 
 When an LLM calls a tool, it generates the JSON arguments character-by-character.
 Without streaming, you must wait for the complete JSON object before you can
-display or process it. This creates latency - the user sees nothing until the
+display or process it. This creates latency. The user sees nothing until the
 entire tool call is ready.
 
 Streaming args enable:
@@ -47,6 +47,11 @@ parser = ToolArgStream("call_123", index=0)
 `current_key -> str`
 : Property returning the field currently being parsed, or `""` if between fields.
 
+`done -> bool`
+: Property saying whether the top-level JSON object has closed. This is how a
+  caller knows the arguments are complete. The parser is fed fragments and has
+  no other end-of-input signal.
+
 <!-- name: test_tool_arg_stream_api -->
 ```python
 from axio.tool_args import ToolArgStream
@@ -67,6 +72,7 @@ events = stream.feed('oo.py"}')
 assert events[0].text == "oo.py"
 assert isinstance(events[1], ToolFieldEnd)
 assert stream.current_key == "path"  # retains last completed key
+assert stream.done  # the closing brace arrived
 ```
 
 ## Field-level events
@@ -135,7 +141,7 @@ For `{"path": "/tmp/file"}` arriving as chunks `'{"pat'`, `'h":"/tm'`, `'p/file"
    - `ToolFieldDelta(text="p/file")`
    - `ToolFieldEnd(key="path")`
 
-Note: The string value `/tmp/file` has no quotes - they are stripped by the parser.
+Note: the string value `/tmp/file` has no quotes. The parser strips them.
 
 ### Example: Object value
 

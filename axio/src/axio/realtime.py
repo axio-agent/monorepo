@@ -35,7 +35,7 @@ class RealtimeAgent:
     events to assemble tool calls and dispatches them as background tasks so
     that streaming audio output from the provider is not blocked.  Each tool
     result is sent back to the session via :meth:`RealtimeSession.send_tool_result`
-    as soon as the handler returns; ``interrupt()`` cancels in-flight tasks.
+    as soon as the handler returns.  ``interrupt()`` cancels in-flight tasks.
 
     Lifecycle::
 
@@ -108,7 +108,7 @@ class RealtimeAgent:
 
     async def interrupt(self) -> None:
         # Cancel running tool tasks AND drop any half-streamed pending tool
-        # fragments — once the user has interrupted, neither the in-flight
+        # fragments. Once the user has interrupted, neither the in-flight
         # results nor a TurnComplete arriving afterwards should be allowed to
         # finalize stale tool calls.
         self._pending.clear()

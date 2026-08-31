@@ -1,9 +1,8 @@
 # Realtime Audio
 
-Build voice agents with `axio-audio` and `RealtimeAgent`. The audio package
-provides microphone capture and speaker playback; `RealtimeAgent` (in the `axio`
-core) drives a `RealtimeTransport` session, dispatching tool calls concurrently
-with streaming audio output.
+Build voice agents with `axio-audio` and `RealtimeAgent`. The audio package provides microphone
+capture and speaker playback. `RealtimeAgent` (in the `axio` core) drives a `RealtimeTransport`
+session, dispatching tool calls concurrently with streaming audio output.
 
 ## Install
 
@@ -107,8 +106,8 @@ async with Speaker(sample_rate=24000) as spk:
 | `device` | `None` | sounddevice device index or name |
 | `playback_tap` | `None` | Optional `Callable[[bytes], None]` for echo-cancel reference |
 
-Call `spk.stop()` to immediately clear the playback buffer - use this to honour
-user interruptions so the assistant goes silent right away.
+Call `spk.stop()` to immediately clear the playback buffer. Use it to honour
+user interruptions, so the assistant goes silent right away.
 
 ## DuplexAudio
 
@@ -136,9 +135,9 @@ async with DuplexAudio(sample_rate=48000, chunk_ms=20) as duplex:
     await asyncio.gather(consume_mic(), play_output())
 ```
 
-`DuplexAudio` also exposes `.mic` and `.speaker` properties that satisfy the
-same async context-manager interface as `Microphone` / `Speaker`, so you can
-swap them with minimal changes to existing code.
+`DuplexAudio` also exposes `.mic` and `.speaker` properties. They satisfy
+the same async context-manager interface as `Microphone` / `Speaker`, so you
+can swap them with minimal changes to existing code.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -208,9 +207,13 @@ async for ev in agent.events():
 
 | Parameter | Default | Description |
 |---|---|---|
-| `api_key` | `GEMINI_API_KEY` | Developer API key |
-| `model` | `gemini-3-flash-preview` | Model for live sessions |
+| `api_key` | `GEMINI_API_KEY`, then `GOOGLE_API_KEY` | Developer API key |
+| `model` | `None`, resolved to `models/gemini-live-2.5-flash-native-audio` | Model for live sessions |
+| `vertexai` | `GOOGLE_GENAI_USE_VERTEXAI` env var | Route through Vertex AI |
 | `language_code` | `None` | BCP-47 language code (e.g. `"en-US"`) |
+
+The live models are their own family, not the chat models. `VertexLiveTransport` resolves an
+unset `model` to `gemini-live-2.5-flash-native-audio`, and expands it to a full publisher path.
 
 30 languages are supported, including Arabic, French, German, Hindi, Japanese,
 Korean, Portuguese, Spanish, and Vietnamese.

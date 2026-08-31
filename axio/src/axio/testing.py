@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from .context import MemoryContextStore
@@ -23,12 +23,16 @@ class StubTransport:
     Each call to stream() pops the next sequence from the list.
     """
 
-    def __init__(self, responses: list[list[StreamEvent]] | None = None) -> None:
-        self._responses: list[list[StreamEvent]] = list(responses or [])
+    def __init__(self, responses: Sequence[Sequence[StreamEvent | BaseException]] | None = None) -> None:
+        #: An exception among the events is raised where it sits, which is how a real transport
+        #: reports a failure. ``IterationEnd`` cannot carry ``StopReason.error``.
+        self._responses: list[Sequence[StreamEvent | BaseException]] = list(responses or [])
         self._call_count = 0
 
-    async def _generate(self, events: list[StreamEvent]) -> AsyncIterator[StreamEvent]:
+    async def _generate(self, events: Sequence[StreamEvent | BaseException]) -> AsyncIterator[StreamEvent]:
         for event in events:
+            if isinstance(event, BaseException):
+                raise event
             yield event
 
     def stream(self, messages: list[Message], tools: list[Tool[Any]], system: str) -> AsyncIterator[StreamEvent]:
@@ -82,3 +86,21 @@ def make_ephemeral_context() -> MemoryContextStore:
 
 def make_echo_tool() -> Tool[Any]:
     return Tool(name="echo", description="Returns input as JSON", handler=_msg_input)
+
+
+def assert_stream_contract(events: Sequence[StreamEvent]) -> None:
+    """Check what every ``CompletionTransport.stream()`` must produce.
+
+    A transport that breaks one of these still passes its own tests, because the agent papers over
+    the difference. Call this from each transport's tests on whatever its fake server produced.
+    """
+    # StopReason.error is not checked here: `IterationEnd.__post_init__` refuses it, so no such
+    # event can reach this function. A transport that tries raises where it builds one.
+    ends = [e for e in events if isinstance(e, IterationEnd)]
+    assert len(ends) == 1, f"a stream ends with exactly one IterationEnd, got {len(ends)}"
+    assert events[-1] is ends[0], "IterationEnd is the last event"
+    usage = ends[0].usage
+    assert usage.cache_read_tokens + usage.cache_write_tokens <= usage.input_tokens, (
+        f"the cache slices are inside input_tokens, got {usage}"
+    )
+    assert usage.reasoning_tokens <= usage.output_tokens, f"reasoning is inside output_tokens, got {usage}"

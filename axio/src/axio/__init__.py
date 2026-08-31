@@ -1,20 +1,38 @@
 """axio - public API."""
 
 from .agent import Agent
-from .blocks import TextBlock, ToolResultBlock, ToolUseBlock
+from .blocks import ProviderBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from .context import ContextStore, MemoryContextStore
 from .events import (
+    AudioOutput,
     AudioOutputDelta,
+    BlockEnd,
+    Citation,
+    Error,
+    ImageOutput,
     IterationEnd,
+    IterationStart,
+    ProviderEvent,
+    ProviderOutput,
+    ReasoningDelta,
+    ReasoningSignature,
+    Refusal,
+    SessionEndEvent,
     SpeechStarted,
     SpeechStopped,
     StreamEvent,
     TextDelta,
+    TextSignature,
+    ToolFieldDelta,
+    ToolFieldEnd,
+    ToolFieldStart,
     ToolInputDelta,
+    ToolOutputDelta,
     ToolResult,
     ToolUseStart,
     TranscriptDelta,
     TurnComplete,
+    VideoOutput,
 )
 from .exceptions import GuardError, HandlerError
 from .field import Field, FieldInfo, StrictStr
@@ -25,50 +43,63 @@ from .selector import ToolSelector
 from .stream import AgentStream
 from .tool import CONTEXT, Tool
 from .transport import CompletionTransport, RealtimeSession, RealtimeTransport
-from .types import StopReason, Usage
+from .types import INCOMPLETE, StopReason, Usage
 
 __all__ = [
-    # core
     "Agent",
-    "Tool",
-    "CONTEXT",
-    "ContextStore",
-    "MemoryContextStore",
-    "CompletionTransport",
-    # events
-    "StreamEvent",
-    "TextDelta",
-    "IterationEnd",
-    "ToolUseStart",
-    "ToolInputDelta",
-    "ToolResult",
-    # realtime
-    "RealtimeAgent",
-    "RealtimeTransport",
-    "RealtimeSession",
+    "AgentStream",
+    "AudioOutput",
     "AudioOutputDelta",
-    "TranscriptDelta",
-    "SpeechStarted",
-    "SpeechStopped",
-    "TurnComplete",
-    # messages & blocks
-    "Message",
-    "TextBlock",
-    "ToolUseBlock",
-    "ToolResultBlock",
-    # types & errors
-    "StopReason",
-    "Usage",
-    "GuardError",
-    "HandlerError",
-    # permissions
-    "PermissionGuard",
+    "BlockEnd",
+    "CONTEXT",
+    "Citation",
+    "CompletionTransport",
     "ConcurrentGuard",
-    # field annotations
+    "ContextStore",
+    "Error",
     "Field",
     "FieldInfo",
+    "GuardError",
+    "HandlerError",
+    "ImageOutput",
+    "IterationEnd",
+    "IterationStart",
+    "MemoryContextStore",
+    "Message",
+    "PermissionGuard",
+    "ProviderEvent",
+    "ProviderOutput",
+    "RealtimeAgent",
+    "RealtimeSession",
+    "RealtimeTransport",
+    "INCOMPLETE",
+    "ProviderBlock",
+    "ReasoningBlock",
+    "ReasoningDelta",
+    "ReasoningSignature",
+    "Refusal",
+    "SessionEndEvent",
+    "SpeechStarted",
+    "SpeechStopped",
+    "StopReason",
+    "StreamEvent",
     "StrictStr",
-    # advanced
+    "TextBlock",
+    "TextDelta",
+    "TextSignature",
+    "Tool",
+    "ToolFieldDelta",
+    "ToolFieldEnd",
+    "ToolFieldStart",
+    "ToolInputDelta",
+    "ToolOutputDelta",
+    "ToolResult",
+    "ToolResultBlock",
     "ToolSelector",
-    "AgentStream",
+    "ToolUseBlock",
+    "ToolUseStart",
+    "TranscriptDelta",
+    "TurnComplete",
+    "Usage",
+    "VideoOutput",
 ]

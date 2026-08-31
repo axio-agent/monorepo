@@ -18,6 +18,8 @@ jobs:
           - axio-audio
           - axio-context-sqlite
           - axio-repl
+          - axio-responses
+          - axio-sse
           - axio-tools-docker
           - axio-tools-local
           - axio-tools-mcp
@@ -59,6 +61,8 @@ jobs:
           - axio-audio
           - axio-context-sqlite
           - axio-repl
+          - axio-responses
+          - axio-sse
           - axio-tools-docker
           - axio-tools-local
           - axio-tools-mcp

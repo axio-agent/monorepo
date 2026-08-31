@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any, ClassVar, Literal, Optional
 
 from axio.field import Field, FieldInfo, StrictStr
-from axio.schema import build_tool_schema, property_schema
+from axio.schema import build_tool_schema, property_schema, strip_title
 
 
 class TestPropertySchemaPrimitives:
@@ -392,3 +393,76 @@ class TestBuildToolSchemaTypeMapping:
 
         prop = build_tool_schema(f)["properties"]["query"]
         assert "default" not in prop
+
+
+class TestStripTitle:
+    """A schema that came from pydantic rather than from build_tool_schema."""
+
+    def test_it_reaches_into_nested_schemas(self) -> None:
+        schema = {"title": "Root", "properties": {"a": {"title": "A", "items": {"title": "I", "type": "string"}}}}
+
+        assert "title" not in json.dumps(strip_title(schema))
+
+    def test_it_reaches_into_a_list_of_schemas(self) -> None:
+        # anyOf and oneOf hold their branches in a list, and pydantic names every one of them.
+        schema = {"anyOf": [{"title": "A", "type": "string"}, {"title": "B", "type": "integer"}]}
+
+        assert "title" not in json.dumps(strip_title(schema))
+
+    def test_a_property_actually_called_title_survives(self) -> None:
+        # Only the schema keyword goes. A tool taking a `title` argument still declares it.
+        schema = {"properties": {"title": {"type": "string", "title": "Title"}}}
+
+        stripped = strip_title(schema)
+
+        assert stripped == {"properties": {"title": {"type": "string"}}}
+
+    def test_the_original_is_left_alone(self) -> None:
+        schema = {"title": "Root", "type": "object"}
+
+        strip_title(schema)
+
+        assert schema["title"] == "Root"
+
+    def test_a_value_the_caller_declared_keeps_its_own_title(self) -> None:
+        # const, default, enum and examples hold values, not schemas. Walked as schemas, an enum of
+        # objects came out as a list of empty ones.
+        schema = {
+            "properties": {
+                "who": {
+                    "title": "Who",
+                    "enum": [{"title": "Mr"}],
+                    "default": {"title": "Mr"},
+                    "const": {"title": "Mr"},
+                }
+            }
+        }
+
+        who = strip_title(schema)["properties"]["who"]
+
+        assert who == {"enum": [{"title": "Mr"}], "default": {"title": "Mr"}, "const": {"title": "Mr"}}
+
+    def test_a_keyword_that_holds_a_schema_is_still_walked(self) -> None:
+        schema = {"anyOf": [{"title": "A", "type": "string"}], "items": {"title": "I", "type": "integer"}}
+
+        assert strip_title(schema) == {"anyOf": [{"type": "string"}], "items": {"type": "integer"}}
+
+    def test_every_key_that_maps_names_to_schemas_is_walked(self) -> None:
+        # Only `properties` was covered. A pydantic model with a nested model writes `$defs`, and
+        # a field there called `title` is a tool argument like any other.
+        schema = {"$defs": {"Inner": {"title": "Inner", "properties": {"title": {"type": "string"}}}}}
+
+        assert strip_title(schema) == {"$defs": {"Inner": {"properties": {"title": {"type": "string"}}}}}
+
+
+def test_a_title_under_every_keyword_that_holds_a_schema_is_stripped() -> None:
+    # pydantic names every model and field. A keyword this walk does not know keeps those names,
+    # and a large tool set pays for them on every request.
+    schema = {
+        "type": "object",
+        "dependentSchemas": {"card": {"title": "Card", "type": "object"}},
+        "contentSchema": {"title": "Payload", "type": "string"},
+        "unevaluatedItems": {"title": "Rest", "type": "string"},
+    }
+
+    assert "title" not in json.dumps(strip_title(schema))

@@ -18,11 +18,16 @@ streaming-first, protocol-driven foundation for LLM-powered agents.
 | [`axio-transport-anthropic`](axio-transport-anthropic/) | [![PyPI](https://img.shields.io/pypi/v/axio-transport-anthropic)](https://pypi.org/project/axio-transport-anthropic/) | Anthropic Claude transport with prompt caching |
 | [`axio-transport-openai`](axio-transport-openai/) | [![PyPI](https://img.shields.io/pypi/v/axio-transport-openai)](https://pypi.org/project/axio-transport-openai/) | OpenAI-compatible transport (OpenAI, Nebius, OpenRouter, custom) |
 | [`axio-transport-codex`](axio-transport-codex/) | [![PyPI](https://img.shields.io/pypi/v/axio-transport-codex)](https://pypi.org/project/axio-transport-codex/) | ChatGPT OAuth transport via Responses API |
+| [`axio-transport-google`](axio-transport-google/) | [![PyPI](https://img.shields.io/pypi/v/axio-transport-google)](https://pypi.org/project/axio-transport-google/) | Google Gemini transport (Developer API and Vertex AI) + Gemini Live realtime |
+| [`axio-sse`](axio-sse/) | [![PyPI](https://img.shields.io/pypi/v/axio-sse)](https://pypi.org/project/axio-sse/) | `text/event-stream` decoder and payload reader, used by every transport above |
+| [`axio-responses`](axio-responses/) | [![PyPI](https://img.shields.io/pypi/v/axio-responses)](https://pypi.org/project/axio-responses/) | OpenAI Responses API request builders and stream reader, shared by `axio-transport-openai` and `axio-transport-codex` |
 | [`axio-tools-local`](axio-tools-local/) | [![PyPI](https://img.shields.io/pypi/v/axio-tools-local)](https://pypi.org/project/axio-tools-local/) | File, shell, and Python execution tools |
 | [`axio-tools-mcp`](axio-tools-mcp/) | [![PyPI](https://img.shields.io/pypi/v/axio-tools-mcp)](https://pypi.org/project/axio-tools-mcp/) | MCP server bridge |
 | [`axio-tools-docker`](axio-tools-docker/) | [![PyPI](https://img.shields.io/pypi/v/axio-tools-docker)](https://pypi.org/project/axio-tools-docker/) | Docker sandbox tool provider |
 | [`axio-context-sqlite`](axio-context-sqlite/) | [![PyPI](https://img.shields.io/pypi/v/axio-context-sqlite)](https://pypi.org/project/axio-context-sqlite/) | SQLite-backed persistent context store |
 | [`axio-tui-guards`](axio-tui-guards/) | [![PyPI](https://img.shields.io/pypi/v/axio-tui-guards)](https://pypi.org/project/axio-tui-guards/) | PathGuard + LLMGuard permission plugins |
+| [`axio-audio`](axio-audio/) | [![PyPI](https://img.shields.io/pypi/v/axio-audio)](https://pypi.org/project/axio-audio/) | Microphone / speaker helpers for realtime voice agents |
+| [`axio-repl`](axio-repl/) | [![PyPI](https://img.shields.io/pypi/v/axio-repl)](https://pypi.org/project/axio-repl/) | Interactive terminal coding assistant |
 
 ---
 
@@ -169,6 +174,8 @@ name: test_my_example
 Each top-level directory is either a workspace package or a support directory:
 
 - **`axio/`** - core library; everything else depends on it
+- **`axio-sse/`** - `text/event-stream` decoder, used by every transport below
+- **`axio-responses/`** - OpenAI Responses API request builders and stream reader, shared by `axio-transport-openai` and `axio-transport-codex`
 - **`axio-transport-*/`** - LLM transport implementations
 - **`axio-tools-*/`** - tool providers
 - **`axio-audio/`** - microphone / speaker helpers for realtime agents

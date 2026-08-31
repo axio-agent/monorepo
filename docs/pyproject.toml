@@ -4,11 +4,19 @@ version = "0.1.0"
 description = "Documentation for the Axio agent framework"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "axio",
     "axio-audio",
     "axio-context-sqlite",
     "axio-repl",
+    "axio-responses",
+    "axio-sse",
     "axio-tools-docker",
     "axio-tools-local",
     "axio-tools-mcp",
@@ -36,6 +44,8 @@ axio = { workspace = true }
 axio-audio = { workspace = true }
 axio-context-sqlite = { workspace = true }
 axio-repl = { workspace = true }
+axio-responses = { workspace = true }
+axio-sse = { workspace = true }
 axio-tools-docker = { workspace = true }
 axio-tools-local = { workspace = true }
 axio-tools-mcp = { workspace = true }

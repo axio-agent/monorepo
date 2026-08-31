@@ -5,9 +5,16 @@ description = "Google GenAI (Gemini) transport for Axio with image and video sup
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 keywords = ["llm", "agent", "ai", "google", "gemini", "genai", "transport"]
 dependencies = [
     "axio",
+    "axio-sse",
     "axio-transport-anthropic[vertexai]",
     "google-auth[urllib3]>=2.0",
 ]

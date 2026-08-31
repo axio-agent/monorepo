@@ -22,6 +22,14 @@ tools-mcp
 
 ```{toctree}
 :maxdepth: 2
+:caption: Wire formats
+
+sse
+responses
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Transports
 
 transport-openai

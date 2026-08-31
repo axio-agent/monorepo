@@ -77,11 +77,11 @@ class AutoCompactStore(ContextStore):
     ``model`` attribute).  Pass ``max_tokens`` explicitly to override.
 
     Compaction fires from :meth:`add_context_tokens`, which the agent loop
-    calls immediately after ``IterationEnd`` - ``input_tokens`` there equals
+    calls immediately after ``IterationEnd``.  ``input_tokens`` there equals
     the real context size sent to the model in that iteration.
 
     Internally, :meth:`_do_compact` forks the inner store before calling
-    ``compact_context``.  The fork acts as a stable snapshot: the
+    ``compact_context``.  The fork acts as a stable snapshot.  The
     summarisation agent reads from it while the live store remains writable.
     The live store is only cleared and repopulated after the (async) summary
     call returns.

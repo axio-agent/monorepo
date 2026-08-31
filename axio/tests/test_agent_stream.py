@@ -5,6 +5,7 @@ from __future__ import annotations
 from axio.agent import Agent
 from axio.context import MemoryContextStore
 from axio.events import Error, IterationEnd, SessionEndEvent, StreamEvent, TextDelta
+from axio.exceptions import StreamError
 from axio.testing import StubTransport
 from axio.types import StopReason, Usage
 
@@ -36,7 +37,7 @@ class TestSessionEndGuarantee:
             [
                 [
                     TextDelta(0, "partial"),
-                    IterationEnd(1, StopReason.max_tokens, Usage(10, 5)),
+                    StreamError("the provider failed"),
                 ]
             ]
         )
@@ -85,3 +86,17 @@ class TestMultipleLoopsOnStream:
         assert len(first) > 0
         second = [e async for e in stream]
         assert second == []
+
+
+def test_every_stream_event_is_importable_from_the_package() -> None:
+    # A caller writing an exhaustive match over the exported StreamEvent has to name each member.
+    # Ten were reachable only from axio.events, including Error and the type get_session_end returns.
+    import typing
+
+    import axio
+    import axio.events
+
+    union = {t.__name__ for t in typing.get_args(axio.events.StreamEvent.__value__)}
+
+    assert union <= set(axio.__all__)
+    assert all(hasattr(axio, name) for name in union)

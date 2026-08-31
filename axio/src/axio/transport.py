@@ -69,7 +69,7 @@ class RealtimeSession(Protocol):
     """Active duplex realtime session — bidirectional audio / text / tools.
 
     Returned by :meth:`RealtimeTransport.connect`.  Events from the provider
-    arrive on :meth:`events`; user input is pushed via :meth:`send`.
+    arrive on :meth:`events`.  User input is pushed via :meth:`send`.
     """
 
     async def send(self, content: ContentBlock | list[ContentBlock]) -> None:
@@ -87,7 +87,7 @@ class RealtimeSession(Protocol):
         """Deliver a tool's result to the provider so generation can resume.
 
         ``name`` is included because some providers (e.g. Gemini Live) require
-        the tool name alongside the call id; OpenAI realtime can ignore it.
+        the tool name alongside the call id.  OpenAI realtime can ignore it.
         """
 
     def events(self) -> AsyncIterator[StreamEvent]:

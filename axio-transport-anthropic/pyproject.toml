@@ -5,10 +5,16 @@ description = "Anthropic Claude transport for Axio (direct API and Vertex AI)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
-dependencies = ["axio", "aiohttp>=3.11"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = ["axio", "axio-sse", "aiohttp>=3.11"]
 
 [project.optional-dependencies]
-vertexai = ["google-auth>=2.49"]
+vertexai = ["google-auth[requests]>=2.49"]
 tui = ["textual>=2.1.0"]
 
 [project.entry-points."axio.transport"]

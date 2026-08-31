@@ -46,7 +46,7 @@ class ToolSelector(Protocol):
 
 **Returns:**
 
-An `Iterable[Tool[Any]]` containing the subset of tools to pass to the transport for this iteration. The order does not matter - only membership.
+An `Iterable[Tool[Any]]` containing the subset of tools to pass to the transport for this iteration. The order does not matter. Only membership matters.
 
 When `selector` is `None` (the default), all tools are passed on every iteration.
 
@@ -236,7 +236,7 @@ asyncio.run(_run())
 
 ## Application integration
 
-Construct the selector in application code and pass it directly to
+Construct the selector in application code. Pass it directly to
 `Agent(selector=selector)`.
 ## Related
 

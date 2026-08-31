@@ -11,15 +11,28 @@ from typing import Any
 import aiohttp
 import pytest
 from aiohttp import web
-from axio.blocks import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
-from axio.events import IterationEnd, ReasoningDelta, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
+from axio.blocks import ImageBlock, ReasoningBlock, TextBlock, ToolResultBlock, ToolUseBlock
+from axio.events import (
+    IterationEnd,
+    IterationStart,
+    ProviderEvent,
+    ReasoningDelta,
+    Refusal,
+    StreamEvent,
+    TextDelta,
+    ToolInputDelta,
+    ToolUseStart,
+)
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
+from axio.testing import assert_stream_contract
 from axio.tool import Tool
 from axio.types import StopReason, Usage
 
-from axio_transport_openai import OPENAI_MODELS, OpenAITransport, ThinkTagParser
+from axio_transport_openai import OPENAI_MODELS, OpenAITransport, ThinkTagParser, _chat_messages
+from axio_transport_openai.custom import OpenAICompatibleTransport
+from axio_transport_openai.nebius import NebiusTransport
 
 # ---------------------------------------------------------------------------
 # Test tool handler
@@ -152,6 +165,7 @@ class FakeOpenAIServer:
     def make_app(self) -> web.Application:
         app = web.Application()
         app.router.add_post("/v1/chat/completions", self._handle)
+        app.router.add_post("/v1/responses", self._handle)
         app.router.add_post("/v1/embeddings", self._handle_embeddings)
         return app
 
@@ -246,11 +260,17 @@ async def transport(fake_server: tuple[FakeOpenAIServer, str]) -> AsyncIterator[
             model=OPENAI_MODELS["gpt-4.1-mini"],
             session=session,
             retry_base_delay=0.0,
+            # These tests drive /v1/chat/completions, and say so: the transport now speaks
+            # /v1/responses by default, which is a different request and a different stream.
+            api="chat",
         )
 
 
 async def _collect(stream: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
-    return [event async for event in stream]
+    """Every event the stream produced, checked against what any transport must produce."""
+    made = [event async for event in stream]
+    assert_stream_contract(made)
+    return made
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +493,9 @@ async def test_tool_call_function_null(
     [
         ("stop", StopReason.end_turn),
         ("tool_calls", StopReason.tool_use),
+        ("function_call", StopReason.tool_use),
         ("length", StopReason.max_tokens),
+        ("content_filter", StopReason.refusal),
     ],
 )
 async def test_stop_reason_mapping(
@@ -491,17 +513,48 @@ async def test_stop_reason_mapping(
     assert ends[0].stop_reason == expected
 
 
-async def test_content_filter_raises_stream_error(
+async def test_a_blocked_turn_ends_as_a_refusal_and_not_as_a_transport_error(
     fake_server: tuple[FakeOpenAIServer, str],
     transport: OpenAITransport,
 ) -> None:
-    """Provider-side errors (content_filter, etc.) surface as StreamError."""
-    from axio.exceptions import StreamError
+    """content_filter means the provider blocked the turn, which is not the transport failing.
 
+    It used to raise, which said the request never completed. Sending the same prompt again cannot
+    succeed, so the caller needs to tell a block from a broken connection.
+    """
     server, _ = fake_server
     server.responses.append(_text_chunks("x", finish_reason="content_filter"))
 
-    with pytest.raises(StreamError):
+    events = await _collect(transport.stream([], [], ""))
+
+    ends = [e for e in events if isinstance(e, IterationEnd)]
+    assert ends[0].stop_reason == StopReason.refusal
+
+
+async def test_a_closing_word_nobody_published_reads_as_unknown(
+    fake_server: tuple[FakeOpenAIServer, str],
+    transport: OpenAITransport,
+) -> None:
+    # Compatible servers invent closing words: eos_token, abort, length_cap. Every other answer
+    # claims something the server did not say.
+    server, _ = fake_server
+    server.responses.append(_text_chunks("x", finish_reason="something-nobody-published"))
+
+    events = await _collect(transport.stream([], [], ""))
+
+    assert "".join(e.delta for e in events if isinstance(e, TextDelta)) == "x"
+    assert [e.stop_reason for e in events if isinstance(e, IterationEnd)] == [StopReason.unknown]
+
+
+async def test_no_closing_word_at_all_still_raises(
+    fake_server: tuple[FakeOpenAIServer, str],
+    transport: OpenAITransport,
+) -> None:
+    # Not an unknown ending but a cut connection, which the caller may want to retry.
+    server, _ = fake_server
+    server.responses.append(_sse_chunk({"choices": [{"index": 0, "delta": {"content": "half"}}]}))
+
+    with pytest.raises(StreamError, match="without a finish_reason"):
         await _collect(transport.stream([], [], ""))
 
 
@@ -511,7 +564,7 @@ async def test_content_filter_raises_stream_error(
 
 
 def test_build_payload_system_prompt() -> None:
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     payload = t.build_payload([], [], "You are helpful.")
     msgs = payload["messages"]
     assert msgs[0] == {"role": "system", "content": "You are helpful."}
@@ -521,7 +574,7 @@ def test_build_payload_system_prompt() -> None:
 
 
 def test_build_payload_user_text() -> None:
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     messages = [Message(role="user", content=[TextBlock(text="Hello")])]
     payload = t.build_payload(messages, [], "")
     # No system message when empty
@@ -529,7 +582,7 @@ def test_build_payload_user_text() -> None:
 
 
 def test_build_payload_assistant_with_tool_calls() -> None:
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     messages = [
         Message(
             role="assistant",
@@ -552,7 +605,7 @@ def test_build_payload_assistant_with_tool_calls() -> None:
 
 
 def test_build_payload_tool_results() -> None:
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     messages = [
         Message(
             role="user",
@@ -570,7 +623,7 @@ def test_build_payload_tool_results() -> None:
 
 def test_build_payload_tool_result_with_image() -> None:
     """Tool results containing ImageBlocks should inject a follow-up user message with image_url parts."""
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     img_data = b"\x89PNG\r\n\x1a\nfake"
     messages = [
         Message(
@@ -604,7 +657,7 @@ def test_build_payload_tool_result_with_image() -> None:
 
 def test_build_payload_tool_result_no_image_no_injection() -> None:
     """Text-only tool results should NOT inject a user message."""
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     messages = [
         Message(
             role="user",
@@ -618,7 +671,7 @@ def test_build_payload_tool_result_no_image_no_injection() -> None:
 
 
 def test_build_payload_tool_schema() -> None:
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     tool: Tool[Any] = Tool(name="get_weather", description="Get weather", handler=get_weather)
     payload = t.build_payload([], [tool], "")
     assert len(payload["tools"]) == 1
@@ -632,13 +685,13 @@ def test_build_payload_tool_schema() -> None:
 
 
 def test_build_payload_uses_model_spec_max_tokens() -> None:
-    t = OpenAITransport(model=ModelSpec(id="custom-model", max_output_tokens=4096))
+    t = OpenAITransport(model=ModelSpec(id="custom-model", max_output_tokens=4096), api="chat")
     payload = t.build_payload([], [], "")
     assert payload["max_completion_tokens"] == 4096
 
 
 def test_build_payload_image_block() -> None:
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     img_data = b"\x89PNG\r\n\x1a\nfake"
     messages = [
         Message(
@@ -661,7 +714,7 @@ def test_build_payload_image_block() -> None:
 
 
 def test_build_payload_image_only() -> None:
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     img_data = b"\xff\xd8\xff\xe0fake-jpeg"
     messages = [
         Message(role="user", content=[ImageBlock(media_type="image/jpeg", data=img_data)]),
@@ -676,7 +729,7 @@ def test_build_payload_image_only() -> None:
 
 def test_build_payload_text_only_stays_string() -> None:
     """Text-only user messages should remain plain strings, not arrays."""
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     messages = [Message(role="user", content=[TextBlock(text="Hello")])]
     payload = t.build_payload(messages, [], "")
     assert payload["messages"][0]["content"] == "Hello"
@@ -684,7 +737,7 @@ def test_build_payload_text_only_stays_string() -> None:
 
 def test_build_payload_system_message_in_history() -> None:
     """System messages in history are passed through as role=system."""
-    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
     messages = [
         Message(role="system", content=[TextBlock(text="You are concise.")]),
         Message(role="user", content=[TextBlock(text="Hello")]),
@@ -738,7 +791,11 @@ async def test_auth_header_sent(fake_server: tuple[FakeOpenAIServer, str]) -> No
     server.responses.append(_text_chunks("ok"))
     async with aiohttp.ClientSession() as session:
         t = OpenAITransport(
-            base_url=base_url, api_key="sk-secret", model=OPENAI_MODELS["gpt-4.1-mini"], session=session
+            base_url=base_url,
+            api_key="sk-secret",
+            model=OPENAI_MODELS["gpt-4.1-mini"],
+            session=session,
+            api="chat",
         )
         await _collect(t.stream([], [], ""))
     assert len(server.received_payloads) == 1
@@ -1268,35 +1325,6 @@ async def test_embed_500_retries_and_recovers(
     assert len(server.received_embedding_payloads) == 2
 
 
-def test_get_retry_delay_uses_header() -> None:
-    """_get_retry_delay prefers Retry-After header value."""
-    t = OpenAITransport(retry_base_delay=1.0)
-    # Create a mock response with Retry-After header
-    from unittest.mock import MagicMock
-
-    resp = MagicMock()
-    resp.headers = {"Retry-After": "5"}
-    assert t._get_retry_delay(resp, 1) == 5.0
-
-
-def test_get_retry_delay_falls_back_to_exponential() -> None:
-    """_get_retry_delay uses exponential backoff when no header."""
-    t = OpenAITransport(retry_base_delay=2.0)
-    assert t._get_retry_delay(None, 1) == 2.0  # 2 * 2^0
-    assert t._get_retry_delay(None, 2) == 4.0  # 2 * 2^1
-    assert t._get_retry_delay(None, 3) == 8.0  # 2 * 2^2
-
-
-def test_get_retry_delay_ignores_invalid_header() -> None:
-    """_get_retry_delay falls back when Retry-After is not a number."""
-    t = OpenAITransport(retry_base_delay=1.0)
-    from unittest.mock import MagicMock
-
-    resp = MagicMock()
-    resp.headers = {"Retry-After": "invalid"}
-    assert t._get_retry_delay(resp, 1) == 1.0
-
-
 # ---------------------------------------------------------------------------
 # Tool call: id + arguments in the same delta (vLLM/Nebius pattern)
 # ---------------------------------------------------------------------------
@@ -1358,25 +1386,26 @@ async def test_sse_buffer_flush(
     fake_server: tuple[FakeOpenAIServer, str],
     transport: OpenAITransport,
 ) -> None:
-    """When the last SSE data line has no trailing newline, data must not be lost."""
+    """A final usage chunk arrives when the stream ends it properly, and not when it is cut."""
     server, _ = fake_server
+    usage = json.dumps({"choices": [], "usage": {"prompt_tokens": 42, "completion_tokens": 7}})
+    head = _sse_chunk({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}]})
+    head += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
 
-    # Build SSE where the final usage chunk has no trailing \n
-    sse = _sse_chunk({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}]})
-    sse += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
-    # Usage chunk without trailing \n\n - just "data: {...}" with no newline
-    usage_data = json.dumps({"choices": [], "usage": {"prompt_tokens": 42, "completion_tokens": 7}})
-    sse += f"data: {usage_data}"  # no trailing \n
-
-    server.responses.append(sse)
+    server.responses.append(head + f"data: {usage}\n\n")
     events = await _collect(transport.stream([], [], ""))
 
-    text_deltas = [e for e in events if isinstance(e, TextDelta)]
-    assert "".join(e.delta for e in text_deltas) == "hi"
-
+    assert "".join(e.delta for e in events if isinstance(e, TextDelta)) == "hi"
     ends = [e for e in events if isinstance(e, IterationEnd)]
     assert len(ends) == 1
     assert ends[0].usage == Usage(42, 7)
+
+    # The same chunk with nothing terminating it is a frame the connection was cut inside. The
+    # format discards it: trusted, a truncated turn reads as a finished one.
+    server.responses.append(head + f"data: {usage}")
+    cut = await _collect(transport.stream([], [], ""))
+
+    assert [e.usage for e in cut if isinstance(e, IterationEnd)] == [Usage(0, 0)]
     assert ends[0].stop_reason == StopReason.end_turn
 
 
@@ -1398,6 +1427,7 @@ async def test_extra_params_sent_in_payload(
             model=OPENAI_MODELS["gpt-4.1-mini"],
             session=session,
             extra_params={"enable_thinking": True, "thinking_budget": 512},
+            api="chat",
         )
         await _collect(t.stream([], [], ""))
 
@@ -1419,6 +1449,7 @@ async def test_extra_params_override_payload_field(
             model=OPENAI_MODELS["gpt-4.1-mini"],
             session=session,
             extra_params={"max_completion_tokens": 42},
+            api="chat",
         )
         await _collect(t.stream([], [], ""))
 
@@ -1456,3 +1487,666 @@ def test_extra_params_to_dict_round_trip() -> None:
 def test_extra_params_empty_omitted_from_dict() -> None:
     t = OpenAITransport(api_key="k")
     assert "extra_params" not in t.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# What the chunk carries beyond content and tool calls
+# ---------------------------------------------------------------------------
+
+
+class TestNothingIsDropped:
+    async def test_reasoning_arrives_as_a_field_and_not_only_as_think_tags(
+        self, fake_server: tuple[FakeOpenAIServer, str], transport: OpenAITransport
+    ) -> None:
+        """This transport sends enable_thinking, so it asks for reasoning.
+
+        OpenRouter and vLLM answer in `reasoning`, DeepSeek in `reasoning_content`. Neither was
+        read, so on those providers the reasoning was requested, billed and thrown away; only the
+        <think> tags of a third dialect ever arrived.
+        """
+        server, _ = fake_server
+        body = _sse_chunk({"choices": [{"index": 0, "delta": {"reasoning": "weighing "}}]})
+        body += _sse_chunk({"choices": [{"index": 0, "delta": {"reasoning_content": "options"}}]})
+        body += _sse_chunk({"choices": [{"index": 0, "delta": {"content": "answer"}, "finish_reason": "stop"}]})
+        body += _sse_done()
+        server.responses.append(body)
+
+        events = await _collect(transport.stream([], [], ""))
+
+        assert [e.delta for e in events if isinstance(e, ReasoningDelta)] == ["weighing ", "options"]
+        assert [e.delta for e in events if isinstance(e, TextDelta)] == ["answer"]
+
+    async def test_a_refusal_is_its_own_event(
+        self, fake_server: tuple[FakeOpenAIServer, str], transport: OpenAITransport
+    ) -> None:
+        server, _ = fake_server
+        body = _sse_chunk({"choices": [{"index": 0, "delta": {"refusal": "I cannot help with that"}}]})
+        body += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "content_filter"}]})
+        body += _sse_done()
+        server.responses.append(body)
+
+        events = await _collect(transport.stream([], [], ""))
+
+        refusals = [e for e in events if isinstance(e, Refusal)]
+        assert [r.text for r in refusals] == ["I cannot help with that"]
+        assert [e for e in events if isinstance(e, IterationEnd)][0].stop_reason == StopReason.refusal
+
+    async def test_the_model_that_answered_is_reported(
+        self, fake_server: tuple[FakeOpenAIServer, str], transport: OpenAITransport
+    ) -> None:
+        # A gateway routes and falls back, so the model that answered prices differently from the
+        # one that was asked for.
+        server, _ = fake_server
+        body = _sse_chunk({"id": "chatcmpl-7", "model": "served-by-something-else", "choices": []})
+        body += _sse_chunk({"choices": [{"index": 0, "delta": {"content": "x"}, "finish_reason": "stop"}]})
+        body += _sse_done()
+        server.responses.append(body)
+
+        events = await _collect(transport.stream([], [], ""))
+
+        starts = [e for e in events if isinstance(e, IterationStart)]
+        assert [(s.id, s.model) for s in starts] == [("chatcmpl-7", "served-by-something-else")]
+
+    async def test_the_candidates_beyond_the_first_are_forwarded(
+        self, fake_server: tuple[FakeOpenAIServer, str], transport: OpenAITransport
+    ) -> None:
+        # n>1 asks for several answers and only the first is read. The rest used to vanish.
+        server, _ = fake_server
+        body = _sse_chunk(
+            {
+                "choices": [
+                    {"index": 0, "delta": {"content": "first"}},
+                    {"index": 1, "delta": {"content": "second"}},
+                ]
+            }
+        )
+        body += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        body += _sse_done()
+        server.responses.append(body)
+
+        events = await _collect(transport.stream([], [], ""))
+
+        forwarded = [e for e in events if isinstance(e, ProviderEvent) and e.kind == "choice"]
+        assert [e.index for e in forwarded] == [1]
+        assert forwarded[0].data["delta"]["content"] == "second"
+
+
+class TestGPT56Family:
+    """Sizes and prices as OpenAI publishes them, one model page each."""
+
+    def test_the_tiers_are_registered_with_their_published_sizes(self) -> None:
+        for model_id in ("gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+            spec = OPENAI_MODELS[model_id]
+            assert spec.context_window == 1_050_000, model_id
+            assert spec.max_output_tokens == 128_000, model_id
+
+    def test_the_tiers_differ_only_in_price(self) -> None:
+        prices = {
+            m: (OPENAI_MODELS[m].input_cost, OPENAI_MODELS[m].output_cost)
+            for m in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+        }
+        assert prices == {
+            "gpt-5.6-sol": (4.0, 20.0),
+            "gpt-5.6-terra": (2.0, 12.0),
+            "gpt-5.6-luna": (0.20, 1.20),
+        }
+
+    def test_the_bare_alias_prices_as_the_tier_it_routes_to(self) -> None:
+        # The published alias routes to Sol, so a cost estimate must not differ from Sol's.
+        alias, sol = OPENAI_MODELS["gpt-5.6"], OPENAI_MODELS["gpt-5.6-sol"]
+        assert (alias.input_cost, alias.output_cost) == (sol.input_cost, sol.output_cost)
+        assert alias.context_window == sol.context_window
+
+    def test_the_security_tier_has_its_own_smaller_window(self) -> None:
+        spec = OPENAI_MODELS["gpt-5.6-cyber"]
+        assert spec.context_window == 400_000
+        assert (spec.input_cost, spec.output_cost) == (12.50, 75.0)
+
+    def test_every_tier_reasons_and_sees(self) -> None:
+        for model_id in ("gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-cyber"):
+            caps = OPENAI_MODELS[model_id].capabilities
+            assert Capability.reasoning in caps and Capability.vision in caps, model_id
+            assert Capability.tool_use in caps, model_id
+
+
+class TestReasoningEffortWithTools:
+    """/v1/chat/completions refuses function tools beside any reasoning effort but "none"."""
+
+    @staticmethod
+    def _tool() -> Tool[Any]:
+        return Tool(name="get_weather", description="", handler=get_weather)
+
+    def test_a_reasoning_model_with_tools_is_told_not_to_reason(self) -> None:
+        # A reasoning model reasons by default, so without this the request fails with a 400 that
+        # names a parameter the caller never sent.
+        t = OpenAITransport(model=OPENAI_MODELS["gpt-5.6-luna"], api="chat")
+        payload = t.build_payload([], [self._tool()], "")
+        assert payload["reasoning_effort"] == "none"
+
+    def test_a_reasoning_model_with_no_tools_is_left_alone(self) -> None:
+        t = OpenAITransport(model=OPENAI_MODELS["gpt-5.6-luna"], api="chat")
+        assert "reasoning_effort" not in t.build_payload([], [], "")
+
+    def test_a_model_that_does_not_reason_is_left_alone(self) -> None:
+        t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat")
+        assert "reasoning_effort" not in t.build_payload([], [self._tool()], "")
+
+    def test_the_caller_decides_when_the_caller_has_said_so(self) -> None:
+        t = OpenAITransport(model=OPENAI_MODELS["gpt-5.6-sol"], api="chat", extra_params={"reasoning_effort": "high"})
+        assert t.build_payload([], [self._tool()], "")["reasoning_effort"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# /v1/responses — the endpoint that takes tools and reasoning together
+# ---------------------------------------------------------------------------
+
+
+def _responses_sse(*payloads: dict[str, Any]) -> str:
+    return "".join(f"data: {json.dumps(p)}\n\n" for p in payloads) + "data: [DONE]\n\n"
+
+
+class TestResponsesEndpoint:
+    async def test_the_request_goes_to_responses_and_carries_input_items(
+        self, fake_server: tuple[FakeOpenAIServer, str]
+    ) -> None:
+        """The system prompt is `instructions` here, and the turn is `input` items, not messages."""
+        server, base_url = fake_server
+        server.responses.append(
+            _responses_sse(
+                {"type": "response.output_text.delta", "delta": "hi"},
+                {"type": "response.completed", "response": {"status": "completed", "usage": {}}},
+            )
+        )
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(
+                api="responses", base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6-sol"], session=session
+            )
+            events = await _collect(
+                transport.stream([Message(role="user", content=[TextBlock(text="hello")])], [], "be brief")
+            )
+
+        sent = server.received_payloads[0]
+        assert "messages" not in sent, "the chat shape was sent to the responses endpoint"
+        assert sent["instructions"] == "be brief"
+        assert sent["input"][0]["content"][0] == {"type": "input_text", "text": "hello"}
+        assert sent["store"] is False
+        assert [e.delta for e in events if isinstance(e, TextDelta)] == ["hi"]
+
+    async def test_tools_travel_without_being_told_not_to_reason(
+        self, fake_server: tuple[FakeOpenAIServer, str]
+    ) -> None:
+        # The whole reason for the move: /v1/chat/completions refuses this pair outright.
+        server, base_url = fake_server
+        server.responses.append(
+            _responses_sse({"type": "response.completed", "response": {"status": "completed", "usage": {}}})
+        )
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(
+                api="responses", base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6-luna"], session=session
+            )
+            await _collect(transport.stream([], [Tool(name="get_weather", description="", handler=get_weather)], ""))
+
+        sent = server.received_payloads[0]
+        assert "reasoning_effort" not in sent, "the chat-endpoint workaround leaked into responses"
+        assert sent["tools"][0]["name"] == "get_weather"
+        assert sent["parallel_tool_calls"] is True
+
+    async def test_a_tool_call_reads_back_as_one(self, fake_server: tuple[FakeOpenAIServer, str]) -> None:
+        server, base_url = fake_server
+        server.responses.append(
+            _responses_sse(
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {"type": "function_call", "id": "item_1", "call_id": "call_1", "name": "get_weather"},
+                },
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": "item_1",
+                    "output_index": 0,
+                    "delta": '{"city":',
+                },
+                {"type": "response.completed", "response": {"status": "completed", "usage": {}}},
+            )
+        )
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(
+                api="responses", base_url=base_url, api_key="k", model=OPENAI_MODELS["gpt-5.6"], session=session
+            )
+            events = await _collect(transport.stream([], [], ""))
+
+        starts = [e for e in events if isinstance(e, ToolUseStart)]
+        deltas = [e for e in events if isinstance(e, ToolInputDelta)]
+        assert [(s.tool_use_id, s.name) for s in starts] == [("call_1", "get_weather")]
+        assert [(d.tool_use_id, d.partial_json) for d in deltas] == [("call_1", '{"city":')]
+
+    def test_the_compatible_dialects_stay_on_chat_completions(self) -> None:
+        # They point at servers that implement /v1/chat/completions and not /v1/responses.
+        from axio_transport_openai.custom import OpenAICompatibleTransport
+        from axio_transport_openai.nebius import NebiusTransport
+        from axio_transport_openai.openrouter import OpenRouterTransport
+
+        # Read off instances: with slots=True the class attribute is a descriptor, not the default.
+        assert OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).api == "responses"
+        for cls in (OpenAICompatibleTransport, NebiusTransport, OpenRouterTransport):
+            assert cls(model=OPENAI_MODELS["gpt-4.1-mini"]).api == "chat", cls.__name__
+
+
+class TestExtraParamsMergeTools:
+    """A caller adding a hosted tool must not lose the functions the agent has to dispatch."""
+
+    @staticmethod
+    def _tool() -> Tool[Any]:
+        return Tool(name="get_weather", description="", handler=get_weather)
+
+    def test_a_hosted_tool_is_added_beside_the_functions_on_responses(self) -> None:
+        t = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"], extra_params={"tools": [{"type": "web_search"}]})
+        tools = t.build_payload([], [self._tool()], "")["tools"]
+        assert [tool.get("name") or tool["type"] for tool in tools] == ["get_weather", "web_search"]
+
+    def test_a_hosted_tool_is_added_beside_the_functions_on_chat(self) -> None:
+        t = OpenAITransport(
+            model=OPENAI_MODELS["gpt-4.1-mini"], api="chat", extra_params={"tools": [{"type": "web_search"}]}
+        )
+        tools = t.build_payload([], [self._tool()], "")["tools"]
+        assert [tool.get("function", {}).get("name") or tool["type"] for tool in tools] == [
+            "get_weather",
+            "web_search",
+        ]
+
+    def test_a_redeclared_function_replaces_the_generated_one(self) -> None:
+        # The caller said it last, so the caller's version is the one that goes.
+        mine = {"type": "function", "name": "get_weather", "description": "mine", "parameters": {}}
+        t = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"], extra_params={"tools": [mine]})
+        assert t.build_payload([], [self._tool()], "")["tools"] == [mine]
+
+    def test_everything_else_in_extra_params_still_simply_wins(self) -> None:
+        t = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"], extra_params={"store": True, "temperature": 0.2})
+        payload = t.build_payload([], [], "")
+        assert payload["store"] is True and payload["temperature"] == 0.2
+
+
+def test_a_reasoning_model_asks_for_its_reasoning_back() -> None:
+    # store=False means the provider keeps nothing, so without this there is nothing to replay and
+    # the model starts every round without the reasoning it had already done.
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-5.6-sol"])
+    assert t.build_payload([], [], "")["include"] == ["reasoning.encrypted_content"]
+    assert t.build_payload([], [], "")["store"] is False
+
+
+def test_a_model_that_does_not_reason_asks_for_nothing_extra() -> None:
+    t = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"])
+    assert "include" not in t.build_payload([], [], "")
+
+
+def test_the_package_declares_what_it_imports() -> None:
+    """A wheel installed on its own must not fail on the first import.
+
+    In a workspace every sibling is present, so an undeclared dependency is invisible here and
+    shows up only as ModuleNotFoundError for whoever installs the published package.
+    """
+    import ast
+    import pathlib
+    import re
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    meta = tomllib.loads((root / "pyproject.toml").read_text())
+    declared = {re.split(r"[<>=\[ ]", d)[0] for d in meta["project"]["dependencies"]}
+    declared.add(meta["project"]["name"])
+
+    imported: set[str] = set()
+    for module in (root / "src").rglob("*.py"):
+        for node in ast.walk(ast.parse(module.read_text())):
+            # Guarded imports are optional integrations and are deliberately not declared.
+            if isinstance(node, ast.Import):
+                imported |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imported.add(node.module.split(".")[0])
+
+    siblings = {name.replace("_", "-") for name in imported if name.startswith("axio")}
+    assert siblings - declared == set(), f"imported and not declared: {sorted(siblings - declared)}"
+
+
+class TestEndpointSurvivesSaving:
+    def test_a_saved_endpoint_comes_back(self) -> None:
+        # Left out of to_dict, a transport told to use chat completions came back speaking
+        # /v1/responses, which the server it points at may not implement at all.
+        saved = OpenAITransport(model=OPENAI_MODELS["gpt-4.1-mini"], api="chat").to_dict()
+        assert saved["api"] == "chat"
+        assert OpenAITransport.from_dict(saved).api == "chat"
+
+    def test_the_default_endpoint_round_trips_too(self) -> None:
+        saved = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).to_dict()
+        assert OpenAITransport.from_dict(saved).api == "responses"
+
+    def test_a_config_with_no_endpoint_takes_the_default_of_its_own_class(self) -> None:
+        # An omitted field means "use the default". Hard-coded to chat completions here, a real
+        # OpenAI transport was repointed at the endpoint that refuses tools beside reasoning.
+        from axio_transport_openai.custom import OpenAICompatibleTransport
+
+        assert OpenAITransport.from_dict({"name": "x", "models": []}).api == "responses"
+        # A compatible server rarely implements /v1/responses, so its subclass says chat itself.
+        assert OpenAICompatibleTransport.from_dict({"name": "x", "models": []}).api == "chat"
+
+    @pytest.mark.parametrize("cls", [OpenAITransport, OpenAICompatibleTransport, NebiusTransport])
+    def test_the_endpoint_cannot_be_passed_by_position(self, cls: type[OpenAITransport]) -> None:
+        # Inserted as a positional field it swallowed base_url, and a caller using positional
+        # arguments got a request URL built from its API key with no Authorization header. The
+        # subclasses redeclare the field, so each one has to be checked.
+        transport = cls("MyServer", "http://localhost:8000/v1", "sk-x")
+        assert (transport.name, transport.base_url, transport.api_key) == (
+            "MyServer",
+            "http://localhost:8000/v1",
+            "sk-x",
+        )
+        # Unset, the endpoint follows base_url: a local server is not OpenAI's own host.
+        assert transport.api == "chat"
+
+
+class TestWhichEndpointIsAssumed:
+    """Unset, the endpoint follows base_url. Only OpenAI's own host publishes /v1/responses."""
+
+    @pytest.mark.parametrize(
+        ("base_url", "expected"),
+        [
+            ("https://api.openai.com/v1", "responses"),
+            ("http://localhost:8000/v1", "chat"),
+            ("https://openrouter.ai/api/v1", "chat"),
+            ("https://api.openai.com.evil.test/v1", "chat"),
+        ],
+    )
+    def test_a_compatible_server_is_not_assumed_to_publish_responses(self, base_url: str, expected: str) -> None:
+        # Defaulted to /v1/responses regardless, a transport aimed at a local vLLM asked for an
+        # endpoint that answers 404.
+        assert OpenAITransport(base_url=base_url, api_key="k").api == expected
+
+    def test_the_caller_still_decides(self) -> None:
+        assert OpenAITransport(base_url="http://localhost:8000/v1", api="responses").api == "responses"
+        assert OpenAITransport(base_url="https://api.openai.com/v1", api="chat").api == "chat"
+
+    def test_a_saved_endpoint_outranks_the_url(self) -> None:
+        built = OpenAITransport.from_dict({"name": "x", "base_url": "https://api.openai.com/v1", "api": "chat"})
+        assert built.api == "chat"
+
+
+async def test_a_stream_cut_after_it_delivered_events_is_not_retried(
+    fake_server: tuple[FakeOpenAIServer, str],
+) -> None:
+    # Retried, the transport re-POSTs and replays what the caller already consumed: the same tool
+    # call was dispatched twice and its text was stored twice.
+    server, base_url = fake_server
+    call = {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "w", "arguments": "{}"}}]},
+            }
+        ]
+    }
+    server.responses.append(f"data: {json.dumps(call)}\n\n")  # no finish_reason: the stream is cut
+
+    async with aiohttp.ClientSession() as session:
+        transport = OpenAITransport(
+            base_url=base_url, api_key="k", api="chat", session=session, max_retries=3, retry_base_delay=0.01
+        )
+        seen: list[str] = []
+        with pytest.raises(StreamError):
+            async for event in transport.stream([], [], ""):
+                if isinstance(event, ToolUseStart):
+                    seen.append(event.tool_use_id)
+
+    assert seen == ["c1"], "the call reached the caller once"
+    assert len(server.received_payloads) == 1, "the request was not sent again"
+
+
+class TestWhoTakesNoReasoning:
+    """`reasoning_effort="none"` is not a value every reasoning model accepts."""
+
+    @pytest.mark.parametrize("model_id", ["gpt-5.1", "gpt-5.4", "gpt-5.6-sol"])
+    def test_a_model_that_takes_it_gets_it_beside_tools(self, model_id: str) -> None:
+        transport = OpenAITransport(model=OPENAI_MODELS[model_id], api="chat")
+
+        payload = transport.build_payload([], [self._tool()], "")
+
+        assert payload["reasoning_effort"] == "none"
+
+    @pytest.mark.parametrize("model_id", ["o3", "o4-mini", "gpt-5"])
+    def test_a_model_that_refuses_it_is_not_sent_it(self, model_id: str) -> None:
+        # The o-series takes low, medium and high only, so "none" is the 400 the override exists
+        # to prevent. gpt-5 predates the value.
+        transport = OpenAITransport(model=OPENAI_MODELS[model_id], api="chat")
+
+        payload = transport.build_payload([], [self._tool()], "")
+
+        assert "reasoning_effort" not in payload
+
+    def test_the_caller_still_decides(self) -> None:
+        transport = OpenAITransport(
+            model=OPENAI_MODELS["gpt-5.6"], api="chat", extra_params={"reasoning_effort": "high"}
+        )
+
+        assert transport.build_payload([], [self._tool()], "")["reasoning_effort"] == "high"
+
+    @staticmethod
+    def _tool() -> Tool[Any]:
+        async def get_weather(location: str) -> str:
+            return "sunny"
+
+        return Tool(name="get_weather", description="w", handler=get_weather)
+
+
+class TestTheTokenSlices:
+    """The slices inside the totals, which decide what the caller is billed."""
+
+    async def test_the_chat_path_reports_every_slice(self, fake_server: tuple[FakeOpenAIServer, str]) -> None:
+        # Zeroing all three passed every test in this package: no chat fixture carried the details
+        # objects at all, so an entire billing dimension went unchecked.
+        server, base_url = fake_server
+        sse = _sse_chunk({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": None}]})
+        sse += _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        sse += _sse_chunk(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 300,
+                    "prompt_tokens_details": {"cached_tokens": 800, "cache_write_tokens": 50},
+                    "completion_tokens_details": {"reasoning_tokens": 120},
+                },
+            }
+        )
+        server.responses.append(sse)
+
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(base_url=base_url, api_key="k", api="chat", session=session)
+            events = await _collect(transport.stream([], [], ""))
+
+        usage = [e for e in events if isinstance(e, IterationEnd)][0].usage
+        assert (usage.input_tokens, usage.output_tokens) == (1000, 300)
+        assert (usage.cache_read_tokens, usage.cache_write_tokens) == (800, 50)
+        assert usage.reasoning_tokens == 120
+
+    async def test_the_slices_are_inside_the_totals_this_provider_reports(
+        self, fake_server: tuple[FakeOpenAIServer, str]
+    ) -> None:
+        # OpenAI counts the cache inside prompt_tokens, unlike Anthropic. Read as outside, an
+        # uncached prompt is reported at a fraction of what it cost.
+        server, base_url = fake_server
+        sse = _sse_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        sse += _sse_chunk(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 300,
+                    "prompt_tokens_details": {"cached_tokens": 800},
+                    "completion_tokens_details": {"reasoning_tokens": 120},
+                },
+            }
+        )
+        server.responses.append(sse)
+
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(base_url=base_url, api_key="k", api="chat", session=session)
+            events = await _collect(transport.stream([], [], ""))
+
+        usage = [e for e in events if isinstance(e, IterationEnd)][0].usage
+        assert usage.uncached_input_tokens == 200
+        assert usage.answer_tokens == 180
+
+
+class TestAnAssistantTurnTheApiWillTake:
+    """Chat Completions refuses a message carrying neither content nor tool_calls."""
+
+    def test_a_turn_of_nothing_but_reasoning_still_carries_content(self) -> None:
+        # Reasoning has no place in a chat message, so a turn cut mid-thought was replayed as
+        # {"role": "assistant"} and every later request on that session failed.
+        turn = Message(role="assistant", content=[ReasoningBlock(text="thinking hard", signature="s")])
+
+        sent = _chat_messages([turn], "")
+
+        assert sent == [{"role": "assistant", "content": ""}]
+
+    def test_a_turn_with_only_calls_does_not_gain_an_empty_content(self) -> None:
+        turn = Message(role="assistant", content=[ToolUseBlock(id="c1", name="f", input={})])
+
+        assert "content" not in _chat_messages([turn], "")[0]
+
+
+class TestAskingForTheReasoningSummary:
+    """The API generates a summary only when the request asks for one."""
+
+    def test_a_reasoning_model_asks_for_it(self) -> None:
+        # Only `include: reasoning.encrypted_content` was sent, which is the opaque proof for the
+        # next request. Nothing asked for text a reader can see, so a thinking model streamed no
+        # thinking at all.
+        payload = OpenAITransport(model=OPENAI_MODELS["gpt-5.6-terra"]).build_payload([], [], "")
+
+        assert payload["reasoning"] == {"summary": "auto"}
+        assert payload["include"] == ["reasoning.encrypted_content"]
+
+    def test_a_model_that_does_not_reason_asks_for_nothing(self) -> None:
+        assert "reasoning" not in OpenAITransport(model=OPENAI_MODELS["gpt-4o"]).build_payload([], [], "")
+
+    def test_the_caller_chooses_how_much(self) -> None:
+        transport = OpenAITransport(model=OPENAI_MODELS["gpt-5.6-terra"], reasoning_summary="detailed")
+
+        assert transport.build_payload([], [], "")["reasoning"] == {"summary": "detailed"}
+
+    async def test_the_summary_it_streams_back_reaches_the_caller(
+        self, fake_server: tuple[FakeOpenAIServer, str]
+    ) -> None:
+        server, base_url = fake_server
+        server.responses.append(
+            _responses_sse(
+                {"type": "response.reasoning_summary_text.delta", "delta": "weighing it", "output_index": 0},
+                {"type": "response.output_text.delta", "delta": "42", "output_index": 1},
+                {"type": "response.completed", "response": {"status": "completed", "usage": {}}},
+            )
+        )
+
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(
+                base_url=base_url, api_key="k", api="responses", model=OPENAI_MODELS["gpt-5.6-terra"], session=session
+            )
+            events = await _collect(transport.stream([], [], ""))
+
+        assert [e.delta for e in events if isinstance(e, ReasoningDelta)] == ["weighing it"]
+        assert [e.delta for e in events if isinstance(e, TextDelta)] == ["42"]
+
+    async def test_the_responses_path_reports_every_slice_too(self, fake_server: tuple[FakeOpenAIServer, str]) -> None:
+        # The chat path had no fixture carrying the details objects; neither did this one. Read as
+        # zero, a turn that spent most of its output on reasoning looks like a cheap one.
+        server, base_url = fake_server
+        server.responses.append(
+            _responses_sse(
+                {"type": "response.output_text.delta", "delta": "hi", "output_index": 0},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "status": "completed",
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 300,
+                            "input_tokens_details": {"cached_tokens": 40},
+                            "output_tokens_details": {"reasoning_tokens": 250},
+                        },
+                    },
+                },
+            )
+        )
+
+        async with aiohttp.ClientSession() as session:
+            transport = OpenAITransport(
+                base_url=base_url, api_key="k", api="responses", model=OPENAI_MODELS["gpt-5.6-terra"], session=session
+            )
+            events = await _collect(transport.stream([], [], ""))
+
+        usage = [e for e in events if isinstance(e, IterationEnd)][0].usage
+        assert (usage.reasoning_tokens, usage.cache_read_tokens) == (250, 40)
+        assert usage.answer_tokens == 50
+
+
+class TestASavedSessionResumesAsItWasSaved:
+    def test_the_selected_model_comes_back(self) -> None:
+        # The registry alone said which models exist, never which one was chosen, so a restored
+        # session resumed on the class default beside a history another model had written.
+        saved = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).to_dict()
+
+        assert OpenAITransport.from_dict(saved).model.id == "gpt-5.6"
+
+    def test_a_model_missing_from_the_saved_registry_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+        saved = OpenAITransport(model=OPENAI_MODELS["gpt-5.6"]).to_dict()
+        saved["models"] = [m for m in saved["models"] if m["id"] != "gpt-5.6"]
+
+        with caplog.at_level(logging.WARNING):
+            restored = OpenAITransport.from_dict(saved)
+
+        assert restored.model.id == OpenAITransport().model.id
+        assert any("gpt-5.6" in record.getMessage() for record in caplog.records)
+
+    def test_a_model_named_by_a_partial_config_is_found_in_the_class_registry(self) -> None:
+        # `_saved` exists so a hand-written settings dict can omit what it wants the default for.
+        # Resolved only against a saved registry, such a dict named a model and lost it.
+        restored = OpenAITransport.from_dict({"name": "x", "model": "gpt-5.6"})
+
+        assert restored.model.id == "gpt-5.6"
+
+    def test_the_retry_policy_comes_back(self) -> None:
+        # Dropped, a deliberately conservative policy reverted to ten attempts five seconds apart.
+        saved = OpenAITransport(max_retries=2, retry_base_delay=0.5).to_dict()
+
+        restored = OpenAITransport.from_dict(saved)
+
+        assert (restored.max_retries, restored.retry_base_delay) == (2, 0.5)
+
+    @pytest.mark.parametrize("key,value", [("max_retries", "soon"), ("retry_base_delay", None)])
+    def test_a_number_that_will_not_read_takes_the_default(self, key: str, value: object) -> None:
+        # Every neighbouring field degrades to a default; these two raised, so one unreadable
+        # value in a saved config failed the whole session restore.
+        saved = OpenAITransport(max_retries=2, retry_base_delay=0.5).to_dict()
+        saved[key] = value
+
+        restored = OpenAITransport.from_dict(saved)
+
+        assert getattr(restored, key) == getattr(OpenAITransport(), key)
+
+    def test_an_empty_credential_saved_on_purpose_is_not_filled_in_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A local server that needs no auth saves an empty key. Read as falsy, the restored
+        # session reached whatever endpoint the restoring process happened to export.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-someone-elses")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://elsewhere.example/v1")
+        saved = OpenAITransport(api_key="", base_url="", api="chat").to_dict()
+
+        restored = OpenAITransport.from_dict(saved)
+
+        assert (restored.api_key, restored.base_url) == ("", "")
+
+    def test_a_partial_config_still_takes_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An omitted key means "use the default", which is what a settings dict written by hand is.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-mine")
+
+        assert OpenAITransport.from_dict({"name": "x", "models": []}).api_key == "sk-mine"
