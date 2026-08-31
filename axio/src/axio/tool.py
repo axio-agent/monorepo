@@ -5,17 +5,21 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import json
 import logging
+import math
+import types
+import typing
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from dataclasses import replace as dc_replace
 from types import MappingProxyType
-from typing import Any, get_type_hints
+from typing import Any, get_args, get_origin, get_type_hints
 
 from .exceptions import GuardError, HandlerError
-from .field import MISSING, FieldInfo, get_field_info
+from .field import MISSING, FieldInfo, bare_type, get_field_info
 from .permission import PermissionGuard
 from .schema import build_tool_schema
 from .types import ToolName
@@ -33,6 +37,67 @@ SCHEMA_JSON_TYPE_MAP: dict[str, type] = {
     "array": list,
     "object": dict,
 }
+
+
+def _coerce_scalar(value: str, target: type) -> Any:
+    if target is bool:
+        normalized = value.strip().lower()
+        return {"true": True, "false": False}.get(normalized, value)
+    if target in (int, float):
+        try:
+            converted = target(value)
+        except ValueError:
+            return value
+        if isinstance(converted, float) and not math.isfinite(converted):
+            return value
+        return converted
+    return value
+
+
+def _coercion_targets(hint: Any) -> set[type]:
+    origin = get_origin(hint)
+    if origin is typing.Annotated:
+        return _coercion_targets(get_args(hint)[0])
+    if origin is types.UnionType or origin is typing.Union:
+        return {bare_type(argument) for argument in get_args(hint) if argument is not type(None)}
+    return {bare_type(hint)}
+
+
+def _contains_non_finite_number(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, list):
+        return any(_contains_non_finite_number(item) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_non_finite_number(item) for item in value.values())
+    return False
+
+
+def _coerce_model_argument(value: Any, hint: Any, *, strict: bool) -> Any:
+    """Repair common model-side JSON double encoding before validation.
+
+    The advertised schema remains unchanged. Only strings that cleanly decode
+    to the declared list, numeric, or boolean type are converted; every other
+    value follows the existing validation error path.
+    """
+    if not strict and not isinstance(value, bool) and isinstance(value, str):
+        targets = _coercion_targets(hint)
+        if str in targets:
+            return value
+        if list in targets:
+            try:
+                parsed = json.loads(value)
+            except (ValueError, TypeError):
+                pass
+            else:
+                if isinstance(parsed, list) and not _contains_non_finite_number(parsed):
+                    return parsed
+        for target in (bool, int, float):
+            if target in targets:
+                converted = _coerce_scalar(value, target)
+                if not isinstance(converted, str):
+                    return converted
+    return value
 
 
 def hint_from_json_schema(prop_schema: dict[str, Any]) -> Any:
@@ -160,6 +225,7 @@ class Tool[T]:
                 if fi.default is not MISSING and name not in required_set:
                     kwargs[name] = fi.default
             else:
+                kwargs[name] = _coerce_model_argument(kwargs[name], hint, strict=fi.strict)
                 fi.validate(kwargs[name], name, hint)
         missing = [name for name in required_set if name not in kwargs]
         if missing:
