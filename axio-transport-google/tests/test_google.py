@@ -307,7 +307,7 @@ def test_build_tools_json() -> None:
 
 def test_transport_defaults() -> None:
     t = GoogleTransport()
-    assert t.model.id == "gemini-3.1-flash-lite-preview"
+    assert t.model.id == "gemini-3.8-flash"
     assert t.name == "Google GenAI"
 
 
@@ -341,6 +341,7 @@ def test_transport_non_vertexai_no_extra_fields(monkeypatch: Any) -> None:
 
 def test_genai_models_registry() -> None:
     assert isinstance(GENAI_MODELS, ModelRegistry)
+    assert "gemini-3.8-flash" in GENAI_MODELS
     assert "gemini-3-flash-preview" in GENAI_MODELS
     assert "gemini-3.1-pro-preview" in GENAI_MODELS
     assert "gemini-3.1-flash-lite-preview" in GENAI_MODELS
@@ -458,6 +459,13 @@ def test_generation_config_thinking() -> None:
     config = t._build_generation_config_json()
     assert config["thinkingConfig"]["includeThoughts"] is True
     assert config["thinkingConfig"]["thinkingLevel"] == "HIGH"
+
+
+def test_gemini_38_uses_its_published_thinking_levels_and_default() -> None:
+    transport = GoogleTransport(thinking_budget=4096)
+
+    assert transport.get_thinking_options() == ("LOW", "MEDIUM", "HIGH")
+    assert transport._build_generation_config_json()["thinkingConfig"] == {"includeThoughts": True}
 
 
 class TestUsageAccounting:

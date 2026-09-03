@@ -30,16 +30,17 @@ from axio_transport_google import GoogleTransport
 transport = GoogleTransport()
 ```
 
-The transport starts on `gemini-3.1-flash-lite-preview`, the cheapest of the three chat
-models. Switch it before the first call if you want another one.
+The transport starts on the stable `gemini-3.8-flash` model. Switch it before the first
+call if you want another one.
 
 ## Models
 
 | Model ID | Capabilities | Context | Notes |
 |---|---|---|---|
+| `gemini-3.8-flash` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable; the default |
 | `gemini-3.1-pro-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Flagship |
 | `gemini-3-flash-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Fast/cheap |
-| `gemini-3.1-flash-lite-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Lightest; the default |
+| `gemini-3.1-flash-lite-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Lightest |
 | `gemini-3.1-flash-image-preview` | text, vision, image generation | 1M tokens | Nano Banana |
 | `gemini-3-pro-image-preview` | text, vision, image generation | 1M tokens | Image gen |
 
@@ -68,7 +69,7 @@ transport.model = (
 | Parameter | Default | Description |
 |---|---|---|
 | `api_key` | `GEMINI_API_KEY` env var | API key for the Developer API |
-| `model` | `gemini-3.1-flash-lite-preview` | Active `ModelSpec` |
+| `model` | `gemini-3.8-flash` | Active `ModelSpec` |
 | `temperature` | `None` | Sampling temperature (uses model default if unset) |
 | `top_p` | `None` | Nucleus sampling probability |
 | `top_k` | `None` | Top-k sampling |
@@ -93,6 +94,7 @@ What is valid depends on the model family:
 
 | Model | Valid levels |
 |---|---|
+| `gemini-3.8-flash` | `LOW`, `MEDIUM`, `HIGH` |
 | `-pro` | `LOW`, `MEDIUM`, `HIGH` |
 | `-pro-image` | `HIGH` |
 | `-flash-image` | `MINIMAL`, `HIGH` |
@@ -100,8 +102,8 @@ What is valid depends on the model family:
 
 There is no `NONE`. A value the family does not support is silently replaced by its highest
 level, so a misspelling buys the most expensive setting rather than failing. A reasoning model
-left unset also gets `HIGH`. `thinking_budget` is the Gemini 2.5 form. It is not sent for a
-Gemini 3+ model.
+left unset gets `HIGH`, except `gemini-3.8-flash`, which uses its provider default of `MEDIUM`.
+`thinking_budget` is the Gemini 2.5 form. It is not sent for a Gemini 3+ model.
 
 ### Media tool results
 

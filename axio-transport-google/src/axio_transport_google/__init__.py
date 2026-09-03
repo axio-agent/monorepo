@@ -98,6 +98,8 @@ def valid_thinking_levels(model_id: str) -> tuple[str, ...] | None:
         return ("LOW", "MEDIUM", "HIGH")
     if "-flash-image" in model_id:
         return ("MINIMAL", "HIGH")
+    if "gemini-3.8-flash" in model_id:
+        return ("LOW", "MEDIUM", "HIGH")
     # Flash, Flash-Lite
     return ("MINIMAL", "LOW", "MEDIUM", "HIGH")
 
@@ -129,6 +131,14 @@ _IMG = frozenset({Capability.text, Capability.vision, Capability.image_generatio
 GENAI_MODELS: ModelRegistry = ModelRegistry(
     {
         # --- Gemini chat/reasoning models ---
+        ModelSpec(
+            id="gemini-3.8-flash",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            capabilities=_RT,
+            input_cost=0.75,
+            output_cost=3.75,
+        ),
         ModelSpec(
             id="gemini-3.1-pro-preview",
             context_window=1_048_576,
@@ -554,7 +564,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
     vertexai: bool | None = None
     project: str = ""
     location: str = ""
-    model: ModelSpec = field(default_factory=lambda: GENAI_MODELS["gemini-3.1-flash-lite-preview"])
+    model: ModelSpec = field(default_factory=lambda: GENAI_MODELS["gemini-3.8-flash"])
     models: ModelRegistry = field(default_factory=lambda: ModelRegistry(GENAI_MODELS.values()))
     session: aiohttp.ClientSession | None = field(default=None, repr=False, compare=False)
     max_retries: int = 5
@@ -686,10 +696,14 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             levels = valid_thinking_levels(self.model.id)
             if levels is not None:
                 # Gemini 3+: use thinkingLevel (thinkingBudget is not supported)
-                level = (self.thinking_level or "HIGH").upper()
-                if level not in levels:
-                    level = levels[-1]  # fall back to highest supported
-                thinking["thinkingLevel"] = level  # type: ignore[typeddict-item]
+                level = self.thinking_level
+                if level is None and "gemini-3.8-flash" not in self.model.id:
+                    level = "HIGH"
+                if level is not None:
+                    level = level.upper()
+                    if level not in levels:
+                        level = levels[-1]  # fall back to highest supported
+                    thinking["thinkingLevel"] = level  # type: ignore[typeddict-item]
             elif self.thinking_budget is not None:
                 # Gemini 2.5: use thinkingBudget (thinkingLevel is not supported)
                 thinking["thinkingBudget"] = self.thinking_budget
