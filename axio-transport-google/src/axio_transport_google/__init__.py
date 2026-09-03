@@ -96,9 +96,9 @@ def valid_thinking_levels(model_id: str) -> tuple[str, ...] | None:
         return ("HIGH",)
     if "-pro" in model_id:
         return ("LOW", "MEDIUM", "HIGH")
-    if "-flash-image" in model_id:
+    if "-flash-image" in model_id or "-flash-lite-image" in model_id:
         return ("MINIMAL", "HIGH")
-    if "gemini-3.8-flash" in model_id:
+    if "gemini-3.8-flash" in model_id or "gemini-3.7-flash" in model_id:
         return ("LOW", "MEDIUM", "HIGH")
     # Flash, Flash-Lite
     return ("MINIMAL", "LOW", "MEDIUM", "HIGH")
@@ -126,7 +126,9 @@ _VT = frozenset({Capability.text, Capability.vision, Capability.audio, Capabilit
 _RT = frozenset(
     {Capability.text, Capability.reasoning, Capability.vision, Capability.audio, Capability.video, Capability.tool_use}
 )
-_IMG = frozenset({Capability.text, Capability.vision, Capability.image_generation})
+_IMG = frozenset({Capability.text, Capability.reasoning, Capability.vision, Capability.image_generation})
+_IMG_TOOL = _IMG | {Capability.tool_use}
+_IMG_25 = frozenset({Capability.text, Capability.vision, Capability.image_generation})
 
 GENAI_MODELS: ModelRegistry = ModelRegistry(
     {
@@ -138,6 +140,46 @@ GENAI_MODELS: ModelRegistry = ModelRegistry(
             capabilities=_RT,
             input_cost=0.75,
             output_cost=3.75,
+        ),
+        ModelSpec(
+            id="gemini-3.7-flash",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            capabilities=_RT,
+            input_cost=0.75,
+            output_cost=3.75,
+        ),
+        ModelSpec(
+            id="gemini-3.6-flash",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            capabilities=_RT,
+            input_cost=0.75,
+            output_cost=3.75,
+        ),
+        ModelSpec(
+            id="gemini-3.5-flash",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            capabilities=_RT,
+            input_cost=1.50,
+            output_cost=9.0,
+        ),
+        ModelSpec(
+            id="gemini-3.5-flash-lite",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            capabilities=_RT,
+            input_cost=0.30,
+            output_cost=2.50,
+        ),
+        ModelSpec(
+            id="gemini-3.1-flash-lite",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            capabilities=_RT,
+            input_cost=0.25,
+            output_cost=1.50,
         ),
         ModelSpec(
             id="gemini-3.1-pro-preview",
@@ -156,25 +198,61 @@ GENAI_MODELS: ModelRegistry = ModelRegistry(
             output_cost=3.0,
         ),
         ModelSpec(
-            id="gemini-3.1-flash-lite-preview",
+            id="gemini-2.5-pro",
             context_window=1_048_576,
             max_output_tokens=65_536,
             capabilities=_RT,
-            input_cost=0.25,
-            output_cost=1.50,
+            input_cost=1.25,
+            output_cost=10.0,
+        ),
+        ModelSpec(
+            id="gemini-2.5-flash",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            capabilities=_RT,
+            input_cost=0.30,
+            output_cost=2.50,
+        ),
+        ModelSpec(
+            id="gemini-2.5-flash-lite",
+            context_window=1_048_576,
+            max_output_tokens=65_536,
+            capabilities=_RT,
+            input_cost=0.10,
+            output_cost=0.40,
         ),
         # --- Nano Banana (Gemini image generation via generateContent) ---
         ModelSpec(
-            id="gemini-3.1-flash-image-preview",
-            context_window=1_048_576,
-            max_output_tokens=8_192,
+            id="gemini-3.1-flash-image",
+            context_window=131_072,
+            max_output_tokens=32_768,
             capabilities=_IMG,
+            input_cost=0.50,
+            output_cost=3.0,
         ),
         ModelSpec(
-            id="gemini-3-pro-image-preview",
-            context_window=1_048_576,
-            max_output_tokens=8_192,
+            id="gemini-3.1-flash-lite-image",
+            context_window=65_536,
+            max_output_tokens=4_096,
+            capabilities=_IMG_TOOL,
+            input_cost=0.25,
+            output_cost=1.50,
+        ),
+        ModelSpec(
+            id="gemini-3-pro-image",
+            context_window=65_536,
+            max_output_tokens=32_768,
             capabilities=_IMG,
+            input_cost=2.0,
+            output_cost=12.0,
+        ),
+        ModelSpec(
+            id="gemini-2.5-flash-image",
+            context_window=65_536,
+            max_output_tokens=32_768,
+            capabilities=_IMG_25,
+            input_cost=0.30,
+            output_cost=2.50,
         ),
     }
 )
@@ -697,8 +775,6 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
             if levels is not None:
                 # Gemini 3+: use thinkingLevel (thinkingBudget is not supported)
                 level = self.thinking_level
-                if level is None and "gemini-3.8-flash" not in self.model.id:
-                    level = "HIGH"
                 if level is not None:
                     level = level.upper()
                     if level not in levels:
@@ -757,8 +833,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
         body: GenerateContentRequest = {"contents": _build_contents_json(messages, self._thought_signatures)}
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
-        if tools and Capability.image_generation not in self.model.capabilities:
-            # An image model takes no tools, and sending them is a 400.
+        if tools and Capability.tool_use in self.model.capabilities:
             body["tools"] = _build_tools_json(tools)
         body["generationConfig"] = self._build_generation_config_json()
         if self.safety_settings:
@@ -996,7 +1071,7 @@ class GoogleTransport(CompletionTransport, ImageGenTransport, VideoGenTransport)
     async def generate_images(self, prompt: str, *, model: str | None = None, n: int = 1) -> list[bytes]:
         """Generate images via Gemini Nano Banana (generateContent with IMAGE response modality)."""
         assert self.session is not None, "aiohttp session required"
-        model_id = model or "gemini-3-pro-image-preview"
+        model_id = model or "gemini-3-pro-image"
         return await self._generate_images_gemini(prompt, model_id=model_id, n=n)
 
     async def _generate_images_gemini(self, prompt: str, *, model_id: str, n: int) -> list[bytes]:

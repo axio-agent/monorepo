@@ -341,10 +341,23 @@ def test_transport_non_vertexai_no_extra_fields(monkeypatch: Any) -> None:
 
 def test_genai_models_registry() -> None:
     assert isinstance(GENAI_MODELS, ModelRegistry)
-    assert "gemini-3.8-flash" in GENAI_MODELS
-    assert "gemini-3-flash-preview" in GENAI_MODELS
-    assert "gemini-3.1-pro-preview" in GENAI_MODELS
-    assert "gemini-3.1-flash-lite-preview" in GENAI_MODELS
+    assert set(GENAI_MODELS.keys()) == {
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-image",
+        "gemini-3.1-flash-lite-image",
+        "gemini-3-pro-image",
+        "gemini-2.5-flash-image",
+    }
 
 
 def test_vertexai_anthropic_models_registry() -> None:
@@ -360,10 +373,40 @@ def test_vertexai_anthropic_models_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_nano_banana_model_has_image_generation() -> None:
-    spec = GENAI_MODELS["gemini-3.1-flash-image-preview"]
-    assert Capability.image_generation in spec.capabilities
-    assert Capability.vision in spec.capabilities
+def test_nano_banana_models_have_published_limits_and_capabilities() -> None:
+    expected = {
+        "gemini-3.1-flash-image": (131_072, 32_768, True, False, 0.50, 3.0),
+        "gemini-3.1-flash-lite-image": (65_536, 4_096, True, True, 0.25, 1.50),
+        "gemini-3-pro-image": (65_536, 32_768, True, False, 2.0, 12.0),
+        "gemini-2.5-flash-image": (65_536, 32_768, False, False, 0.30, 2.50),
+    }
+
+    for model_id, (context, output, reasoning, tool_use, input_cost, output_cost) in expected.items():
+        spec = GENAI_MODELS[model_id]
+        assert spec.context_window == context
+        assert spec.max_output_tokens == output
+        assert Capability.image_generation in spec.capabilities
+        assert Capability.vision in spec.capabilities
+        assert (Capability.reasoning in spec.capabilities) is reasoning
+        assert (Capability.tool_use in spec.capabilities) is tool_use
+        assert spec.input_cost == input_cost
+        assert spec.output_cost == output_cost
+
+
+def test_image_models_do_not_look_free_to_cost_based_selection() -> None:
+    cheapest = GENAI_MODELS.by_capability(Capability.reasoning).by_cost().first()
+
+    assert cheapest.id == "gemini-2.5-flash-lite"
+
+
+def test_only_tool_capable_image_model_gets_function_declarations() -> None:
+    tool: Tool[Any] = Tool(name="search", description="Search", handler=_dummy_tool)
+
+    flash_lite = GoogleTransport(model=GENAI_MODELS["gemini-3.1-flash-lite-image"])
+    assert "tools" in flash_lite._build_request_body([], [tool], "")
+
+    flash = GoogleTransport(model=GENAI_MODELS["gemini-3.1-flash-image"])
+    assert "tools" not in flash._build_request_body([], [tool], "")
 
 
 def test_dedicated_gen_models_not_in_chat_registry() -> None:
@@ -461,11 +504,36 @@ def test_generation_config_thinking() -> None:
     assert config["thinkingConfig"]["thinkingLevel"] == "HIGH"
 
 
-def test_gemini_38_uses_its_published_thinking_levels_and_default() -> None:
+def test_gemini_38_uses_its_published_thinking_levels_and_provider_default() -> None:
     transport = GoogleTransport(thinking_budget=4096)
 
     assert transport.get_thinking_options() == ("LOW", "MEDIUM", "HIGH")
     assert transport._build_generation_config_json()["thinkingConfig"] == {"includeThoughts": True}
+
+
+def test_gemini_37_does_not_offer_minimal_thinking() -> None:
+    transport = GoogleTransport(model=GENAI_MODELS["gemini-3.7-flash"])
+
+    assert transport.get_thinking_options() == ("LOW", "MEDIUM", "HIGH")
+
+
+def test_gemini_3_models_keep_their_provider_thinking_default() -> None:
+    for model_id in (
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+    ):
+        transport = GoogleTransport(model=GENAI_MODELS[model_id])
+        assert transport._build_generation_config_json()["thinkingConfig"] == {"includeThoughts": True}
+
+
+def test_flash_lite_image_uses_its_published_thinking_levels() -> None:
+    transport = GoogleTransport(model=GENAI_MODELS["gemini-3.1-flash-lite-image"])
+
+    assert transport.get_thinking_options() == ("MINIMAL", "HIGH")
 
 
 class TestUsageAccounting:

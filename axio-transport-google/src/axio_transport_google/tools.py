@@ -24,7 +24,7 @@ transport: _GenTransport | None = None
 
 async def generate_image(
     prompt: StrictStr,
-    model: StrictStr = "gemini-3-pro-image-preview",
+    model: StrictStr = "gemini-3-pro-image",
     n: int = 1,
 ) -> list[TextBlock | ImageBlock]:
     """Generate images from a text prompt using Google Gemini image models
