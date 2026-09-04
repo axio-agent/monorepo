@@ -30,18 +30,32 @@ from axio_transport_google import GoogleTransport
 transport = GoogleTransport()
 ```
 
-The transport starts on `gemini-3.1-flash-lite-preview`, the cheapest of the three chat
-models. Switch it before the first call if you want another one.
+The transport starts on the stable `gemini-3.8-flash` model. Switch it before the first
+call if you want another one.
 
 ## Models
 
 | Model ID | Capabilities | Context | Notes |
 |---|---|---|---|
+| `gemini-3.8-flash` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable; the default |
+| `gemini-3.7-flash` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable; previous generation |
+| `gemini-3.6-flash` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable; previous generation |
+| `gemini-3.5-flash` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable; legacy Flash |
+| `gemini-3.5-flash-lite` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable; lowest-cost 3.5 model |
+| `gemini-3.1-flash-lite` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable; supported until May 2027 |
 | `gemini-3.1-pro-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Flagship |
-| `gemini-3-flash-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Fast/cheap |
-| `gemini-3.1-flash-lite-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Lightest; the default |
-| `gemini-3.1-flash-image-preview` | text, vision, image generation | 1M tokens | Nano Banana |
-| `gemini-3-pro-image-preview` | text, vision, image generation | 1M tokens | Image gen |
+| `gemini-3-flash-preview` | text, vision, audio, video, tools, reasoning | 1M tokens | Preview; migrate to 3.6 or newer |
+| `gemini-2.5-pro` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable |
+| `gemini-2.5-flash` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable |
+| `gemini-2.5-flash-lite` | text, vision, audio, video, tools, reasoning | 1M tokens | Stable |
+| `gemini-3.1-flash-image` | text, vision, reasoning, image generation | 128K tokens | Nano Banana 2 |
+| `gemini-3.1-flash-lite-image` | text, vision, tools, reasoning, image generation | 64K tokens | Nano Banana 2 Lite |
+| `gemini-3-pro-image` | text, vision, reasoning, image generation | 64K tokens | Nano Banana Pro |
+| `gemini-2.5-flash-image` | text, vision, image generation | 64K tokens | Deprecated; shuts down October 2, 2026 |
+
+`ModelSpec` records Standard text-token rates. It cannot represent Google pricing that varies by
+input modality, output modality, context length, or service tier; calculate those cases from the
+provider's billing data instead.
 
 ## Switching models
 
@@ -68,7 +82,7 @@ transport.model = (
 | Parameter | Default | Description |
 |---|---|---|
 | `api_key` | `GEMINI_API_KEY` env var | API key for the Developer API |
-| `model` | `gemini-3.1-flash-lite-preview` | Active `ModelSpec` |
+| `model` | `gemini-3.8-flash` | Active `ModelSpec` |
 | `temperature` | `None` | Sampling temperature (uses model default if unset) |
 | `top_p` | `None` | Nucleus sampling probability |
 | `top_k` | `None` | Top-k sampling |
@@ -93,15 +107,16 @@ What is valid depends on the model family:
 
 | Model | Valid levels |
 |---|---|
+| `gemini-3.8-flash`, `gemini-3.7-flash` | `LOW`, `MEDIUM`, `HIGH` |
 | `-pro` | `LOW`, `MEDIUM`, `HIGH` |
 | `-pro-image` | `HIGH` |
-| `-flash-image` | `MINIMAL`, `HIGH` |
+| `-flash-image`, `-flash-lite-image` | `MINIMAL`, `HIGH` |
 | Flash, Flash-Lite | `MINIMAL`, `LOW`, `MEDIUM`, `HIGH` |
 
 There is no `NONE`. A value the family does not support is silently replaced by its highest
 level, so a misspelling buys the most expensive setting rather than failing. A reasoning model
-left unset also gets `HIGH`. `thinking_budget` is the Gemini 2.5 form. It is not sent for a
-Gemini 3+ model.
+left unset keeps that model's provider default. `thinking_budget` is the Gemini 2.5 form. It is
+not sent for a Gemini 3+ model.
 
 ### Media tool results
 
@@ -190,7 +205,7 @@ async def main() -> None:
     transport = GoogleTransport()
     images: list[bytes] = await transport.generate_images(
         "A photorealistic owl sitting on a branch",
-        model="gemini-3.1-flash-image-preview",
+        model="gemini-3.1-flash-image",
         n=1,
     )
     with open("owl.png", "wb") as f:

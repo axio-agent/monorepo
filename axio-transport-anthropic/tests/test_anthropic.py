@@ -8,11 +8,10 @@ from typing import Any
 import pytest
 from axio.blocks import TextBlock
 from axio.messages import Message
-from axio.models import ModelRegistry
+from axio.testing import assert_static_model_transport_contract
 
 import axio_transport_anthropic
 from axio_transport_anthropic import (
-    ANTHROPIC_MODELS,
     AnthropicTransport,
     _convert_messages,
 )
@@ -40,7 +39,7 @@ def test_convert_messages_basic() -> None:
 
 def test_transport_defaults() -> None:
     t = AnthropicTransport()
-    assert t.model.id == "claude-sonnet-4-6"
+    assert_static_model_transport_contract(t)
     assert t.name == "Anthropic"
 
 
@@ -120,14 +119,6 @@ def test_google_auth_available_requires_the_requests_extra(monkeypatch: Any) -> 
 
     monkeypatch.setattr(importlib.util, "find_spec", without_requests)
     assert axio_transport_anthropic._google_auth_available() is False
-
-
-def test_models_registry() -> None:
-    assert isinstance(ANTHROPIC_MODELS, ModelRegistry)
-    assert "claude-sonnet-4-6" in ANTHROPIC_MODELS
-    assert "claude-opus-4-6" in ANTHROPIC_MODELS
-    assert "claude-haiku-4-5" in ANTHROPIC_MODELS
-    assert "claude-haiku-4-5-20251001" in ANTHROPIC_MODELS
 
 
 # ---------------------------------------------------------------------------

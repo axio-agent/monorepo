@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 import pytest
 
 from axio.events import IterationEnd, TextDelta, ToolInputDelta, ToolUseStart
+from axio.models import Capability, ModelRegistry, ModelSpec
 from axio.testing import (
     StubTransport,
+    assert_static_model_transport_contract,
     make_echo_tool,
     make_ephemeral_context,
     make_stub_transport,
@@ -16,6 +19,71 @@ from axio.testing import (
     make_tool_use_response,
 )
 from axio.types import StopReason, Usage
+
+
+@dataclass(slots=True)
+class _ModelTransport:
+    model: ModelSpec
+    models: ModelRegistry
+
+
+def _model_transport(spec: ModelSpec) -> _ModelTransport:
+    return _ModelTransport(model=spec, models=ModelRegistry([spec]))
+
+
+class TestStaticModelTransportContract:
+    def test_accepts_a_well_formed_catalog(self) -> None:
+        spec = ModelSpec(
+            id="model",
+            capabilities=frozenset({Capability.text, Capability.tool_use}),
+            context_window=16_384,
+            max_output_tokens=4_096,
+            input_cost=1.0,
+            output_cost=2.0,
+        )
+
+        assert_static_model_transport_contract(_model_transport(spec))
+
+    def test_rejects_an_empty_catalog(self) -> None:
+        spec = ModelSpec(id="model", capabilities=frozenset({Capability.text}))
+
+        with pytest.raises(AssertionError, match="must not be empty"):
+            assert_static_model_transport_contract(_ModelTransport(model=spec, models=ModelRegistry()))
+
+    def test_rejects_a_selected_model_outside_the_catalog(self) -> None:
+        selected = ModelSpec(id="selected", capabilities=frozenset({Capability.text}))
+        registered = ModelSpec(id="registered", capabilities=frozenset({Capability.text}))
+
+        with pytest.raises(AssertionError, match="absent from its registry"):
+            assert_static_model_transport_contract(_ModelTransport(model=selected, models=ModelRegistry([registered])))
+
+    def test_rejects_stale_selected_model_metadata(self) -> None:
+        selected = ModelSpec(id="model", capabilities=frozenset({Capability.text}), context_window=8_192)
+        registered = ModelSpec(id="model", capabilities=frozenset({Capability.text}), context_window=16_384)
+
+        with pytest.raises(AssertionError, match="stale registry metadata"):
+            assert_static_model_transport_contract(_ModelTransport(model=selected, models=ModelRegistry([registered])))
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            ModelSpec(id="", capabilities=frozenset({Capability.text})),
+            ModelSpec(id="model", capabilities=frozenset()),
+            ModelSpec(id="model", capabilities=frozenset({Capability.vision})),
+            ModelSpec(id="model", capabilities=frozenset({Capability.text}), context_window=0),
+            ModelSpec(
+                id="model",
+                capabilities=frozenset({Capability.text}),
+                context_window=1_000,
+                max_output_tokens=0,
+            ),
+            ModelSpec(id="model", capabilities=frozenset({Capability.text}), input_cost=-1.0),
+            ModelSpec(id="model", capabilities=frozenset({Capability.text}), output_cost=float("inf")),
+        ],
+    )
+    def test_rejects_malformed_model_metadata(self, spec: ModelSpec) -> None:
+        with pytest.raises(AssertionError):
+            assert_static_model_transport_contract(_model_transport(spec))
 
 
 class TestMakeTextResponse:

@@ -22,7 +22,7 @@ from axio.events import (
 )
 from axio.exceptions import StreamError
 from axio.messages import Message
-from axio.testing import assert_stream_contract
+from axio.testing import assert_static_model_transport_contract, assert_stream_contract
 from axio.tool import Tool
 from axio.types import StopReason, Usage
 
@@ -688,10 +688,8 @@ async def test_account_id_header_sent(
 # ---------------------------------------------------------------------------
 
 
-def test_codex_models_registry() -> None:
-    assert len(CODEX_MODELS) > 0
-    assert "gpt-4.1" in CODEX_MODELS
-    assert "o4-mini" in CODEX_MODELS
+def test_codex_model_transport_contract() -> None:
+    assert_static_model_transport_contract(CodexTransport())
 
 
 # ---------------------------------------------------------------------------
