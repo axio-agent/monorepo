@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import AsyncIterator, Sequence
-from typing import Any
+from typing import Any, Protocol
 
 from .context import MemoryContextStore
 from .events import IterationEnd, StreamEvent, TextDelta, ToolInputDelta, ToolUseStart
 from .messages import Message
+from .models import Capability, ModelRegistry, ModelSpec
 from .tool import Tool
 from .types import StopReason, Usage
 
 
 async def _msg_input(msg: str) -> str:
     return json.dumps({"msg": msg})
+
+
+class _StaticModelTransport(Protocol):
+    model: ModelSpec
+    models: ModelRegistry
 
 
 class StubTransport:
@@ -86,6 +93,31 @@ def make_ephemeral_context() -> MemoryContextStore:
 
 def make_echo_tool() -> Tool[Any]:
     return Tool(name="echo", description="Returns input as JSON", handler=_msg_input)
+
+
+def assert_static_model_transport_contract(transport: _StaticModelTransport) -> None:
+    """Check invariants shared by transports with a ready, bundled model catalog."""
+    models = transport.models
+    current = transport.model
+
+    assert isinstance(models, ModelRegistry), f"models must be a ModelRegistry, got {type(models).__name__}"
+    assert models, "the model registry must not be empty"
+    assert current.id in models, f"the selected model {current.id!r} is absent from its registry"
+    assert models[current.id] == current, f"the selected model {current.id!r} has stale registry metadata"
+
+    for model_id, spec in models.items():
+        assert isinstance(spec, ModelSpec), f"{model_id!r} is not a ModelSpec"
+        assert model_id == spec.id, f"registry key {model_id!r} does not match ModelSpec.id {spec.id!r}"
+        assert spec.id and spec.id == spec.id.strip(), f"invalid model id {spec.id!r}"
+        assert isinstance(spec.capabilities, frozenset), f"{model_id!r} capabilities must be a frozenset"
+        assert spec.capabilities and all(isinstance(cap, Capability) for cap in spec.capabilities), (
+            f"{model_id!r} has invalid capabilities"
+        )
+        assert Capability.text in spec.capabilities, f"{model_id!r} cannot accept text"
+        assert spec.context_window > 0, f"{model_id!r} has a non-positive context window"
+        assert spec.max_output_tokens > 0, f"{model_id!r} has a non-positive output token limit"
+        assert math.isfinite(spec.input_cost) and spec.input_cost >= 0, f"{model_id!r} has invalid input cost"
+        assert math.isfinite(spec.output_cost) and spec.output_cost >= 0, f"{model_id!r} has invalid output cost"
 
 
 def assert_stream_contract(events: Sequence[StreamEvent]) -> None:

@@ -26,7 +26,7 @@ from axio.events import (
 from axio.exceptions import StreamError
 from axio.messages import Message
 from axio.models import Capability, ModelRegistry, ModelSpec
-from axio.testing import assert_stream_contract
+from axio.testing import assert_static_model_transport_contract, assert_stream_contract
 from axio.tool import Tool
 from axio.types import StopReason, Usage
 
@@ -1019,10 +1019,8 @@ def test_model_spec_cost_defaults() -> None:
     assert spec.output_cost == 0.0
 
 
-def test_openai_models_is_registry() -> None:
-    assert isinstance(OPENAI_MODELS, ModelRegistry)
-    assert len(OPENAI_MODELS) > 0
-    assert "gpt-4.1-mini" in OPENAI_MODELS
+def test_openai_model_transport_contract() -> None:
+    assert_static_model_transport_contract(OpenAITransport())
 
 
 def test_openai_models_have_costs() -> None:
